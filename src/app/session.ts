@@ -204,6 +204,51 @@ export class UniversalSession implements GamePresenter {
         : focus[0] ?? this.engine.getActiveActorId();
     const legal = this.engine.getLegalActions(actor);
 
+    // In-world placement rotation / confirmation gizmos
+    if (this.snapshot.placement) {
+      if (pick.id === 'placement_rotate' || (pick.metadata as any)?.intent === 'rotate') {
+        this.rotatePlacement(1);
+        return { handled: true };
+      }
+      if (pick.id === 'placement_confirm' || (pick.metadata as any)?.intent === 'confirm') {
+        const res = this.confirmPlacement();
+        return { handled: res.ok, message: res.error };
+      }
+    }
+
+    // In-world door exploration hotspot
+    if ((pick.metadata as any)?.type === 'DOOR') {
+      const dir = (pick.metadata as any)?.direction;
+      const exploreAction = legal.find(a => a.type === 'EXPLORE_DOOR' && a.payload?.direction === dir);
+      if (exploreAction) {
+        const res = this.dispatch(exploreAction);
+        return { handled: res.ok, message: res.error };
+      }
+    }
+
+    // Direct entity/board interaction from 3D viewport clicks
+    const isDirectInteract = (pick.metadata as any)?.intent === 'interact';
+    if (isDirectInteract && !this.activeBoardGroup) {
+      if (pick.kind === 'node') {
+        const directNodeAction =
+          legal.find(a => a.type === 'MOVE_TO_ROOM' && a.targetNodeId === pick.id) ??
+          legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === pick.id);
+        if (directNodeAction) {
+          const res = this.dispatch(directNodeAction);
+          return { handled: res.ok, message: res.error };
+        }
+      } else if (pick.kind === 'entity') {
+        const directCombatAction =
+          legal.find(a => a.type === 'ATTACK_MONSTER' && a.entityId === pick.id) ??
+          legal.find(a => a.type === 'ATTACK_HERO' && a.targetPlayerId === pick.id) ??
+          legal.find(a => a.type === 'SLAP' && a.targetPlayerId === pick.id);
+        if (directCombatAction) {
+          const res = this.dispatch(directCombatAction);
+          return { handled: res.ok, message: res.error };
+        }
+      }
+    }
+
     // Entity clicks are inspection first unless the action dock explicitly
     // selected a board-targeting action (e.g. pick up from the room pile).
     if (pick.kind === 'entity' && !this.activeBoardGroup) {

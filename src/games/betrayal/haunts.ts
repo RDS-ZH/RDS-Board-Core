@@ -2,13 +2,18 @@
  * Haunt catalogue + the Haunt Chart.
  *
  * The chart maps (omen just drawn, room it was drawn in) to a scenario id.
- * Only three scenarios are implemented end-to-end; the chart also provides a
- * deterministic fallback so any omen/room pair still starts a playable haunt.
+ * Features 5 iconic scenarios:
+ *  - #1: The Mummy Walks (木乃伊苏醒)
+ *  - #3: The House of the Living Dead (活死人之夜)
+ *  - #5: The Werewolf (月圆狂兽)
+ *  - #6: The Floating Eye (巨眼降临)
+ *  - #10: The Phantom's Embrace (幽灵的拥抱)
+ * The chart also provides deterministic fallbacks so any omen/room pair starts a playable haunt.
  */
 
 import { Floor } from './cards';
 
-export type MonsterKind = 'MUMMY' | 'EYE' | 'PHANTOM';
+export type MonsterKind = 'MUMMY' | 'EYE' | 'PHANTOM' | 'ZOMBIE' | 'WEREWOLF';
 
 export interface MonsterTemplate {
   kind: MonsterKind;
@@ -78,6 +83,64 @@ export const HAUNT_DEFS: Record<string, HauntDef> = {
       '木乃伊击败女孩的保管者后夺取女孩，随后径直走向石棺房间。',
       '石棺标记放置在作祟揭示的房间；若该房间没有 crypt 标签，则使用揭示房间本身。',
       '英雄在熔炉房攻击木乃伊时，木乃伊的力量骰从 8 降为 4。'
+    ]
+  },
+  living_dead: {
+    id: 'living_dead',
+    number: 3,
+    title: '活死人之夜',
+    en: 'The House of the Living Dead',
+    traitorTitle: '死灵术士',
+    heroObjective:
+      '在实验室或厨房调配【圣水】，携带圣水抵达五芒星堂或礼拜堂倒入圣水池完成 2 次圣化仪式；或消灭死灵术士。',
+    traitorObjective: '操控 3 只活死人撕碎所有英雄，或使所有英雄死亡。',
+    monster: {
+      kind: 'ZOMBIE',
+      name: '活死人',
+      en: 'The Zombie',
+      might: 4,
+      speed: 2,
+      sanity: 3,
+      attack: 'PHYSICAL',
+      count: 3,
+      color: '#4e7055',
+      text: '速度 2 · 力量 4 · 神智 3。不死之躯：被击倒后可在后续怪物回合复生，除非被圣水净化。'
+    },
+    hooks: [{ hookId: 'haunt_zombie_undying' }],
+    anchorTag: 'pentagram',
+    notes: [
+      '死灵术士从地下深处唤醒 3 只活死人，逐回合围猎英雄。',
+      '英雄可在厨房或实验室执行 BREW_HOLY_WATER 调配圣水。',
+      '在五芒星堂执行 SANCTIFY_HOUSE 消耗圣水推进圣化仪式（需 2 次）。'
+    ]
+  },
+  werewolf: {
+    id: 'werewolf',
+    number: 5,
+    title: '月圆狂兽',
+    en: 'The Werewolf',
+    traitorTitle: '嗜血狼人',
+    heroObjective:
+      '在工坊或实验室打造银制武器（【银色子弹】/【银质匕首】）射杀狼人；或在观星室完成 3 次月相压制仪式驱散狼人诅咒。',
+    traitorObjective: '在黎明前猎杀并撕碎所有探索者。',
+    monster: {
+      kind: 'WEREWOLF',
+      name: '狂暴狼人',
+      en: 'The Werewolf',
+      might: 8,
+      speed: 5,
+      sanity: 4,
+      attack: 'PHYSICAL',
+      count: 1,
+      color: '#822424',
+      text: '速度 5 · 力量 8 · 神智 4。嗜血扑击：追踪受伤猎物；被银制武器攻击时受到双倍创伤。'
+    },
+    hooks: [{ hookId: 'haunt_werewolf_frenzy' }],
+    anchorTag: 'science',
+    notes: [
+      '作祟触发后叛徒化身为狂暴狼人，获得极高速度与扑击力量。',
+      '英雄可在工坊或实验室执行 FORGE_SILVER 制造银制武器，攻击狼人获得巨大优势。',
+      '英雄也可在观星室或塔楼执行 SUPPRESS_CURSE 进行知识检定压制月圆之力。'
     ]
   },
   floating_eye: {
@@ -161,15 +224,19 @@ export const HAUNT_CHART: HauntChartRow[] = [
   { omen: 'girl', rooms: ['basement_landing', 'coal_chute'], hauntId: 'mummy' },
   { omen: 'madman', rooms: ['catacombs', 'crypt'], hauntId: 'phantom' },
   { omen: 'holy_symbol', rooms: ['balcony', 'tower', 'widow_walk'], hauntId: 'floating_eye' },
+  { omen: 'skull', rooms: ['operating_lab', 'laboratory'], hauntId: 'living_dead' },
   { omen: 'skull', rooms: ['pentagram_chamber', 'crypt'], hauntId: 'phantom' },
   { omen: 'ring', rooms: ['pentagram_chamber'], hauntId: 'phantom' },
   { omen: 'spirit_board', rooms: ['attic', 'tower'], hauntId: 'floating_eye' },
   { omen: 'mask', rooms: ['pentagram_chamber'], hauntId: 'phantom' },
+  { omen: 'book', rooms: ['laboratory'], hauntId: 'living_dead' },
   { omen: 'book', rooms: ['library', 'study'], hauntId: 'mummy' },
   { omen: 'crystal_ball', rooms: ['observatory'], hauntId: 'floating_eye' },
   { omen: 'medallion', rooms: ['crypt', 'catacombs'], hauntId: 'mummy' },
   { omen: 'spear', rooms: ['gymnasium'], hauntId: 'mummy' },
-  { omen: 'dog', rooms: ['garden', 'patio'], hauntId: 'mummy' },
+  { omen: 'dog', rooms: ['patio', 'conservatory', 'gardens'], hauntId: 'werewolf' },
+  { omen: 'dog', rooms: ['garden'], hauntId: 'mummy' },
+  { omen: 'bite', rooms: ['bedroom', 'master_bedroom'], hauntId: 'werewolf' },
   { omen: 'bite', rooms: ['underground_lake'], hauntId: 'phantom' }
 ];
 

@@ -15,6 +15,7 @@ import { ScreenRect } from './labels/labelLayout';
 import { buildCardGroups } from './cardGroups';
 import { cardGroupKey } from './cardGroups';
 import { PresentationPhysics } from './physics';
+import { BoardGameAudio } from './audio';
 
 export type CameraPreset = 'ISOMETRIC' | 'TOP_DOWN' | 'PLAYER_1' | 'PLAYER_2';
 
@@ -106,9 +107,14 @@ export class BoardGameScene {
     string,
     { startY: number; targetY: number; startedAt: number; duration: number }
   >();
+  private knownRoomIds = new Set<string>();
+  private roomSettles = new Map<
+    string,
+    { startY: number; targetY: number; startedAt: number; duration: number }
+  >();
   private highlightIds = new Set<string>();
   private framing = {
-    isoPos: new THREE.Vector3(1.8, 24, 29),
+    isoPos: new THREE.Vector3(10.5, 22, 24.5),
     isoTarget: new THREE.Vector3(1.8, 0, -0.2),
     topHeight: 36
   };
@@ -463,6 +469,23 @@ export class BoardGameScene {
     }
   }
 
+  private updateRoomSettles(now: number): void {
+    for (const [id, settle] of this.roomSettles) {
+      const mesh = this.nodeMeshes.get(id);
+      if (!mesh) {
+        this.roomSettles.delete(id);
+        continue;
+      }
+      const t = Math.min(1, Math.max(0, (now - settle.startedAt) / settle.duration));
+      const eased = 1 - Math.pow(1 - t, 3);
+      mesh.position.y = settle.startY + (settle.targetY - settle.startY) * eased;
+      if (t >= 1) {
+        mesh.position.y = settle.targetY;
+        this.roomSettles.delete(id);
+      }
+    }
+  }
+
   /** Presentation-only merge compatibility; never changes GameState. */
   public canMergeCards(sourceId: string, targetId: string): boolean {
     if (sourceId === targetId) return false;
@@ -709,6 +732,29 @@ export class BoardGameScene {
 
     // 1. Render Map Graph (Catan Hexes / Betrayal Rooms / Sanguosha Seats)
     this.renderMapGraph(state);
+
+    // Track newly placed rooms to trigger placement animation
+    const currentRoomIds = new Set<string>();
+    Object.values(state.mapGraph.nodes).forEach(node => {
+      if (node.type === 'ROOM') currentRoomIds.add(node.id);
+    });
+    if (this.knownRoomIds.size > 0) {
+      for (const id of currentRoomIds) {
+        if (!this.knownRoomIds.has(id)) {
+          const mesh = this.nodeMeshes.get(id);
+          if (mesh) {
+            this.roomSettles.set(id, {
+              startY: mesh.position.y + 1.25,
+              targetY: mesh.position.y,
+              startedAt: performance.now(),
+              duration: 380
+            });
+            BoardGameAudio.playTilePlacement();
+          }
+        }
+      }
+    }
+    this.knownRoomIds = currentRoomIds;
 
     // 2. Render Entities (Cards, Tokens, Buildings, Dice)
     this.renderEntities(state);
@@ -1044,11 +1090,40 @@ export class BoardGameScene {
           node.props.name || 'Room',
           2.84,
           node.props.color,
-          node.props.doors
+          node.props.doors,
+          {
+            floor: node.props.floor,
+            special: node.props.special,
+            tags: node.props.tags,
+            symbol: node.props.symbol
+          }
         );
         roomMesh.position.set(node.position[0], node.position[1], node.position[2]);
         this.boardObjectsGroup.add(roomMesh);
         this.nodeMeshes.set(node.id, roomMesh);
+
+        // Register interactive door exploration hotspots
+        const doors = (node.props.doors ?? []) as ('N' | 'S' | 'E' | 'W')[];
+        const halfSize = 2.84 / 2;
+        for (const dir of doors) {
+          const doorGeom = new THREE.BoxGeometry(
+            dir === 'N' || dir === 'S' ? 0.96 : 0.24,
+            0.45,
+            dir === 'W' || dir === 'E' ? 0.96 : 0.24
+          );
+          const doorMat = new THREE.MeshBasicMaterial({ visible: false });
+          const doorMesh = new THREE.Mesh(doorGeom, doorMat);
+          const dx = dir === 'W' ? -halfSize : dir === 'E' ? halfSize : 0;
+          const dz = dir === 'N' ? -halfSize : dir === 'S' ? halfSize : 0;
+          doorMesh.position.set(node.position[0] + dx, node.position[1] + 0.22, node.position[2] + dz);
+          this.boardObjectsGroup.add(doorMesh);
+
+          this.raycaster.registerInteractive(doorMesh, {
+            type: 'NODE',
+            id: `${node.id}:door:${dir}`,
+            metadata: { type: 'DOOR', roomId: node.id, direction: dir, intent: 'interact' }
+          });
+        }
 
         const symbol = node.props?.symbol as string | undefined;
         if (symbol) {
@@ -1454,7 +1529,11 @@ export class BoardGameScene {
       placement.name,
       2.84,
       placement.color,
-      placement.doors as ('N' | 'S' | 'E' | 'W')[]
+      placement.doors as ('N' | 'S' | 'E' | 'W')[],
+      {
+        floor: placement.floor,
+        isPreview: true
+      }
     );
     group.position.set(placement.position[0], placement.position[1] + 0.12, placement.position[2]);
     group.rotation.y = -placement.rotation * (Math.PI / 2);
@@ -1472,13 +1551,47 @@ export class BoardGameScene {
     this.boardObjectsGroup.add(group);
     this.previewObjects.push(group);
 
+    // Register ghost tile click to rotate directly in 3D
+    this.raycaster.registerInteractive(group, {
+      type: 'NODE',
+      id: 'placement_rotate',
+      metadata: { intent: 'rotate' }
+    });
+
+    // 3D In-World Interactive Rotate Gizmo (Brass Torus Ring)
+    const rotateGizmoGeom = new THREE.TorusGeometry(0.48, 0.05, 8, 24);
+    const rotateGizmoMat = new THREE.MeshBasicMaterial({ color: 0xd9b45b });
+    const rotateGizmo = new THREE.Mesh(rotateGizmoGeom, rotateGizmoMat);
+    rotateGizmo.rotation.x = Math.PI / 2;
+    rotateGizmo.position.set(placement.position[0] - 0.7, placement.position[1] + 0.65, placement.position[2]);
+    this.boardObjectsGroup.add(rotateGizmo);
+    this.previewObjects.push(rotateGizmo);
+    this.raycaster.registerInteractive(rotateGizmo, {
+      type: 'NODE',
+      id: 'placement_rotate',
+      metadata: { intent: 'rotate' }
+    });
+
+    // 3D In-World Interactive Confirm Gizmo (Emerald Cylinder Disc)
+    const confirmGizmoGeom = new THREE.CylinderGeometry(0.32, 0.32, 0.08, 16);
+    const confirmGizmoMat = new THREE.MeshBasicMaterial({ color: 0x2e9b4e });
+    const confirmGizmo = new THREE.Mesh(confirmGizmoGeom, confirmGizmoMat);
+    confirmGizmo.position.set(placement.position[0] + 0.7, placement.position[1] + 0.65, placement.position[2]);
+    this.boardObjectsGroup.add(confirmGizmo);
+    this.previewObjects.push(confirmGizmo);
+    this.raycaster.registerInteractive(confirmGizmo, {
+      type: 'NODE',
+      id: 'placement_confirm',
+      metadata: { intent: 'confirm' }
+    });
+
     const label = this.createLabelSprite(
-      `预览 · ${placement.name} · ${placement.rotation * 90}°`,
+      `↻ 点击旋转 (${placement.rotation * 90}°) · ✓ 确认放置`,
       '#e3c77b',
-      34
+      32
     );
-    label.position.set(placement.position[0], placement.position[1] + 1.1, placement.position[2]);
-    label.scale.set(2.8, 0.42, 1);
+    label.position.set(placement.position[0], placement.position[1] + 1.25, placement.position[2]);
+    label.scale.set(3.0, 0.45, 1);
     this.boardObjectsGroup.add(label);
     this.previewObjects.push(label);
   }
@@ -2129,6 +2242,7 @@ export class BoardGameScene {
     this.lastFrameTime = now;
     this.physics.step(dt);
     this.updateCardSettles(now);
+    this.updateRoomSettles(now);
     this.renderer.render(this.scene, this.camera);
     this.labels.render(
       this.camera,

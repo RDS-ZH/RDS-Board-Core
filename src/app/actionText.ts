@@ -148,6 +148,14 @@ function describeActionZh(
         return { icon: '🕯️', label: '安魂咏唱', hint: '神智 5+ · 进度 3/3 超度怨灵', tone: 'primary' };
       case 'DESTROY_BEACON':
         return { icon: '💥', label: '炸毁飞船信标', hint: '所有巨眼已被摧毁', tone: 'danger' };
+      case 'BREW_HOLY_WATER':
+        return { icon: '⚗️', label: '调配圣水', hint: '知识 4+ · 获得净化圣水', tone: 'primary' };
+      case 'SANCTIFY_HOUSE':
+        return { icon: '✨', label: '注入圣水池圣化', hint: '知识/神智 4+ · 进度 2/2 净化全宅', tone: 'primary' };
+      case 'FORGE_SILVER':
+        return { icon: '⚔️', label: '打造银制武器', hint: '力量 4+ · 获得银色子弹', tone: 'primary' };
+      case 'SUPPRESS_CURSE':
+        return { icon: '🌕', label: '月相压制仪式', hint: '知识 4+ · 进度 3/3 驱散狼人诅咒', tone: 'primary' };
       case 'PEEK_TOP':
         return { icon: '🔮', label: '将顶牌留在牌堆顶', hint: '水晶球窥视', tone: 'normal' };
       case 'PEEK_BOTTOM':

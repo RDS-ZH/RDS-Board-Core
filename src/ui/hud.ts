@@ -388,7 +388,7 @@ export class BoardGameHUD {
           </div>
 
           <div class="cam-switch">
-            <button class="cam-btn active" data-cam="iso">等轴</button>
+            <button class="cam-btn active" data-cam="iso">2.5D等轴</button>
             <button class="cam-btn" data-cam="top">俯视</button>
             <button class="cam-btn" data-cam="seat">座位</button>
           </div>
