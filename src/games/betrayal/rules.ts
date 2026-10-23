@@ -1,0 +1,2656 @@
+/**
+ * Betrayal at House on the Hill — reducer and legality.
+ *
+ * The module owns every game rule; the kernel only schedules actions,
+ * decisions, interrupts, projections and replay. Scenario state lives in
+ * `globalVars.haunt`, monsters are ordinary MEEPLE entities and every random
+ * draw goes through the kernel PRNG so logs replay bit-exactly.
+ */
+
+import { openDecision } from '../../core/decisions';
+import { ECSManager } from '../../core/ecs';
+import { OccupancyIndex } from '../../core/occupancy';
+import { ReduceContext } from '../../core/module';
+import { DeterministicPRNG } from '../../core/prng';
+import { InterruptStackManager } from '../../core/stack';
+import { Action, DecisionWindow, Entity, GameState, PlayerId, StackFrame } from '../../core/types';
+import {
+  EVENT_DEFS,
+  EventEffect,
+  Floor,
+  FLOOR_META,
+  ITEM_DEFS,
+  OMEN_DEFS,
+  ROOM_DEFS,
+  TraitKey,
+  TRAIT_KEYS,
+  TRAIT_META,
+  WEAPON_SPECS
+} from './cards';
+import { HAUNT_DEFS, resolveHauntId } from './haunts';
+import { BETRAYAL_SPATIAL } from './spatial';
+import {
+  actionLogLine,
+  addFrost,
+  applyItemGain,
+  applyItemLoss,
+  applyOmenGain,
+  applyOmenLoss,
+  applyTraitSteps,
+  attackDiceFor,
+  cardDef,
+  currentHaunt,
+  damagePlayer,
+  discardCard,
+  drawCardTo,
+  drawRoomCandidate,
+  ensureRoomZone,
+  findHandEntity,
+  gridToWorld,
+  itemSlotId,
+  handEntities,
+  heroesOf,
+  hostilesInRoom,
+  itemLabel,
+  killPlayer,
+  leftOf,
+  linkSpecialRooms,
+  markUsed,
+  monsterEntities,
+  monsterStats,
+  monstersInRoom,
+  moveMonster,
+  movePlayerTo,
+  movementCost,
+  nextEligiblePlayer,
+  nodeGrid,
+  ownsDef,
+  placeRoomCandidate,
+  resetTurnResources,
+  rollTraitCheck,
+  rollZeroDice,
+  roomName,
+  sameFloorLine,
+  spawnMonster,
+  takeTopCard,
+  tradeable,
+  traitorOf,
+  traitIndex,
+  traitValue,
+  usedThisTurn,
+  weaponOptions
+} from './helpers';
+
+const TRAIT_OPTIONS: Record<'PHYSICAL' | 'MENTAL', { value: TraitKey; label: string }[]> = {
+  PHYSICAL: [
+    { value: 'might', label: '力量' },
+    { value: 'speed', label: '速度' }
+  ],
+  MENTAL: [
+    { value: 'sanity', label: '神智' },
+    { value: 'knowledge', label: '知识' }
+  ]
+};
+
+const STEAL_OPTIONS = [
+  { value: 'no', label: '正常造成伤害' },
+  { value: 'yes', label: '伤害 ≥ 2 时改为偷窃' }
+];
+
+const TRAIT_OPTIONS_KEYS = TRAIT_KEYS;
+
+function trace(
+  ctx: ReduceContext,
+  type: Parameters<ReduceContext['trace']>[0]['type'],
+  title: string,
+  durationMs = 400
+): void {
+  ctx.trace({ id: ctx.id('evt'), type, title, durationMs });
+}
+
+function activeRoom(state: GameState, playerId: PlayerId): string {
+  return String(state.players[playerId]?.customProps.currentRoomId ?? '');
+}
+
+function roomTags(state: GameState, roomId: string): string[] {
+  const tags = state.mapGraph.nodes[roomId]?.props?.tags;
+  return Array.isArray(tags) ? tags : [];
+}
+
+function playersInRoom(state: GameState, roomId: string, excludeId?: PlayerId): PlayerId[] {
+  return state.playerOrder.filter(pid => {
+    const player = state.players[pid];
+    return pid !== excludeId && player?.alive && !player.customProps.banished && player.customProps.currentRoomId === roomId;
+  });
+}
+
+function exploredRooms(state: GameState): string[] {
+  return Object.values(state.mapGraph.nodes)
+    .filter(node => node.type === 'ROOM')
+    .map(node => node.id);
+}
+
+function randomRoom(state: GameState): string {
+  const rooms = exploredRooms(state);
+  if (rooms.length === 0) return '';
+  const roll = DeterministicPRNG.nextInt(state.prngState, 0, rooms.length - 1);
+  state.prngState = roll.nextSeed;
+  return rooms[roll.value];
+}
+
+function heroFaction(state: GameState, playerId: PlayerId): boolean {
+  return state.players[playerId]?.role !== 'TRAITOR';
+}
+
+function isHostile(state: GameState, playerId: PlayerId, targetId: PlayerId): boolean {
+  return heroFaction(state, playerId) !== heroFaction(state, targetId);
+}
+
+function hasTradeableItem(state: GameState, playerId: PlayerId): boolean {
+  return handEntities(state, playerId).some(entity => tradeable(entity) && !entity.components.custom?.companion);
+}
+
+function cardName(state: GameState, entityId: string): string {
+  return itemLabel(state.entities[entityId]);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Legality                                                                    */
+/* -------------------------------------------------------------------------- */
+
+export class BetrayalRules {
+  public static getLegalActions(state: GameState, actorId: PlayerId): Action[] {
+    if (state.gameOver) return [];
+    const npc = state.npcs?.[actorId];
+    if (npc) return this.getNpcLegalActions(state, npc);
+    const player = state.players[actorId];
+    if (!player) return [];
+    const playerId = actorId;
+    if (!player.alive) {
+      return state.activePlayerId === actorId ? [{ type: 'END_TURN', playerId: actorId }] : [];
+    }
+
+    /* 0. A drawn room tile awaits orientation ------------------------- */
+    const pending = state.globalVars.pendingRoomPlacement as
+      | { playerId: string; rotations: number[]; defId: string }
+      | undefined;
+    if (pending) {
+      if (pending.playerId !== playerId) return [];
+      return [
+        {
+          type: 'PLACE_ROOM',
+          playerId,
+          payload: { defName: ROOM_DEFS[pending.defId]?.name ?? pending.defId },
+          fields: [
+            {
+              key: 'rotation',
+              label: '房间朝向',
+              kind: 'enum',
+              required: true,
+              default: String(pending.rotations[0] ?? 0),
+              options: pending.rotations.map(rotation => ({
+                value: String(rotation),
+                label: `${rotation * 90}°`
+              }))
+            }
+          ]
+        }
+      ];
+    }
+
+    /* 1. Open decision window ------------------------------------------- */
+    const window = [...state.pendingDecisions].reverse().find(entry => entry.status === 'OPEN');
+    if (window) {
+      if (!window.participants.includes(playerId) || window.submissions[playerId] !== undefined) return [];
+      if (window.payload?.kind === 'damage') {
+        const kind = window.payload.damageKind === 'MENTAL' ? 'MENTAL' : 'PHYSICAL';
+        return [
+          {
+            type: 'ALLOCATE_DAMAGE',
+            playerId,
+            fields: [
+              {
+                key: 'trait',
+                label: '承受伤害的属性',
+                kind: 'enum',
+                options: TRAIT_OPTIONS[kind],
+                default: TRAIT_OPTIONS[kind][0].value
+              }
+            ]
+          }
+        ];
+      }
+      if (window.payload?.kind === 'trade') {
+        const offer = state.globalVars.tradeOffer as
+          | { from: PlayerId; giveEntityId: string; wantEntityId: string }
+          | null
+          | undefined;
+        const actions: Action[] = [{ type: 'REJECT_TRADE', playerId }];
+        if (offer) {
+          const canAccept =
+            offer.wantEntityId === '' ||
+            (state.entities[offer.wantEntityId]?.ownerId === playerId &&
+              handEntities(state, playerId).some(entity => entity.id === offer.wantEntityId));
+          if (canAccept) actions.unshift({ type: 'ACCEPT_TRADE', playerId });
+        }
+        return actions;
+      }
+      if (window.payload?.kind === 'peek') {
+        return [
+          { type: 'PEEK_TOP', playerId },
+          { type: 'PEEK_BOTTOM', playerId }
+        ];
+      }
+      return [];
+    }
+
+    /* 2. Interrupt-stack response window --------------------------------- */
+    const frame = InterruptStackManager.peek(state);
+    if (frame && frame.status === 'WAITING_INPUT' && frame.responseWindow) {
+      if (!frame.responseWindow.eligiblePlayers.includes(playerId)) return [];
+      if (frame.type === 'HAUNT_CHECK') return [{ type: 'ROLL_HAUNT_CHECK', playerId }];
+      return [];
+    }
+
+    /* 3. Turn ownership --------------------------------------------------- */
+    if ((state.activeActorId ?? state.activePlayerId) !== playerId) return [];
+    if (player.customProps.banished) {
+      return player.role === 'TRAITOR' ? [{ type: 'END_TURN', playerId }] : [];
+    }
+    if (player.customProps.controlled) {
+      return [{ type: 'END_TURN', playerId }];
+    }
+
+    const actions: Action[] = [];
+    const roomId = activeRoom(state, playerId);
+    const room = state.mapGraph.nodes[roomId];
+    const movesLeft = Number(player.customProps.movesLeft ?? 0);
+
+    if (player.customProps.skipActions) {
+      actions.push({ type: 'END_TURN', playerId });
+      return actions;
+    }
+
+    /* 4. Movement --------------------------------------------------------- */
+    if (movesLeft > 0 && room) {
+      const reachable = room.neighbors.filter(neighbor => movementCost(state, playerId, roomId) <= movesLeft);
+      if (reachable.length > 0) {
+        actions.push({
+          type: 'MOVE_TO_ROOM',
+          playerId,
+          selection: { source: 'node', scope: { neighbors: reachable }, min: 1, max: 1 }
+        });
+      }
+
+      const doors = (room.props.doors ?? []) as ('N' | 'S' | 'E' | 'W')[];
+      for (const dir of doors) {
+        const offset = { N: [0, -1], S: [0, 1], E: [1, 0], W: [-1, 0] }[dir];
+        const grid = nodeGrid(room);
+        if (!grid) continue;
+        const col = grid.col + offset[0];
+        const row = grid.row + offset[1];
+        const occupied = Object.values(state.mapGraph.nodes).some(node => {
+          const other = nodeGrid(node);
+          return other && other.floor === grid.floor && other.col === col && other.row === row;
+        });
+        if (!occupied) {
+          actions.push({ type: 'EXPLORE_DOOR', playerId, payload: { direction: dir } });
+        }
+      }
+
+      if (room.props.special === 'ELEVATOR' && !player.customProps.elevatorUsed) {
+        for (const other of exploredRooms(state)) {
+          if (other !== roomId) actions.push({ type: 'USE_ELEVATOR', playerId, targetNodeId: other });
+        }
+      }
+
+      if (room.props.special === 'BALCONY' || room.props.special === 'GALLERY') {
+        const ballroom = Object.values(state.mapGraph.nodes).find(node => node.props?.name === '舞厅');
+        if (ballroom && room.neighbors.includes(ballroom.id)) {
+          actions.push({ type: 'JUMP_DOWN', playerId });
+        }
+      }
+
+      if (ownsDef(state, playerId, 'rope')) {
+        for (const edge of Object.values(state.mapGraph.edges)) {
+          if (edge.type !== 'DROP' || edge.to !== roomId || !edge.props?.oneWay) continue;
+          actions.push({ type: 'CLIMB_UP', playerId, targetNodeId: edge.from });
+        }
+      }
+    }
+
+    /* 5. Items, pickups, trade, dog -------------------------------------- */
+    const hand = handEntities(state, playerId);
+    for (const entity of hand) {
+      const defId = cardDef(entity);
+      const def = ITEM_DEFS[defId] ?? OMEN_DEFS[defId];
+      if (!def || entity.components.custom?.cardType === 'EVENT') continue;
+
+      const companion = !!entity.components.custom?.companion;
+      const usable = 'usable' in def ? !!def.usable : false;
+      const isDog = defId === 'dog';
+
+      if (isDog && !usedThisTurn(state, playerId, defId)) {
+        actions.push({ type: 'USE_ITEM', playerId, entityId: entity.id });
+      } else if (usable && !usedThisTurn(state, playerId, defId)) {
+        const fields = this.itemFields(state, playerId, defId);
+        actions.push(fields && fields.length > 0
+          ? { type: 'USE_ITEM', playerId, entityId: entity.id, fields }
+          : { type: 'USE_ITEM', playerId, entityId: entity.id });
+      }
+
+      if (!companion && tradeable(entity)) {
+        actions.push({ type: 'DROP_ITEM', playerId, entityId: entity.id });
+        // Generic slot command, kept alongside the legacy drop action for old logs.
+        actions.push({
+          type: 'PLACE_ENTITY',
+          playerId,
+          actorId: playerId,
+          entityId: entity.id,
+          targetSlotId: itemSlotId(roomId)
+        });
+      }
+    }
+
+    const roomZone = state.zones[`zone_room_${roomId}`];
+    for (const entityId of roomZone?.orderedEntities ?? []) {
+      if (state.entities[entityId]?.components.custom?.marker) continue;
+      actions.push({ type: 'PICK_UP_ITEM', playerId, entityId });
+    }
+
+    const others = playersInRoom(state, roomId, playerId);
+    if (others.length > 0 && hand.some(entity => tradeable(entity) && !entity.components.custom?.companion)) {
+      const giveOptions = hand
+        .filter(entity => tradeable(entity) && !entity.components.custom?.companion)
+        .map(entity => ({ value: entity.id, label: itemLabel(entity) }));
+      const wantOptions: { value: string; label: string }[] = [{ value: '', label: '无条件赠予' }];
+      for (const otherId of others) {
+        for (const entity of handEntities(state, otherId)) {
+          if (!tradeable(entity) || entity.components.custom?.companion) continue;
+          wantOptions.push({ value: entity.id, label: `${itemLabel(entity)} · ${state.players[otherId].name}` });
+        }
+      }
+      actions.push({
+        type: 'PROPOSE_ITEM_TRADE',
+        playerId,
+        fields: [
+          { key: 'give', label: '你付出', kind: 'enum', options: giveOptions, default: giveOptions[0]?.value },
+          {
+            key: 'want',
+            label: '你索取',
+            kind: 'enum',
+            options: wantOptions,
+            default: wantOptions[0]?.value
+          }
+        ]
+      });
+    }
+
+    /* 6. Combat ----------------------------------------------------------- */
+    const attacksLeft = Number(player.customProps.attacksLeft ?? 0);
+    if (state.globalVars.hauntTriggered && attacksLeft > 0) {
+      const weapons = weaponOptions(state, playerId);
+      for (const otherId of state.playerOrder) {
+        const other = state.players[otherId];
+        if (otherId === playerId || !other?.alive || other.customProps.banished) continue;
+        if (!isHostile(state, playerId, otherId)) continue;
+        const targetRoom = activeRoom(state, otherId);
+        const options = weapons.filter(option => {
+          const spec = WEAPON_SPECS[option.value];
+          if (!spec) return false;
+          if (targetRoom === roomId) return true;
+          return !!spec.ranged && sameFloorLine(state, roomId, targetRoom);
+        });
+        if (options.length === 0) continue;
+        actions.push({
+          type: 'ATTACK_PLAYER',
+          playerId,
+          targetPlayerId: otherId,
+          fields: [
+            { key: 'weapon', label: '武器', kind: 'enum', options, default: options[0].value },
+            { key: 'steal', label: '偷窃', kind: 'enum', options: STEAL_OPTIONS, default: 'no' }
+          ]
+        });
+      }
+
+      for (const monster of monsterEntities(state)) {
+        const custom = monster.components.custom ?? {};
+        if (custom.destroyed) continue;
+        const monsterRoom = String(custom.roomId ?? '');
+        const options = weapons.filter(option => {
+          const spec = WEAPON_SPECS[option.value];
+          if (!spec) return false;
+          if (monsterRoom === roomId) return true;
+          return !!spec.ranged && sameFloorLine(state, roomId, monsterRoom);
+        });
+        if (options.length === 0) continue;
+        actions.push({
+          type: 'ATTACK_MONSTER',
+          playerId,
+          entityId: monster.id,
+          fields: [{ key: 'weapon', label: '武器', kind: 'enum', options, default: options[0].value }]
+        });
+      }
+
+      if (currentHaunt(state)?.id === 'floating_eye') {
+        for (const otherId of playersInRoom(state, roomId, playerId)) {
+          if (state.players[otherId].customProps.controlled) {
+            actions.push({ type: 'SLAP', playerId, targetPlayerId: otherId });
+          }
+        }
+      }
+    }
+
+    /* 7. Scenario actions -------------------------------------------------- */
+    const haunt = currentHaunt(state);
+    if (haunt) {
+      if (haunt.id === 'mummy' && roomId === haunt.revealRoomId && haunt.progress < 2) {
+        if (ownsDef(state, playerId, 'holy_symbol') || ownsDef(state, playerId, 'ring')) {
+          if (!player.customProps.ritualUsed) actions.push({ type: 'SEAL_RITUAL', playerId });
+        }
+      }
+      if (haunt.id === 'phantom') {
+        if (!haunt.bonesFound && room?.props?.floor === 'BASEMENT' && !player.customProps.searchUsed) {
+          actions.push({ type: 'SEARCH_BONES', playerId });
+        }
+        const atPentagram = room?.props?.special === null && roomTags(state, roomId).includes('pentagram');
+        if (atPentagram && haunt.bonesFound && ownsDef(state, playerId, 'holy_symbol') && !player.customProps.chantUsed) {
+          actions.push({ type: 'CHANT', playerId });
+        }
+      }
+      if (haunt.id === 'floating_eye' && roomId === haunt.revealRoomId && !haunt.beaconDestroyed) {
+        const eyesLeft = monsterEntities(state).filter(
+          monster => monster.components.custom?.monster === 'EYE' && !monster.components.custom?.destroyed
+        );
+        if (eyesLeft.length === 0) actions.push({ type: 'DESTROY_BEACON', playerId });
+      }
+    }
+
+    actions.push({ type: 'END_TURN', playerId });
+    return actions;
+  }
+
+  private static getNpcLegalActions(state: GameState, npc: NonNullable<GameState['npcs']>[string]): Action[] {
+    if (state.gameOver) return [];
+    if ((state.activeActorId ?? state.activePlayerId) !== npc.id) return [];
+    if (npc.status !== 'ACTIVE') return [];
+
+    const entity = npc.entityId ? state.entities[npc.entityId] : undefined;
+    const custom = entity?.components.custom ?? {};
+    if (!entity || custom.destroyed) return [];
+    if (custom.stunned) {
+      return [{ type: 'END_NPC_TURN', playerId: npc.id, actorId: npc.id }];
+    }
+
+    const roomId = String(custom.roomId ?? '');
+    const actions: Action[] = [];
+    if (Number(npc.customProps.movesLeft ?? 0) > 0) {
+      for (const target of BETRAYAL_SPATIAL.neighbors(state, roomId, npc.id)) {
+        actions.push({ type: 'MOVE_NPC', playerId: npc.id, actorId: npc.id, targetNodeId: target });
+      }
+    }
+    if (Number(npc.customProps.attacksLeft ?? 0) > 0) {
+      for (const targetId of playersInRoom(state, roomId)) {
+        if (state.players[targetId].role === 'TRAITOR') continue;
+        actions.push({ type: 'ATTACK_HERO', playerId: npc.id, actorId: npc.id, targetPlayerId: targetId });
+      }
+    }
+    actions.push({ type: 'END_NPC_TURN', playerId: npc.id, actorId: npc.id });
+    return actions;
+  }
+
+  private static moveNpc(state: GameState, npcId: string, targetRoomId: string, ctx: ReduceContext): void {
+    const npc = state.npcs?.[npcId];
+    if (!npc || npc.status !== 'ACTIVE' || !npc.entityId) return;
+    if ((state.activeActorId ?? state.activePlayerId) !== npcId) return;
+    if (Number(npc.customProps.movesLeft ?? 0) <= 0) return;
+    if (!BETRAYAL_SPATIAL.neighbors(state, String(npc.customProps.roomId ?? ''), npc.id).includes(targetRoomId)) return;
+
+    moveMonster(state, npc.entityId, targetRoomId);
+    npc.customProps.movesLeft = Number(npc.customProps.movesLeft) - 1;
+    const entity = state.entities[npc.entityId];
+    const custom = entity?.components.custom ?? {};
+    if (custom.monster === 'PHANTOM') addFrost(state, targetRoomId);
+
+    if (custom.monster === 'MUMMY' && !custom.carryingGirl) {
+      const zone = state.zones[`zone_room_${targetRoomId}`];
+      const girl = (zone?.orderedEntities ?? [])
+        .map(id => state.entities[id])
+        .find(entity2 => entity2 && cardDef(entity2) === 'girl');
+      if (girl) {
+        custom.carryingGirl = true;
+        const haunt = currentHaunt(state);
+        if (haunt) haunt.girlHolder = npcId;
+        girl.ownerId = undefined;
+        const next = ECSManager.moveEntity(state, girl.id, 'zone_monsters');
+        state.entities = next.entities;
+        state.zones = next.zones;
+        trace(ctx, 'RULE_MUTATE', '木乃伊从物品堆中抱起了小女孩', 800);
+      }
+    }
+
+    trace(ctx, 'MOVE_OBJECT', `${npc.name} 移动至 ${roomName(state, targetRoomId)}`, 500);
+  }
+
+  private static npcAttack(state: GameState, npcId: string, targetId: string, ctx: ReduceContext): void {
+    const npc = state.npcs?.[npcId];
+    if (!npc || npc.status !== 'ACTIVE' || !npc.entityId) return;
+    if ((state.activeActorId ?? state.activePlayerId) !== npcId) return;
+    if (Number(npc.customProps.attacksLeft ?? 0) <= 0) return;
+
+    const entity = state.entities[npc.entityId];
+    const target = state.players[targetId];
+    if (!entity || !target?.alive) return;
+    if (String(entity.components.custom?.roomId ?? '') !== String(target.customProps.currentRoomId ?? '')) return;
+    if (target.role === 'TRAITOR') return;
+
+    npc.customProps.attacksLeft = Math.max(0, Number(npc.customProps.attacksLeft) - 1);
+    this.monsterAttack(state, entity, targetId, ctx);
+  }
+
+  private static itemFields(state: GameState, playerId: PlayerId, defId: string): Action['fields'] {
+    const roomId = activeRoom(state, playerId);
+    const roommates = [playerId, ...playersInRoom(state, roomId, playerId)];
+
+    switch (defId) {
+      case 'adrenaline_shot':
+        return [
+          {
+            key: 'mode',
+            label: '使用方式',
+            kind: 'enum',
+            options: [
+              { value: 'check', label: '本次检定 +4' },
+              { value: 'move', label: '本回合移动 +4' }
+            ],
+            default: 'check'
+          }
+        ];
+      case 'angel_feather':
+        return [{ key: 'value', label: '指定骰点 (0–8)', kind: 'number', min: 0, max: 8, step: 1, default: 8 }];
+      case 'crystal_ball':
+        return [
+          {
+            key: 'deck',
+            label: '窥视牌堆',
+            kind: 'enum',
+            options: [
+              { value: 'zone_event_deck', label: '事件牌堆' },
+              { value: 'zone_item_deck', label: '物品牌堆' }
+            ],
+            default: 'zone_event_deck'
+          }
+        ];
+      case 'healing_salve':
+        return [
+          {
+            key: 'trait',
+            label: '恢复的肉体属性',
+            kind: 'enum',
+            options: [
+              { value: 'might', label: '力量' },
+              { value: 'speed', label: '速度' }
+            ],
+            default: 'might'
+          }
+        ];
+      case 'smelling_salts':
+        return [
+          {
+            key: 'trait',
+            label: '恢复的精神属性',
+            kind: 'enum',
+            options: [
+              { value: 'sanity', label: '神智' },
+              { value: 'knowledge', label: '知识' }
+            ],
+            default: 'sanity'
+          }
+        ];
+      case 'medical_kit':
+      case 'bell':
+        return [
+          {
+            key: 'target',
+            label: '目标',
+            kind: 'enum',
+            options: roommates.map(id => ({ value: id, label: state.players[id].name })),
+            default: playerId
+          }
+        ];
+      case 'dynamite': {
+        const options = exploredRooms(state)
+          .filter(roomId2 => {
+            if (roomId2 === roomId) return false;
+            const node = state.mapGraph.nodes[roomId2];
+            return node?.neighbors.includes(roomId) || sameFloorLine(state, roomId, roomId2);
+          })
+          .map(roomId2 => ({ value: roomId2, label: roomName(state, roomId2) }));
+        return options.length > 0
+          ? [{ key: 'targetRoom', label: '投掷目标房间', kind: 'enum', options, default: options[0].value }]
+          : [];
+      }
+      default:
+        return [];
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Reduce                                                             */
+  /* ------------------------------------------------------------------ */
+
+  public static applyAction(state: GameState, action: Action, ctx: ReduceContext): GameState {
+    const s: GameState = JSON.parse(JSON.stringify(state));
+    const pid = action.playerId;
+
+    switch (action.type) {
+      case 'MOVE_TO_ROOM':
+        this.move(s, pid, action.targetNodeId ?? action.targets?.[0] ?? '', ctx);
+        break;
+      case 'EXPLORE_DOOR':
+        this.explore(
+          s,
+          pid,
+          String(action.payload?.direction ?? 'N') as 'N' | 'S' | 'E' | 'W',
+          ctx,
+          action.payload?.rotation === undefined ? undefined : Number(action.payload.rotation)
+        );
+        break;
+      case 'PLACE_ROOM':
+        this.placeDrawnRoom(s, pid, Number(action.payload?.rotation ?? -1), ctx);
+        break;
+      case 'USE_ELEVATOR': {
+        const player = s.players[pid];
+        if (player.customProps.elevatorUsed) break;
+        movePlayerTo(s, pid, action.targetNodeId ?? '');
+        player.customProps.elevatorUsed = true;
+        player.customProps.movesLeft = Math.max(0, Number(player.customProps.movesLeft ?? 1) - 1);
+        trace(ctx, 'MOVE_OBJECT', `🛗 ${player.name} 乘神秘电梯抵达 ${roomName(s, activeRoom(s, pid))}`, 500);
+        this.enterRoom(s, pid, activeRoom(s, pid), ctx, false);
+        break;
+      }
+      case 'JUMP_DOWN': {
+        const ballroom = Object.values(s.mapGraph.nodes).find(node => node.props?.name === '舞厅');
+        const player = s.players[pid];
+        if (!ballroom) break;
+        movePlayerTo(s, pid, ballroom.id);
+        player.customProps.movesLeft = 0;
+        const rope = ownsDef(s, pid, 'rope');
+        if (!rope) {
+          damagePlayer(s, pid, 'PHYSICAL', 1);
+          trace(ctx, 'DAMAGE_EFFECT', `${player.name} 从楼座坠落，受到 1 点伤害`, 500);
+        } else {
+          trace(ctx, 'MOVE_OBJECT', `${player.name} 沿麻绳滑入舞厅`, 500);
+        }
+        this.enterRoom(s, pid, ballroom.id, ctx, false);
+        break;
+      }
+      case 'CLIMB_UP': {
+        const player = s.players[pid];
+        const targetNodeId = action.targetNodeId ?? '';
+        const edge = Object.values(s.mapGraph.edges).find(
+          item => item.type === 'DROP' && item.to === activeRoom(s, pid) && item.from === targetNodeId
+        );
+        if (!player || !edge || !ownsDef(s, pid, 'rope')) break;
+        if (Number(player.customProps.movesLeft ?? 0) <= 0) break;
+        player.customProps.movesLeft = Number(player.customProps.movesLeft) - 1;
+        movePlayerTo(s, pid, targetNodeId);
+        trace(ctx, 'MOVE_OBJECT', `${player.name} 沿麻绳攀回 ${roomName(s, targetNodeId)}`, 500);
+        this.enterRoom(s, pid, targetNodeId, ctx, false);
+        break;
+      }
+      case 'USE_ITEM':
+        this.useItem(s, pid, action.entityId ?? '', action, ctx);
+        break;
+      case 'DROP_ITEM':
+        this.dropItem(s, pid, action.entityId ?? '', ctx);
+        break;
+      case 'PLACE_ENTITY':
+        if (action.targetSlotId !== itemSlotId(activeRoom(s, pid))) break;
+        this.dropItem(s, pid, action.entityId ?? '', ctx);
+        break;
+      case 'PICK_UP_ITEM':
+        this.pickUpItem(s, pid, action.entityId ?? '', ctx);
+        break;
+      case 'PROPOSE_ITEM_TRADE':
+        this.proposeTrade(s, pid, action, ctx);
+        break;
+      case 'ACCEPT_TRADE':
+        this.acceptTrade(s, pid, ctx);
+        break;
+      case 'REJECT_TRADE':
+        trace(ctx, 'ANNOUNCEMENT', `${s.players[pid]?.name ?? pid} 拒绝交易`, 250);
+        break;
+      case 'ATTACK_PLAYER':
+        this.attackPlayer(s, pid, action, ctx);
+        break;
+      case 'ATTACK_MONSTER':
+        this.attackMonster(s, pid, action, ctx);
+        break;
+      case 'SLAP':
+        this.slap(s, pid, action.targetPlayerId ?? '', ctx);
+        break;
+      case 'ALLOCATE_DAMAGE':
+        this.allocateDamage(s, pid, String(action.payload?.trait ?? ''), ctx);
+        break;
+      case 'SEAL_RITUAL':
+        this.sealRitual(s, pid, ctx);
+        break;
+      case 'SEARCH_BONES':
+        this.searchBones(s, pid, ctx);
+        break;
+      case 'CHANT':
+        this.chant(s, pid, ctx);
+        break;
+      case 'DESTROY_BEACON':
+        this.destroyBeacon(s, pid, ctx);
+        break;
+      case 'PEEK_TOP':
+        s.globalVars.peek = null;
+        trace(ctx, 'ANNOUNCEMENT', '水晶球：将顶牌留在牌堆顶', 300);
+        break;
+      case 'PEEK_BOTTOM': {
+        const peek = s.globalVars.peek as { deck?: string } | null;
+        if (peek?.deck && s.zones[peek.deck]?.orderedEntities.length > 1) {
+          const zone = s.zones[peek.deck];
+          const top = zone.orderedEntities.pop()!;
+          zone.orderedEntities.unshift(top);
+        }
+        s.globalVars.peek = null;
+        trace(ctx, 'ANNOUNCEMENT', '水晶球：将顶牌置于牌堆底', 300);
+        break;
+      }
+      case 'ROLL_HAUNT_CHECK':
+        this.hauntRoll(s, pid, ctx);
+        break;
+      case 'MOVE_NPC':
+        this.moveNpc(s, pid, action.targetNodeId ?? '', ctx);
+        break;
+      case 'ATTACK_HERO':
+        this.npcAttack(s, pid, action.targetPlayerId ?? '', ctx);
+        break;
+      case 'END_NPC_TURN':
+        this.endNpcTurn(s, pid, ctx);
+        break;
+      case 'END_TURN':
+        this.endTurn(s, pid, ctx);
+        break;
+      case 'FROSTBITE':
+        addFrost(s, activeRoom(s, pid));
+        break;
+      default:
+        break;
+    }
+
+    // A dead explorer cannot keep the turn. The kernel has no spectator state,
+    // so the module hands the turn to the next eligible actor immediately.
+    const active = s.players[s.activePlayerId];
+    if (active && !active.alive && !s.gameOver) {
+      this.advanceTurn(s, ctx);
+    }
+
+    return s;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Movement & discovery                                                */
+  /* ------------------------------------------------------------------ */
+
+  private static move(state: GameState, pid: PlayerId, targetRoomId: string, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    const from = activeRoom(state, pid);
+    const room = state.mapGraph.nodes[from];
+    if (!player || !room || !targetRoomId) return;
+    if (!room.neighbors.includes(targetRoomId)) return;
+
+    const cost = movementCost(state, pid, from);
+    const movesLeft = Number(player.customProps.movesLeft ?? 0);
+    if (cost > movesLeft) return;
+
+    player.customProps.movesLeft = movesLeft - cost;
+    movePlayerTo(state, pid, targetRoomId);
+    trace(ctx, 'MOVE_OBJECT', `${player.name} 进入 ${roomName(state, targetRoomId)}`, 320);
+    this.enterRoom(state, pid, targetRoomId, ctx, false);
+  }
+
+  private static explore(
+    state: GameState,
+    pid: PlayerId,
+    dir: 'N' | 'S' | 'E' | 'W',
+    ctx: ReduceContext,
+    rotation?: number
+  ): void {
+    const player = state.players[pid];
+    const from = activeRoom(state, pid);
+    if (!player) return;
+
+    const cost = movementCost(state, pid, from);
+    if (Number(player.customProps.movesLeft ?? 0) < cost) return;
+
+    const candidate = drawRoomCandidate(state, from, dir);
+    if (!candidate) {
+      trace(ctx, 'ANNOUNCEMENT', `房间堆中没有可用的 ${dir} 向板块`, 400);
+      return;
+    }
+
+    // Legacy/test path: caller supplied the orientation explicitly.
+    if (rotation !== undefined) {
+      const placed = placeRoomCandidate(state, candidate, rotation);
+      if (!placed) {
+        trace(ctx, 'ANNOUNCEMENT', '该朝向无法接上入口门', 400);
+        return;
+      }
+      this.finishPlacement(state, pid, placed, cost, candidate.discarded, ctx);
+      return;
+    }
+
+    // Interactive path: draw, expose the valid rotations, wait for PLACE_ROOM.
+    state.globalVars.pendingRoomPlacement = {
+      playerId: pid,
+      fromRoomId: from,
+      dir,
+      tileId: candidate.tileId,
+      defId: candidate.def.id,
+      col: candidate.col,
+      row: candidate.row,
+      rotations: candidate.rotations,
+      discarded: candidate.discarded,
+      cost,
+      name: candidate.def.name,
+      en: candidate.def.en,
+      floor: candidate.def.floor,
+      position: gridToWorld(candidate.def.floor, candidate.col, candidate.row),
+      localDoors: candidate.def.doors,
+      color: FLOOR_META[candidate.def.floor].color
+    };
+    trace(
+      ctx,
+      'CARD_DRAW',
+      `🃏 ${player.name} 抽到「${candidate.def.name}」，请选择房间朝向（${candidate.rotations.length} 种）`,
+      650
+    );
+  }
+
+  /** Complete an explore action after the tile is physically placed. */
+  private static finishPlacement(
+    state: GameState,
+    pid: PlayerId,
+    placed: { def: { name: string }; nodeId: string; connections: number },
+    cost: number,
+    discarded: string[],
+    ctx: ReduceContext
+  ): void {
+    const player = state.players[pid];
+    if (!player) return;
+    player.customProps.movesLeft = Number(player.customProps.movesLeft ?? 1) - cost;
+    movePlayerTo(state, pid, placed.nodeId);
+    trace(
+      ctx,
+      'EXPLORE_ROOM',
+      `🚪 ${player.name} 发现「${placed.def.name}」${discarded.length > 0 ? `（弃置 ${discarded.length} 块不匹配板块）` : ''}${
+        placed.connections > 0 ? ` · 打通 ${placed.connections} 扇相邻门` : ''
+      }`,
+      650
+    );
+    this.enterRoom(state, pid, placed.nodeId, ctx, true);
+  }
+
+  /** Resolve a pending drawn tile once the player picks a rotation. */
+  private static placeDrawnRoom(state: GameState, pid: PlayerId, rotation: number, ctx: ReduceContext): void {
+    const pending = state.globalVars.pendingRoomPlacement as
+      | {
+          playerId: string;
+          fromRoomId: string;
+          dir: 'N' | 'S' | 'E' | 'W';
+          tileId: string;
+          defId: string;
+          col: number;
+          row: number;
+          rotations: number[];
+          discarded: string[];
+          cost: number;
+        }
+      | undefined;
+    if (!pending || pending.playerId !== pid) return;
+    const def = ROOM_DEFS[pending.defId];
+    if (!def) {
+      state.globalVars.pendingRoomPlacement = null;
+      return;
+    }
+    const placed = placeRoomCandidate(
+      state,
+      {
+        def,
+        tileId: pending.tileId,
+        fromRoomId: pending.fromRoomId,
+        dir: pending.dir,
+        col: pending.col,
+        row: pending.row,
+        rotations: pending.rotations,
+        discarded: pending.discarded
+      },
+      rotation
+    );
+    if (!placed) {
+      trace(ctx, 'ANNOUNCEMENT', '该朝向无法接上入口门，请选择其他朝向', 400);
+      return;
+    }
+    state.globalVars.pendingRoomPlacement = null;
+    this.finishPlacement(state, pid, placed, pending.cost, pending.discarded, ctx);
+  }
+
+  /** Room effects, symbol card draw and forced stop. */
+  private static enterRoom(
+    state: GameState,
+    pid: PlayerId,
+    roomId: string,
+    ctx: ReduceContext,
+    justExplored: boolean
+  ): void {
+    const player = state.players[pid];
+    const room = state.mapGraph.nodes[roomId];
+    if (!player || !room) return;
+
+    const traitor = player.role === 'TRAITOR';
+    const special = room.props?.special as string | null;
+    const tags = roomTags(state, roomId);
+
+    if (!traitor) {
+      if (special === 'FURNACE') {
+        damagePlayer(state, pid, 'PHYSICAL', 1);
+        trace(ctx, 'DAMAGE_EFFECT', `${player.name} 被熔炉热浪灼伤（1 点物理伤害）`, 500);
+      }
+      if (special === 'COAL_CHUTE' && !ownsDef(state, pid, 'rope')) {
+        damagePlayer(state, pid, 'PHYSICAL', 1);
+        trace(ctx, 'DAMAGE_EFFECT', `${player.name} 在煤槽中擦伤（1 点物理伤害）`, 400);
+      }
+      if (special === 'COLLAPSED') {
+        const check = rollTraitCheck(state, pid, 'speed', { threshold: 5, reason: 'collapsed room' });
+        trace(ctx, 'DICE_ROLL', `坍塌之室 · 速度检定 ${check.total} vs 5`, 600);
+        if (!check.success) {
+          damagePlayer(state, pid, 'PHYSICAL', 1);
+          if (state.mapGraph.nodes.room_basement_landing) {
+            movePlayerTo(state, pid, 'room_basement_landing');
+          }
+          player.customProps.movesLeft = 0;
+          trace(ctx, 'DAMAGE_EFFECT', `${player.name} 坠入地下室平台（1 点物理伤害）`, 700);
+          return;
+        }
+      }
+      if (tags.includes('pentagram') || tags.includes('crypt') || tags.includes('graveyard')) {
+        if (!ownsDef(state, pid, 'medallion')) {
+          const check = rollTraitCheck(state, pid, 'sanity', { threshold: 4, reason: 'unholy room' });
+          if (!check.success) {
+            damagePlayer(state, pid, 'MENTAL', 1);
+            trace(ctx, 'DAMAGE_EFFECT', `${room.props.name} 的寒气侵蚀 ${player.name}（1 点精神伤害）`, 500);
+          }
+        }
+      }
+    }
+
+    // Beneficial room functions are available to the traitor as well.
+    if (special === 'VAULT' && !room.props?.opened) {
+      const auto = ownsDef(state, pid, 'skeleton_key');
+      const check = auto ? null : rollTraitCheck(state, pid, 'knowledge', { threshold: 6, reason: 'vault' });
+      if (auto || check?.success) {
+        room.props.opened = true;
+        this.drawItems(state, pid, 2, ctx);
+        trace(ctx, 'CARD_DRAW', `${player.name} 打开了金库`, 600);
+      }
+    }
+
+    if (!justExplored || room.props?.resolved) return;
+
+    const symbol = room.props?.symbol as 'EVENT' | 'ITEM' | 'OMEN' | null;
+    if (!symbol) return;
+
+    room.props.resolved = true;
+    player.customProps.movesLeft = 0;
+
+    if (symbol === 'EVENT') {
+      if (traitor) {
+        trace(ctx, 'ANNOUNCEMENT', `${player.name} 是叛徒，不屑于抽事件牌`, 300);
+        return;
+      }
+      if (ownsDef(state, pid, 'candle')) {
+        const candle = rollZeroDice(state.prngState, 1);
+        state.prngState = candle.nextSeed;
+        if (candle.sum === 2) {
+          trace(ctx, 'CARD_DRAW', `🕯️ 蜡烛让事件退散（掷出 2）`, 500);
+          return;
+        }
+      }
+      this.drawEvent(state, pid, roomId, ctx);
+      return;
+    }
+
+    if (symbol === 'ITEM') {
+      this.drawItems(state, pid, 1, ctx);
+      return;
+    }
+
+    this.drawOmen(state, pid, ctx);
+  }
+
+  private static drawEvent(state: GameState, pid: PlayerId, roomId: string, ctx: ReduceContext): void {
+    const card = takeTopCard(state, 'zone_event_deck');
+    if (!card) {
+      trace(ctx, 'ANNOUNCEMENT', '事件牌堆已空', 300);
+      return;
+    }
+    const defId = cardDef(card);
+    const def = EVENT_DEFS[defId];
+    discardCard(state, card.id, 'zone_event_discard');
+    if (!def) return;
+
+    const player = state.players[pid];
+    trace(ctx, 'CARD_DRAW', `🎴 ${player.name} 抽到事件「${def.name}」`, 700);
+
+    if (!def.check) {
+      const band = def.bands[0];
+      this.applyEventEffects(state, pid, roomId, band.effects, ctx);
+      trace(ctx, 'ANNOUNCEMENT', band.text, 600);
+      return;
+    }
+
+    const successThreshold = def.bands.length > 1 ? def.bands[def.bands.length - 1].min : 0;
+    const check = rollTraitCheck(state, pid, def.check, { threshold: successThreshold, reason: def.name });
+    trace(
+      ctx,
+      'DICE_ROLL',
+      `${def.name} · ${TRAIT_META[def.check].zh}检定 [${check.dice.join('+')}] = ${check.total}`,
+      700
+    );
+    const band = def.bands.find(entry => check.total >= entry.min && check.total <= entry.max) ?? def.bands[def.bands.length - 1];
+    this.applyEventEffects(state, pid, roomId, band.effects, ctx);
+    trace(ctx, 'ANNOUNCEMENT', band.text, 700);
+  }
+
+  private static applyEventEffects(
+    state: GameState,
+    pid: PlayerId,
+    roomId: string,
+    effects: EventEffect[],
+    ctx: ReduceContext
+  ): void {
+    for (const effect of effects) {
+      switch (effect.kind) {
+        case 'TRAIT':
+          applyTraitSteps(state, pid, effect.trait, effect.amount, { force: true });
+          break;
+        case 'DRAW_ITEM':
+          this.drawItems(state, pid, effect.count, ctx);
+          break;
+        case 'DRAW_OMEN':
+          this.drawOmen(state, pid, ctx);
+          break;
+        case 'ATTACK': {
+          const attack = rollZeroDice(state.prngState, effect.dice);
+          state.prngState = attack.nextSeed;
+          const defense = rollZeroDice(state.prngState, Math.max(1, traitValue(state.players[pid], 'might')));
+          state.prngState = defense.nextSeed;
+          const damage = Math.max(0, attack.sum - defense.sum);
+          if (damage > 0) damagePlayer(state, pid, effect.damage, damage);
+          trace(ctx, 'DICE_ROLL', `袭击 [${attack.rolls.join('+')}]=${attack.sum} vs 防御 ${defense.sum}`, 600);
+          break;
+        }
+        case 'TO_BASEMENT': {
+          if (state.mapGraph.nodes.room_basement_landing) {
+            movePlayerTo(state, pid, 'room_basement_landing');
+            state.players[pid].customProps.movesLeft = 0;
+            if (effect.damage > 0) damagePlayer(state, pid, 'PHYSICAL', effect.damage);
+          }
+          break;
+        }
+        case 'TO_RANDOM_ROOM': {
+          const target = randomRoom(state);
+          if (target) {
+            movePlayerTo(state, pid, target);
+            state.players[pid].customProps.movesLeft = 0;
+          }
+          break;
+        }
+        case 'SECRET_PASSAGE': {
+          const candidates = exploredRooms(state).filter(id => id !== roomId);
+          if (candidates.length > 0) {
+            const roll = DeterministicPRNG.nextInt(state.prngState, 0, candidates.length - 1);
+            state.prngState = roll.nextSeed;
+            const edgeId = `edge_${roomId}_${candidates[roll.value]}`;
+            if (!state.mapGraph.edges[edgeId]) {
+              const from = state.mapGraph.nodes[roomId];
+              const to = state.mapGraph.nodes[candidates[roll.value]];
+              if (from && to) {
+                from.neighbors.push(to.id);
+                to.neighbors.push(from.id);
+                state.mapGraph.edges[edgeId] = {
+                  id: edgeId,
+                  from: from.id,
+                  to: to.id,
+                  type: 'SECRET_PASSAGE',
+                  props: { label: '密道' }
+                };
+              }
+            }
+          }
+          break;
+        }
+        case 'DROP_ITEM': {
+          const item = handEntities(state, pid).find(entity => tradeable(entity) && !entity.components.custom?.companion);
+          if (item) this.dropItem(state, pid, item.id, ctx);
+          break;
+        }
+        case 'ONGOING': {
+          const player = state.players[pid];
+          const effects = new Set<string>(player.customProps.effects ?? []);
+          effects.add(effect.effect);
+          player.customProps.effects = [...effects];
+          break;
+        }
+        case 'NOTHING':
+          break;
+      }
+    }
+  }
+
+  private static drawItems(state: GameState, pid: PlayerId, count: number, ctx: ReduceContext): void {
+    for (let i = 0; i < count; i++) {
+      const card = drawCardTo(state, 'zone_item_deck', `zone_hand_${pid}`, { type: 'PUBLIC' });
+      if (!card) return;
+      const defId = cardDef(card);
+      card.ownerId = pid;
+      applyItemGain(state, pid, defId);
+      trace(ctx, 'CARD_DRAW', `🎁 ${state.players[pid].name} 获得物品「${itemLabel(card)}」`, 450);
+    }
+    this.updateResonanceFor(state, pid);
+  }
+
+  private static drawOmen(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const card = drawCardTo(state, 'zone_omen_deck', `zone_hand_${pid}`, { type: 'PUBLIC' });
+    if (!card) return;
+    const defId = cardDef(card);
+    const def = OMEN_DEFS[defId];
+    card.ownerId = pid;
+
+    state.globalVars.omensRevealed = Number(state.globalVars.omensRevealed ?? 0) + 1;
+    state.globalVars.omenNames = [...(state.globalVars.omenNames ?? []), def?.name ?? defId];
+    applyOmenGain(state, pid, defId);
+    this.updateResonanceFor(state, pid);
+
+    trace(ctx, 'CARD_DRAW', `🕯️ ${state.players[pid].name} 抽到预兆「${def?.name ?? defId}」（第 ${state.globalVars.omensRevealed} 张）`, 700);
+
+    if (def?.onDrawAttack) {
+      const attack = rollZeroDice(state.prngState, def.onDrawAttack.dice);
+      state.prngState = attack.nextSeed;
+      const defense = rollZeroDice(state.prngState, Math.max(1, traitValue(state.players[pid], 'might')));
+      state.prngState = defense.nextSeed;
+      const damage = Math.max(0, attack.sum - defense.sum);
+      if (damage > 0) damagePlayer(state, pid, 'PHYSICAL', damage, 'might');
+      trace(
+        ctx,
+        'DICE_ROLL',
+        `噬咬袭击 [${attack.rolls.join('+')}]=${attack.sum} vs 力量防御 ${defense.sum} → ${damage} 伤害`,
+        700
+      );
+    }
+
+    state.globalVars.pendingHauntRoll = { playerId: pid, omens: state.globalVars.omensRevealed };
+  }
+
+  private static updateResonanceFor(state: GameState, pid: PlayerId): void {
+    const complete =
+      ownsDef(state, pid, 'bell') && ownsDef(state, pid, 'book') && ownsDef(state, pid, 'candle');
+    const player = state.players[pid];
+    if (!player || complete === !!player.customProps.resonance) return;
+    player.customProps.resonance = complete;
+    for (const trait of TRAIT_KEYS) {
+      const result = applyTraitSteps(state, pid, trait, complete ? 2 : -2, { force: true });
+      if (result.dead) {
+        killPlayer(state, pid);
+        return;
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Cards & items                                                       */
+  /* ------------------------------------------------------------------ */
+
+  private static dropItem(state: GameState, pid: PlayerId, entityId: string, ctx: ReduceContext): void {
+    const entity = state.entities[entityId];
+    const player = state.players[pid];
+    if (!entity || !player) return;
+    if (!handEntities(state, pid).some(item => item.id === entityId)) return;
+    if (!tradeable(entity) || entity.components.custom?.companion) return;
+
+    // The destination is owned by the game module: the discard must land in
+    // the actor's current room, never in a client/renderer-selected room.
+    const roomId = activeRoom(state, pid);
+    const room = state.mapGraph.nodes[roomId];
+    if (!roomId || !room) return;
+
+    // Validate/commit the slot before applying item loss. If placement fails,
+    // the card must remain in hand with its owner and inventory untouched.
+    const zone = ensureRoomZone(state, roomId);
+    const placed = OccupancyIndex.place(state, entityId, itemSlotId(roomId));
+    if (!placed.ok) return;
+    state.entities = placed.state.entities;
+
+    const defId = cardDef(entity);
+    applyItemLoss(state, pid, defId);
+    applyOmenLoss(state, pid, defId);
+    const detached = state.entities[entityId];
+    if (!detached) return;
+    detached.ownerId = undefined;
+    detached.visibility = { type: 'PUBLIC' };
+    const next = ECSManager.moveEntity(state, entityId, zone.id);
+    state.entities = next.entities;
+    state.zones = next.zones;
+    this.updateResonanceFor(state, pid);
+    trace(ctx, 'CARD_DISCARD', `${player.name} 丢下「${itemLabel(entity)}」`, 350);
+  }
+
+  private static pickUpItem(state: GameState, pid: PlayerId, entityId: string, ctx: ReduceContext): void {
+    const entity = state.entities[entityId];
+    const player = state.players[pid];
+    if (!entity || !player) return;
+    if (entity.zoneId !== `zone_room_${activeRoom(state, pid)}`) return;
+
+    const defId = cardDef(entity);
+    entity.ownerId = pid;
+    const hand = state.zones[`zone_hand_${pid}`];
+    if (!hand) return;
+    const cleared = OccupancyIndex.remove(state, entityId);
+    state.entities = cleared.entities;
+    const next = ECSManager.moveEntity(state, entityId, hand.id);
+    state.entities = next.entities;
+    state.zones = next.zones;
+    applyItemGain(state, pid, defId);
+    applyOmenGain(state, pid, defId);
+    this.updateResonanceFor(state, pid);
+    trace(ctx, 'TOKEN_TRANSFER', `${player.name} 捡起「${itemLabel(entity)}」`, 350);
+  }
+
+  private static useItem(state: GameState, pid: PlayerId, entityId: string, action: Action, ctx: ReduceContext): void {
+    const entity = state.entities[entityId];
+    const player = state.players[pid];
+    if (!entity || !player) return;
+    if (!handEntities(state, pid).some(item => item.id === entityId)) return;
+
+    const defId = cardDef(entity);
+    const item = ITEM_DEFS[defId];
+    const omen = OMEN_DEFS[defId];
+    const def = item ?? omen;
+    if (!def) return;
+    if (usedThisTurn(state, pid, defId)) return;
+
+    const roomId = activeRoom(state, pid);
+
+    switch (defId) {
+      case 'dog': {
+        // Dog fetches one item pile card within six graph steps.
+        const target = this.findDogFetchTarget(state, pid);
+        if (!target) {
+          trace(ctx, 'ANNOUNCEMENT', '脏狗找不到可带回的物品', 300);
+          return;
+        }
+        const hand = state.zones[`zone_hand_${pid}`];
+        if (!hand) return;
+        target.ownerId = pid;
+            const next = ECSManager.moveEntity(state, target.id, hand.id);
+        state.entities = next.entities;
+        state.zones = next.zones;
+        applyItemGain(state, pid, cardDef(target));
+        markUsed(state, pid, defId);
+        trace(ctx, 'TOKEN_TRANSFER', `🐕 脏狗带回「${itemLabel(target)}」`, 500);
+        break;
+      }
+      case 'adrenaline_shot': {
+        const mode = String(action.payload?.mode ?? 'check');
+        if (mode === 'move') {
+          player.customProps.movesLeft = Number(player.customProps.movesLeft ?? 0) + 4;
+          trace(ctx, 'ANNOUNCEMENT', `${player.name} 注射肾上腺素，移动力 +4`, 400);
+        } else {
+          player.customProps.checkBonus = Number(player.customProps.checkBonus ?? 0) + 4;
+          trace(ctx, 'ANNOUNCEMENT', `${player.name} 注射肾上腺素，下次检定 +4`, 400);
+        }
+        this.consume(state, pid, entityId, ctx);
+        break;
+      }
+      case 'angel_feather': {
+        const value = Math.max(0, Math.min(8, Number(action.payload?.value ?? 8)));
+        player.customProps.forcedRoll = { value };
+        trace(ctx, 'ANNOUNCEMENT', `${player.name} 使用天使羽毛，指定下次掷骰为 ${value}`, 400);
+        this.consume(state, pid, entityId, ctx);
+        break;
+      }
+      case 'bell': {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 5, reason: 'bell' });
+        if (check.success) {
+          const monsters = monstersInRoom(state, roomId);
+          for (const monster of monsters) {
+            const options = state.mapGraph.nodes[roomId]?.neighbors ?? [];
+            if (options.length > 0) {
+              const roll = DeterministicPRNG.nextInt(state.prngState, 0, options.length - 1);
+              state.prngState = roll.nextSeed;
+              moveMonster(state, monster.id, options[roll.value]);
+            }
+          }
+          trace(ctx, 'MOVE_OBJECT', `🔔 法铃驱使 ${monsters.length} 只怪物离开房间`, 500);
+        } else {
+          trace(ctx, 'ANNOUNCEMENT', '法铃没有回应', 300);
+        }
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'bottle': {
+        if (!state.globalVars.hauntTriggered) {
+          trace(ctx, 'ANNOUNCEMENT', '黑液药瓶只有在作祟开始后才能饮用', 300);
+          return;
+        }
+        const roll = rollZeroDice(state.prngState, 3);
+        state.prngState = roll.nextSeed;
+        trace(ctx, 'DICE_ROLL', `黑液药瓶 [${roll.rolls.join('+')}] = ${roll.sum}`, 600);
+        if (roll.sum >= 6) {
+          const target = randomRoom(state);
+          if (target) movePlayerTo(state, pid, target);
+          trace(ctx, 'MOVE_OBJECT', `${player.name} 被黑液传送到 ${roomName(state, activeRoom(state, pid))}`, 500);
+        } else if (roll.sum === 5) {
+          applyTraitSteps(state, pid, 'might', 2, { force: true });
+          applyTraitSteps(state, pid, 'speed', 2, { force: true });
+        } else if (roll.sum === 4) {
+          applyTraitSteps(state, pid, 'knowledge', 2, { force: true });
+          applyTraitSteps(state, pid, 'sanity', 2, { force: true });
+        } else if (roll.sum >= 1) {
+          damagePlayer(state, pid, 'PHYSICAL', 1);
+        } else {
+          for (const trait of TRAIT_KEYS) {
+            const track = player.customProps.tracks[trait] as number[];
+            const min = state.globalVars.hauntTriggered ? 0 : 1;
+            player.customProps.traitIndex[trait] = min;
+            player.customProps.traits[trait] = track[min];
+          }
+          this.checkDeath(state, pid);
+        }
+        this.consume(state, pid, entityId, ctx);
+        break;
+      }
+      case 'crystal_ball': {
+        const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 4, reason: 'crystal ball' });
+        if (check.total >= 4) {
+          const requested = String(action.payload?.deck ?? 'zone_event_deck');
+          const peekDeck = requested === 'zone_item_deck' ? 'zone_item_deck' : 'zone_event_deck';
+          const top = takeTopCard(state, peekDeck);
+          state.globalVars.peek = { deck: peekDeck, title: top ? itemLabel(top) : '空', ownerId: pid };
+          const opened = openDecision(
+            state,
+            {
+              kind: 'SIMULTANEOUS',
+              title: '水晶球的窥视',
+              description: '将牌堆顶牌留在原处，或移至牌堆底。',
+              participants: [pid],
+              secret: false,
+              policy: { type: 'ALL_COMMITTED' },
+              payload: { kind: 'peek', deck: peekDeck }
+            },
+            ctx.id('peek')
+          );
+          state.pendingDecisions = opened.state.pendingDecisions;
+          trace(ctx, 'ANNOUNCEMENT', `🔮 水晶球映出：「${state.globalVars.peek.title}」`, 600);
+        } else if (check.total === 0) {
+          damagePlayer(state, pid, 'MENTAL', 2);
+        } else {
+          damagePlayer(state, pid, 'MENTAL', 1);
+        }
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'dark_dice': {
+        const roll = rollZeroDice(state.prngState, 3);
+        state.prngState = roll.nextSeed;
+        if (roll.sum >= 4) {
+          applyTraitSteps(state, pid, 'might', 1, { force: true });
+          trace(ctx, 'DICE_ROLL', `黑暗骰子 [${roll.rolls.join('+')}] = ${roll.sum}：力量 +1`, 500);
+        } else {
+          damagePlayer(state, pid, 'MENTAL', 1);
+          trace(ctx, 'DICE_ROLL', `黑暗骰子 [${roll.rolls.join('+')}] = ${roll.sum}：神智 -1`, 500);
+        }
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'skull': {
+        const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 5, reason: 'skull' });
+        if (check.success) {
+          applyTraitSteps(state, pid, 'knowledge', 1, { force: true });
+          trace(ctx, 'ANNOUNCEMENT', '💀 头骨中的亡魂低声说出知识', 400);
+        }
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'spirit_board': {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 5, reason: 'spirit board' });
+        if (check.success) {
+          player.customProps.movesLeft = Number(player.customProps.movesLeft ?? 0) + 4;
+          const haunt = currentHaunt(state);
+          const hint = haunt ? `叛徒的目标：${HAUNT_DEFS[haunt.id]?.traitorObjective ?? '未知'}` : '亡灵指出了尚未被发现的房间。';
+          trace(ctx, 'ANNOUNCEMENT', `🪦 通灵板：${hint}（本回合移动 +4）`, 700);
+        }
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'dynamite': {
+        const targetRoom = String(action.payload?.targetRoom ?? '');
+        if (!state.mapGraph.nodes[targetRoom]) return;
+        const blast = rollZeroDice(state.prngState, 3);
+        state.prngState = blast.nextSeed;
+        for (const occupant of playersInRoom(state, targetRoom)) {
+          damagePlayer(state, occupant, 'PHYSICAL', blast.sum);
+        }
+        for (const monster of monstersInRoom(state, targetRoom)) {
+          this.stunMonster(state, monster);
+        }
+        trace(ctx, 'DAMAGE_EFFECT', `💥 炸药在 ${roomName(state, targetRoom)} 爆炸（${blast.sum} 点物理伤害）`, 800);
+        this.consume(state, pid, entityId, ctx);
+        break;
+      }
+      case 'healing_salve': {
+        const trait = (action.payload?.trait as TraitKey) ?? 'might';
+        this.healToGreen(state, pid, trait);
+        const charges = Number(entity.components.custom?.charges ?? 2) - 1;
+        entity.components.custom = { ...(entity.components.custom ?? {}), charges };
+        trace(ctx, 'ANNOUNCEMENT', `${player.name} 使用治疗药膏（剩余 ${charges} 次）`, 350);
+        if (charges <= 0) this.consume(state, pid, entityId, ctx);
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'medical_kit': {
+        const target = String(action.payload?.target ?? pid);
+        if (target !== pid && activeRoom(state, target) !== roomId) return;
+        if (!state.players[target]?.alive) return;
+        const check = rollTraitCheck(state, pid, 'knowledge', { reason: 'medical kit' });
+        const heal = check.total >= 6 ? 3 : check.total >= 4 ? 2 : check.total >= 2 ? 1 : 0;
+        if (heal > 0) {
+          for (let i = 0; i < heal; i++) this.healToGreen(state, target, 'might');
+        }
+        trace(ctx, 'ANNOUNCEMENT', `医疗包：知识检定 ${check.total}，恢复 ${heal} 点肉体`, 500);
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'music_box': {
+        for (const otherId of playersInRoom(state, roomId, pid)) {
+          if (traitValue(state.players[otherId], 'sanity') < 4) {
+            state.players[otherId].customProps.movesLeft = 0;
+            state.players[otherId].customProps.attacksLeft = 0;
+            state.players[otherId].customProps.skipActions = true;
+          }
+        }
+        trace(ctx, 'ANNOUNCEMENT', '🎵 八音盒的旋律让神智薄弱者僵立原地', 600);
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'puzzle_box': {
+        const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 6, reason: 'puzzle box' });
+        if (check.success) {
+          this.drawItems(state, pid, 2, ctx);
+          this.consume(state, pid, entityId, ctx);
+        }
+        trace(ctx, 'DICE_ROLL', `机关盒：知识检定 ${check.total} vs 6`, 500);
+        markUsed(state, pid, defId);
+        break;
+      }
+      case 'smelling_salts': {
+        const trait = (action.payload?.trait as TraitKey) ?? 'sanity';
+        this.healToGreen(state, pid, trait);
+        trace(ctx, 'ANNOUNCEMENT', `${player.name} 使用嗅盐恢复 ${TRAIT_META[trait].zh}`, 350);
+        this.consume(state, pid, entityId, ctx);
+        break;
+      }
+      case 'mask': {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 4, reason: 'mask' });
+        if (check.success) {
+          player.customProps.maskWorn = !player.customProps.maskWorn;
+          trace(ctx, 'ANNOUNCEMENT', `面具${player.customProps.maskWorn ? '戴上' : '摘下'}了`, 400);
+        } else {
+          damagePlayer(state, pid, 'MENTAL', 1);
+        }
+        markUsed(state, pid, defId);
+        break;
+      }
+      default:
+        trace(ctx, 'ANNOUNCEMENT', `「${def.name}」没有可主动使用的效果`, 300);
+        break;
+    }
+  }
+
+  private static findDogFetchTarget(state: GameState, pid: PlayerId): Entity | null {
+    const origin = activeRoom(state, pid);
+    const distance = graphDistances(state, origin);
+    const candidates = Object.values(state.entities).filter(entity => {
+      if (!entity.zoneId.startsWith('zone_room_')) return false;
+      const roomId = entity.zoneId.replace('zone_room_', '');
+      const steps = distance.get(roomId);
+      if (steps === undefined || steps > 6) return false;
+      return true;
+    });
+    return candidates[0] ?? null;
+  }
+
+  private static consume(state: GameState, pid: PlayerId, entityId: string, ctx: ReduceContext): void {
+    discardCard(state, entityId, 'zone_item_discard');
+    trace(ctx, 'CARD_DISCARD', `${state.players[pid]?.name ?? pid} 消耗了「${itemLabel(state.entities[entityId])}」`, 300);
+  }
+
+  private static checkDeath(state: GameState, pid: PlayerId): void {
+    if (!state.globalVars.hauntTriggered) return;
+    const player = state.players[pid];
+    if (!player) return;
+    if (TRAIT_KEYS.some(trait => traitIndex(player, trait) === 0)) {
+      killPlayer(state, pid);
+    }
+  }
+
+  private static healToGreen(state: GameState, pid: PlayerId, trait: TraitKey): void {
+    const player = state.players[pid];
+    if (!player) return;
+    const target = Number(player.customProps.startIndex?.[trait] ?? 0);
+    const current = traitIndex(player, trait);
+    if (target > current) applyTraitSteps(state, pid, trait, target - current);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Trade                                                               */
+  /* ------------------------------------------------------------------ */
+
+  private static proposeTrade(state: GameState, pid: PlayerId, action: Action, ctx: ReduceContext): void {
+    const giveEntityId = String(action.payload?.give ?? '');
+    const wantEntityId = String(action.payload?.want ?? '');
+    const give = state.entities[giveEntityId];
+    const player = state.players[pid];
+    if (!give || !player || !handEntities(state, pid).some(entity => entity.id === giveEntityId)) return;
+    if (!tradeable(give) || give.components.custom?.companion) return;
+
+    if (wantEntityId) {
+      const want = state.entities[wantEntityId];
+      if (!want || !want.ownerId || want.ownerId === pid) return;
+      if (!tradeable(want) || want.components.custom?.companion) return;
+      if (state.players[want.ownerId]?.customProps.currentRoomId !== activeRoom(state, pid)) return;
+    }
+
+    const participants = playersInRoom(state, activeRoom(state, pid), pid);
+    if (participants.length === 0) return;
+
+    state.globalVars.tradeOffer = { from: pid, giveEntityId, wantEntityId };
+    const opened = openDecision(
+      state,
+      {
+        kind: 'VOTE',
+        title: `${player.name} 提出交易`,
+        description: '同房间玩家中第一个接受者成交；无人接受则交易搁置。',
+        participants,
+        secret: false,
+        policy: { type: 'FIRST_ACCEPT', acceptTypes: ['ACCEPT_TRADE'] },
+        payload: { kind: 'trade' }
+      },
+      ctx.id('trade')
+    );
+    state.pendingDecisions = opened.state.pendingDecisions;
+    trace(ctx, 'ANNOUNCEMENT', `${player.name} 拿出「${itemLabel(give)}」提出交易`, 450);
+  }
+
+  private static acceptTrade(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const offer = state.globalVars.tradeOffer as
+      | { from: PlayerId; giveEntityId: string; wantEntityId: string }
+      | null
+      | undefined;
+    if (!offer) return;
+    const giveaway = state.entities[offer.giveEntityId];
+    const wanted = offer.wantEntityId ? state.entities[offer.wantEntityId] : null;
+    if (!giveaway) return;
+    const accepter = state.players[pid];
+    const proposer = state.players[offer.from];
+    if (!accepter || !proposer) return;
+
+    const proposerHand = state.zones[`zone_hand_${offer.from}`];
+    const accepterHand = state.zones[`zone_hand_${pid}`];
+    if (!proposerHand || !accepterHand) return;
+
+    applyItemLoss(state, offer.from, cardDef(giveaway));
+    applyOmenLoss(state, offer.from, cardDef(giveaway));
+    giveaway.ownerId = pid;
+    let next = ECSManager.moveEntity(state, giveaway.id, accepterHand.id);
+    state.entities = next.entities;
+    state.zones = next.zones;
+    applyItemGain(state, pid, cardDef(giveaway));
+    applyOmenGain(state, pid, cardDef(giveaway));
+
+    if (wanted && wanted.ownerId === pid) {
+      applyItemLoss(state, pid, cardDef(wanted));
+      applyOmenLoss(state, pid, cardDef(wanted));
+      wanted.ownerId = offer.from;
+      next = ECSManager.moveEntity(state, wanted.id, proposerHand.id);
+      state.entities = next.entities;
+      state.zones = next.zones;
+      applyItemGain(state, offer.from, cardDef(wanted));
+      applyOmenGain(state, offer.from, cardDef(wanted));
+    }
+
+    this.updateResonanceFor(state, pid);
+    this.updateResonanceFor(state, offer.from);
+    state.globalVars.tradeOffer = null;
+    trace(
+      ctx,
+      'TOKEN_TRANSFER',
+      `${accepter.name} 接受了 ${proposer.name} 的交易${wanted ? `（换出「${itemLabel(wanted)}」）` : ''}`,
+      500
+    );
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Combat                                                              */
+  /* ------------------------------------------------------------------ */
+
+  private static attackPlayer(state: GameState, pid: PlayerId, action: Action, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    const targetId = action.targetPlayerId ?? '';
+    const target = state.players[targetId];
+    if (!player || !target || !target.alive) return;
+    if (Number(player.customProps.attacksLeft ?? 0) <= 0) return;
+
+    const weaponId = String(action.payload?.weapon ?? 'fists');
+    const spec = WEAPON_SPECS[weaponId] ?? WEAPON_SPECS.fists;
+    const sameRoom = activeRoom(state, pid) === activeRoom(state, targetId);
+    const rangedLine = !!spec.ranged && sameFloorLine(state, activeRoom(state, pid), activeRoom(state, targetId));
+    if (!sameRoom && !rangedLine) return;
+
+    let dice = attackDiceFor(player, weaponId);
+    const attackRoll = rollZeroDice(state.prngState, dice);
+    state.prngState = attackRoll.nextSeed;
+
+    const defenseTrait: TraitKey = spec.mental ? 'sanity' : 'might';
+    const defenseDice = Math.max(1, traitValue(target, defenseTrait));
+    const defenseRoll = rollZeroDice(state.prngState, defenseDice);
+    state.prngState = defenseRoll.nextSeed;
+
+    player.customProps.attacksLeft = Math.max(0, Number(player.customProps.attacksLeft ?? 1) - 1);
+    this.payWeaponCost(state, pid, weaponId, ctx);
+
+    trace(
+      ctx,
+      'DICE_ROLL',
+      `${player.name} 用${spec.name}攻击 ${target.name} · [${attackRoll.rolls.join('+')}]=${attackRoll.sum} vs [${defenseRoll.rolls.join('+')}]=${defenseRoll.sum}`,
+      750
+    );
+
+    const diff = attackRoll.sum - defenseRoll.sum;
+    if (diff > 0) {
+      const steal = String(action.payload?.steal ?? 'no') === 'yes';
+      if (steal && diff >= 2 && hasTradeableItem(state, targetId)) {
+        this.stealItem(state, pid, targetId, ctx);
+        return;
+      }
+      this.openDamageWindow(state, targetId, diff, spec.mental ? 'MENTAL' : 'PHYSICAL', ctx, player.name);
+      if (weaponId === 'blood_dagger') applyTraitSteps(state, pid, 'speed', -1);
+    } else if (diff < 0) {
+      if (spec.ranged) {
+        trace(ctx, 'ANNOUNCEMENT', `${target.name} 反击落空——远程攻击不受反伤`, 350);
+        return;
+      }
+      damagePlayer(state, pid, spec.mental ? 'MENTAL' : 'PHYSICAL', -diff);
+      trace(ctx, 'DAMAGE_EFFECT', `${target.name} 反击 ${player.name}，造成 ${-diff} 点伤害`, 600);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', '双方势均力敌，无人受伤', 300);
+    }
+  }
+
+  private static attackMonster(state: GameState, pid: PlayerId, action: Action, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    const monster = state.entities[action.entityId ?? ''];
+    if (!player || !monster || !monster.components.custom?.monster) return;
+    if (monster.components.custom.destroyed) return;
+    if (Number(player.customProps.attacksLeft ?? 0) <= 0) return;
+    if (monster.components.custom.stunned) {
+      if (monster.components.custom.monster === 'EYE') {
+        player.customProps.attacksLeft = Math.max(0, Number(player.customProps.attacksLeft ?? 1) - 1);
+        this.hitMonster(state, monster, ctx);
+      } else {
+        trace(ctx, 'ANNOUNCEMENT', `${monster.components.custom.name} 已被击晕，无法再次攻击`, 300);
+      }
+      return;
+    }
+
+    const weaponId = String(action.payload?.weapon ?? 'fists');
+    const spec = WEAPON_SPECS[weaponId] ?? WEAPON_SPECS.fists;
+    const monsterRoom = String(monster.components.custom.roomId ?? '');
+    const sameRoom = monsterRoom === activeRoom(state, pid);
+    const rangedLine = !!spec.ranged && sameFloorLine(state, activeRoom(state, pid), monsterRoom);
+    if (!sameRoom && !rangedLine) return;
+
+    const attackRoll = rollZeroDice(state.prngState, attackDiceFor(player, weaponId));
+    state.prngState = attackRoll.nextSeed;
+
+    const stats = monsterStats(monster);
+    const penalty = Number(action.payload?.monsterMightPenalty ?? 0);
+    const defenseTrait: TraitKey = spec.mental ? 'sanity' : 'might';
+    const defenseValue = Math.max(1, (spec.mental ? stats.sanity : stats.might) - penalty);
+    const defenseRoll = rollZeroDice(state.prngState, defenseValue);
+    state.prngState = defenseRoll.nextSeed;
+
+    player.customProps.attacksLeft = Math.max(0, Number(player.customProps.attacksLeft ?? 1) - 1);
+    this.payWeaponCost(state, pid, weaponId, ctx);
+
+    const diff = attackRoll.sum - defenseRoll.sum;
+    trace(
+      ctx,
+      'DICE_ROLL',
+      `${player.name} 攻击 ${monster.components.custom.name} · [${attackRoll.rolls.join('+')}]=${attackRoll.sum} vs [${defenseRoll.rolls.join('+')}]=${defenseRoll.sum}`,
+      750
+    );
+
+    if (diff > 0) {
+      if (monster.components.custom.immunePhysical && !spec.mental) {
+        trace(ctx, 'ANNOUNCEMENT', `${monster.components.custom.name} 是虚体，物理武器穿身而过`, 450);
+        return;
+      }
+      this.hitMonster(state, monster, ctx);
+    } else if (diff < 0) {
+      if (spec.ranged) {
+        trace(ctx, 'ANNOUNCEMENT', '远程攻击失败，怪物无法反击', 300);
+        return;
+      }
+      damagePlayer(state, pid, monster.components.custom.attack === 'MENTAL' ? 'MENTAL' : 'PHYSICAL', -diff);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', '攻击被挡下', 300);
+    }
+  }
+
+  private static hitMonster(state: GameState, monster: Entity, ctx: ReduceContext): void {
+    const custom = monster.components.custom ?? {};
+    if (custom.monster === 'EYE' && custom.stunned) {
+      custom.destroyed = true;
+      custom.stunned = false;
+      const npc = Object.values(state.npcs ?? {}).find(entry => entry.entityId === monster.id);
+      if (npc) npc.status = 'ELIMINATED';
+      const haunt = currentHaunt(state);
+      if (haunt) haunt.eyesDestroyed = Number(haunt.eyesDestroyed ?? 0) + 1;
+      trace(ctx, 'DAMAGE_EFFECT', `💥 巨眼的晶状体碎裂，被彻底摧毁`, 900);
+      if (haunt && Number(haunt.eyesDestroyed) >= 2) {
+        trace(ctx, 'RULE_MUTATE', '所有巨眼已被摧毁，飞船信标暴露！', 900);
+      }
+      return;
+    }
+    this.stunMonster(state, monster);
+  }
+
+  private static stunMonster(state: GameState, monster: Entity): void {
+    monster.components.custom = {
+      ...(monster.components.custom ?? {}),
+      stunned: true,
+      stunTurns: monster.components.custom?.monster === 'EYE' ? 2 : 1
+    };
+    traceIdle(state, `${monster.components.custom.name} 被击晕，翻面`);
+  }
+
+  private static stealItem(state: GameState, thiefId: PlayerId, victimId: PlayerId, ctx: ReduceContext): void {
+    const candidates = handEntities(state, victimId).filter(
+      entity => tradeable(entity) && !entity.components.custom?.companion && entity.components.custom?.stealable !== false
+    );
+    if (candidates.length === 0) return;
+    const roll = DeterministicPRNG.nextInt(state.prngState, 0, candidates.length - 1);
+    state.prngState = roll.nextSeed;
+    const stolen = candidates[roll.value];
+    const thiefHand = state.zones[`zone_hand_${thiefId}`];
+    if (!thiefHand) return;
+
+    applyItemLoss(state, victimId, cardDef(stolen));
+    applyOmenLoss(state, victimId, cardDef(stolen));
+    stolen.ownerId = thiefId;
+    const next = ECSManager.moveEntity(state, stolen.id, thiefHand.id);
+    state.entities = next.entities;
+    state.zones = next.zones;
+    applyItemGain(state, thiefId, cardDef(stolen));
+    applyOmenGain(state, thiefId, cardDef(stolen));
+    this.updateResonanceFor(state, thiefId);
+    this.updateResonanceFor(state, victimId);
+    trace(ctx, 'TOKEN_TRANSFER', `🩸 ${state.players[thiefId].name} 抢走了「${itemLabel(stolen)}」`, 500);
+  }
+
+  private static payWeaponCost(state: GameState, pid: PlayerId, weaponId: string, ctx: ReduceContext): void {
+    const spec = WEAPON_SPECS[weaponId];
+    if (!spec) return;
+    if (spec.requiresSanityCheck) {
+      const check = rollTraitCheck(state, pid, 'sanity', { threshold: spec.requiresSanityCheck, reason: '献祭匕首' });
+      if (!check.success) {
+        damagePlayer(state, pid, 'MENTAL', 1);
+        trace(ctx, 'DAMAGE_EFFECT', '献祭匕首吸取了使用者的神智（-1）', 400);
+      }
+    }
+    if (spec.selfCost) {
+      applyTraitSteps(state, pid, spec.selfCost.trait, spec.selfCost.amount);
+    }
+  }
+
+  private static slap(state: GameState, pid: PlayerId, targetId: string, ctx: ReduceContext): void {
+    const target = state.players[targetId];
+    const player = state.players[pid];
+    if (!target || !player || !target.customProps.controlled) return;
+    if (Number(player.customProps.attacksLeft ?? 0) <= 0) return;
+
+    const attack = rollZeroDice(state.prngState, Math.max(1, traitValue(player, 'might')));
+    state.prngState = attack.nextSeed;
+    const defense = rollZeroDice(state.prngState, Math.max(1, traitValue(target, 'might')));
+    state.prngState = defense.nextSeed;
+    player.customProps.attacksLeft = Math.max(0, Number(player.customProps.attacksLeft ?? 1) - 1);
+
+    if (attack.sum > defense.sum) {
+      target.customProps.controlled = false;
+      target.customProps.immuneMindControl = true;
+      trace(ctx, 'ANNOUNCEMENT', `👋 ${player.name} 一巴掌打醒了 ${target.name}，其永久免疫心智控制`, 700);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', `${player.name} 没能唤醒 ${target.name}`, 400);
+    }
+  }
+
+  private static openDamageWindow(
+    state: GameState,
+    playerId: PlayerId,
+    amount: number,
+    kind: 'PHYSICAL' | 'MENTAL',
+    ctx: ReduceContext,
+    source: string
+  ): void {
+    state.globalVars.pendingDamage = { playerId, amount, kind, source };
+    const opened = openDecision(
+      state,
+      {
+        kind: 'SIMULTANEOUS',
+        title: `${state.players[playerId].name} 承受 ${amount} 点${kind === 'PHYSICAL' ? '肉体' : '精神'}伤害`,
+        description: `来自 ${source}。选择要扣减的属性。`,
+        participants: [playerId],
+        secret: false,
+        policy: { type: 'ALL_COMMITTED' },
+        payload: { kind: 'damage', amount, damageKind: kind }
+      },
+      ctx.id('damage')
+    );
+    state.pendingDecisions = opened.state.pendingDecisions;
+  }
+
+  private static allocateDamage(state: GameState, pid: PlayerId, trait: string, ctx: ReduceContext): void {
+    const pending = state.globalVars.pendingDamage as
+      | { playerId: PlayerId; amount: number; kind: 'PHYSICAL' | 'MENTAL' }
+      | null
+      | undefined;
+    if (!pending || pending.playerId !== pid) return;
+
+    const allowed = TRAIT_OPTIONS[pending.kind].map(option => option.value);
+    const chosen = allowed.includes(trait as TraitKey) ? (trait as TraitKey) : allowed[0];
+    const result = damagePlayer(state, pid, pending.kind, pending.amount, chosen);
+    state.globalVars.pendingDamage = null;
+    trace(
+      ctx,
+      'DAMAGE_EFFECT',
+      `${state.players[pid]?.name ?? pid} 在 ${TRAIT_META[chosen].zh} 上承受 ${result.applied} 点伤害${result.dead ? ' —— 死亡！' : ''}`,
+      700
+    );
+    if (result.dead) trace(ctx, 'RULE_MUTATE', `${state.players[pid]?.name ?? pid} 死亡，物品散落一地`, 800);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Haunt                                                               */
+  /* ------------------------------------------------------------------ */
+
+  private static hauntRoll(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const pending = state.globalVars.pendingHauntRoll as { playerId: PlayerId; omens: number } | null;
+    const omens = Number(pending?.omens ?? state.globalVars.omensRevealed ?? 0);
+    const roll = rollZeroDice(state.prngState, 6);
+    state.prngState = roll.nextSeed;
+    state.globalVars.lastHauntRoll = { rolls: roll.rolls, sum: roll.sum, omens };
+
+    trace(
+      ctx,
+      'DICE_ROLL',
+      `作祟检定 [${roll.rolls.join('+')}] = ${roll.sum} vs 预兆 ${omens}`,
+      800
+    );
+
+    state.globalVars.pendingHauntRoll = null;
+
+    if (roll.sum < omens) {
+      const roomId = activeRoom(state, pid);
+      const floor = (state.mapGraph.nodes[roomId]?.props?.floor ?? 'GROUND') as Floor;
+      const lastOmen = [...(state.globalVars.omenNames ?? [])].pop();
+      const heldOmen = handEntities(state, pid).find(entity => entity.components.custom?.cardType === 'OMEN');
+      const omenId =
+        Object.keys(OMEN_DEFS).find(id => OMEN_DEFS[id].name === lastOmen) ??
+        (heldOmen ? cardDef(heldOmen) : 'girl');
+      const hauntId = resolveHauntId(omenId, roomId, floor);
+      this.startHaunt(state, pid, hauntId, roomId, ctx);
+      return;
+    }
+
+    trace(ctx, 'ANNOUNCEMENT', '山庄暂时恢复了寂静……', 500);
+    this.advanceTurn(state, ctx);
+  }
+
+  public static beginHaunt(
+    state: GameState,
+    revealerId: PlayerId,
+    hauntId: string,
+    roomId: string,
+    ctx: ReduceContext
+  ): void {
+    this.startHaunt(state, revealerId, hauntId, roomId, ctx);
+  }
+
+  private static startHaunt(state: GameState, revealerId: PlayerId, hauntId: string, roomId: string, ctx: ReduceContext): void {
+    const def = HAUNT_DEFS[hauntId];
+    const traitor = state.players[revealerId];
+    if (!def || !traitor) return;
+
+    state.globalVars.hauntTriggered = true;
+    state.phase = 'HAUNT';
+
+    for (const pid of state.playerOrder) {
+      const player = state.players[pid];
+      if (!player) continue;
+      player.role = pid === revealerId ? 'TRAITOR' : player.role === 'TRAITOR' ? 'HERO' : 'HERO';
+    }
+
+    const haunt = {
+      id: hauntId,
+      number: def.number,
+      title: def.title,
+      traitorId: revealerId,
+      revealRoomId: roomId,
+      monsterIds: [] as string[],
+      progress: 0,
+      bonesFound: false,
+      beaconDestroyed: false,
+      eyesDestroyed: 0,
+      girlHolder: undefined as string | undefined,
+      mummyDelivered: false
+    };
+    state.globalVars.haunt = haunt;
+    state.globalVars.hauntObjectives = { hero: def.heroObjective, traitor: def.traitorObjective };
+    state.globalVars.frostRooms = [];
+
+    // Scenario markers.
+    if (hauntId === 'mummy') {
+      this.spawnMarker(state, roomId, 'SARCOPHAGUS', '石棺', ctx);
+      const girlHolder = state.playerOrder.find(id => state.players[id].role === 'HERO' && ownsDef(state, id, 'girl'));
+      haunt.girlHolder = girlHolder ?? undefined;
+      if (!girlHolder) this.spawnGirl(state, roomId, ctx);
+    }
+    if (hauntId === 'floating_eye') {
+      this.spawnMarker(state, roomId, 'SHIP', '飞船信标', ctx);
+      traitor.customProps.banished = true;
+    }
+
+    const npcIds: string[] = [];
+    if (def.monster) {
+      const template = def.monster;
+      for (let i = 0; i < template.count; i++) {
+        const monster = spawnMonster(
+          state,
+          roomId,
+          template.kind,
+          {
+            name: template.count > 1 ? `${template.name} ${i + 1}` : template.name,
+            might: template.might,
+            speed: template.speed,
+            sanity: template.sanity,
+            attack: template.attack,
+            control: template.control,
+            incorporeal: template.incorporeal,
+            immunePhysical: template.immunePhysical,
+            immuneSpeedAttacks: template.immuneSpeedAttacks,
+            color: template.color
+          },
+          ctx
+        );
+        const npcId = `npc_${monster.id}`;
+        state.npcs = {
+          ...(state.npcs ?? {}),
+          [npcId]: {
+            id: npcId,
+            kind: 'NPC',
+            name: String(monster.components.custom?.name ?? template.name),
+            color: template.color,
+            avatar: template.kind === 'MUMMY' ? '🧟' : template.kind === 'EYE' ? '👁️' : '👻',
+            status: 'ACTIVE',
+            controllerId: revealerId,
+            entityId: monster.id,
+            visibility: { type: 'PUBLIC' },
+            customProps: { monsterKind: template.kind, movesLeft: 0, attacksLeft: 0 }
+          }
+        };
+        npcIds.push(npcId);
+        haunt.monsterIds.push(npcId);
+        if (hauntId === 'mummy' && i === 0) {
+          monster.components.custom = { ...(monster.components.custom ?? {}), carryingGirl: false };
+        }
+      }
+    }
+
+    // Turn order: players up to the traitor, then the traitor's monsters, then
+    // the remaining heroes. The haunt starts with the hero after the traitor.
+    const traitorIndex = Math.max(0, state.playerOrder.indexOf(revealerId));
+    state.actorOrder = [
+      ...state.playerOrder.slice(0, traitorIndex + 1),
+      ...npcIds,
+      ...state.playerOrder.slice(traitorIndex + 1)
+    ];
+
+    for (const [index, spec] of def.hooks.entries()) {
+      state.activeHooks.push({
+        instanceId: `hook_${hauntId}_${index}_${index}`,
+        hookId: spec.hookId,
+        ownerId: revealerId,
+        visibility: { type: 'PUBLIC' },
+        params: spec.params ?? {}
+      });
+    }
+
+    state.activePlayerId = leftOf(state, revealerId);
+    state.activeActorId = state.activePlayerId;
+    state.turn += 1;
+    resetTurnResources(state, state.activePlayerId);
+    state.players[state.activePlayerId].customProps.ritualUsed = false;
+
+    trace(ctx, 'RULE_MUTATE', `🔥 作祟降临 · 第 ${def.number} 号剧本「${def.title}」 · 叛徒：${traitor.name}`, 1600);
+    trace(ctx, 'ANNOUNCEMENT', `英雄目标：${def.heroObjective}`, 1400);
+    actionLogLine(state, `作祟 #${def.number} ${def.title} — 叛徒 ${traitor.name}`);
+  }
+
+  private static spawnMarker(state: GameState, roomId: string, marker: string, label: string, ctx: ReduceContext): Entity {
+    const zone = ensureRoomZone(state, roomId);
+    const entity: Entity = {
+      id: ctx.id(`marker_${marker.toLowerCase()}`),
+      type: 'CARD',
+      zoneId: zone.id,
+      visibility: { type: 'PUBLIC' },
+      components: {
+        cardFace: { title: label, type: 'MARKER', desc: label, color: '#d9b45b' },
+        custom: { marker, zh: label, tradeable: false }
+      }
+    };
+    const next = ECSManager.addEntity(state, entity);
+    state.entities = next.entities;
+    state.zones = next.zones;
+    return state.entities[entity.id];
+  }
+
+  private static spawnGirl(state: GameState, roomId: string, ctx: ReduceContext): void {
+    const zone = ensureRoomZone(state, roomId);
+    const entity: Entity = {
+      id: ctx.id('omen_girl'),
+      type: 'CARD',
+      zoneId: zone.id,
+      visibility: { type: 'PUBLIC' },
+      components: {
+        cardFace: { title: '小女孩', type: 'OMEN', desc: OMEN_DEFS.girl.desc, color: '#b07bf0' },
+        custom: { defId: 'girl', cardType: 'OMEN', zh: '小女孩', companion: true, tradeable: false }
+      }
+    };
+    const next = ECSManager.addEntity(state, entity);
+    state.entities = next.entities;
+    state.zones = next.zones;
+    state.globalVars.omensRevealed = Number(state.globalVars.omensRevealed ?? 0) + 1;
+    state.globalVars.omenNames = [...(state.globalVars.omenNames ?? []), '小女孩'];
+    trace(ctx, 'CARD_DRAW', `小女孩出现在 ${roomName(state, roomId)}`, 500);
+  }
+
+  private static sealRitual(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const haunt = currentHaunt(state);
+    const player = state.players[pid];
+    if (!haunt || haunt.id !== 'mummy' || !player) return;
+    if (player.customProps.ritualUsed) return;
+    if (activeRoom(state, pid) !== haunt.revealRoomId) return;
+    if (!ownsDef(state, pid, 'holy_symbol') && !ownsDef(state, pid, 'ring')) return;
+
+    player.customProps.ritualUsed = true;
+    const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 5, reason: '封印木乃伊' });
+    trace(ctx, 'DICE_ROLL', `神圣符文破译 · 知识 [${check.dice.join('+')}] = ${check.total} vs 5`, 800);
+    if (check.success) {
+      haunt.progress = Number(haunt.progress ?? 0) + 1;
+      trace(ctx, 'RULE_MUTATE', `封印进度 ${haunt.progress}/2`, 900);
+    } else {
+      damagePlayer(state, pid, 'MENTAL', 1);
+      trace(ctx, 'DAMAGE_EFFECT', '符文反噬，神智 -1', 500);
+    }
+  }
+
+  private static searchBones(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const haunt = currentHaunt(state);
+    const player = state.players[pid];
+    if (!haunt || haunt.id !== 'phantom' || !player) return;
+    player.customProps.searchUsed = true;
+    const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 4, reason: '寻找遗骨' });
+    trace(ctx, 'DICE_ROLL', `搜寻遗骨 · 知识 ${check.total} vs 4`, 700);
+    if (check.success) {
+      haunt.bonesFound = true;
+      state.globalVars.bonesRoomId = activeRoom(state, pid);
+      trace(ctx, 'RULE_MUTATE', `🦴 ${player.name} 在 ${roomName(state, activeRoom(state, pid))} 找到了怨灵的遗骨`, 900);
+    }
+  }
+
+  private static chant(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const haunt = currentHaunt(state);
+    const player = state.players[pid];
+    if (!haunt || haunt.id !== 'phantom' || !player) return;
+    if (player.customProps.chantUsed) return;
+    if (!roomTags(state, activeRoom(state, pid)).includes('pentagram')) return;
+    if (!haunt.bonesFound || !ownsDef(state, pid, 'holy_symbol')) return;
+
+    player.customProps.chantUsed = true;
+    const check = rollTraitCheck(state, pid, 'sanity', { threshold: 5, reason: '安魂咏唱' });
+    trace(ctx, 'DICE_ROLL', `安魂咏唱 · 神智 [${check.dice.join('+')}] = ${check.total} vs 5`, 900);
+    if (check.success) {
+      haunt.progress = Number(haunt.progress ?? 0) + 1;
+      trace(ctx, 'RULE_MUTATE', `安魂仪式进度 ${haunt.progress}/3`, 900);
+    } else {
+      damagePlayer(state, pid, 'MENTAL', 1);
+      trace(ctx, 'DAMAGE_EFFECT', '怨灵的哀嚎撕裂心智，神智 -1', 500);
+    }
+  }
+
+  private static destroyBeacon(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const haunt = currentHaunt(state);
+    if (!haunt || haunt.id !== 'floating_eye') return;
+    const eyesLeft = monsterEntities(state).filter(
+      monster => monster.components.custom?.monster === 'EYE' && !monster.components.custom?.destroyed
+    );
+    if (eyesLeft.length > 0) return;
+    haunt.beaconDestroyed = true;
+    trace(ctx, 'RULE_MUTATE', `💥 ${state.players[pid].name} 炸毁了飞船信标，母舰开始坠落！`, 1200);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Turn flow & monsters                                                */
+  /* ------------------------------------------------------------------ */
+
+  private static endTurn(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const pending = state.globalVars.pendingHauntRoll as { playerId: PlayerId; omens: number } | null;
+    if (pending && pending.playerId === pid && !state.globalVars.hauntTriggered) {
+      const frame: StackFrame = {
+        id: ctx.id('haunt_frame'),
+        type: 'HAUNT_CHECK',
+        title: '作祟检定',
+        description: `${state.players[pid].name} 必须掷 6 颗骰：总和 < ${pending.omens} 则作祟爆发。`,
+        sourcePlayerId: pid,
+        actionPayload: { type: 'ROLL_HAUNT_CHECK', playerId: pid },
+        responseWindow: {
+          eligiblePlayers: [pid],
+          pendingResponses: { [pid]: 'PENDING' }
+        },
+        status: 'WAITING_INPUT'
+      };
+      const pushed = InterruptStackManager.push(state, frame);
+      state.interruptStack = pushed.interruptStack;
+      trace(ctx, 'STACK_PUSH', '⚠️ 预兆在低语，作祟检定被推入响应栈', 600);
+      return;
+    }
+
+    if (state.globalVars.hauntTriggered && (state.players[pid]?.role === 'TRAITOR' || state.players[pid]?.customProps.banished)) {
+      // Monsters are NPC actors with their own turns now; nothing auto-runs here.
+      trace(ctx, 'ANNOUNCEMENT', '怪物回合由叛徒逐只操控', 250);
+    }
+
+    this.advanceTurn(state, ctx);
+  }
+
+  private static nextEligibleActor(state: GameState, fromId: string): string {
+    const order = state.actorOrder ?? state.playerOrder;
+    const start = Math.max(0, order.indexOf(fromId));
+    for (let i = 1; i <= order.length; i++) {
+      const candidate = order[(start + i) % order.length];
+      const player = state.players[candidate];
+      if (player) {
+        if (player.alive && !player.customProps.banished) return candidate;
+        continue;
+      }
+      const npc = state.npcs?.[candidate];
+      if (npc && npc.status === 'ACTIVE') return candidate;
+    }
+    return fromId;
+  }
+
+  private static advanceTurn(state: GameState, ctx: ReduceContext, depth = 0): void {
+    const order = state.actorOrder ?? state.playerOrder;
+    const current = state.activeActorId ?? state.activePlayerId;
+    const next = this.nextEligibleActor(state, current);
+    const currentIndex = order.indexOf(current);
+    const nextIndex = order.indexOf(next);
+
+    state.activeActorId = next;
+    state.turn += 1;
+    if (nextIndex >= 0 && nextIndex <= currentIndex) state.round += 1;
+
+    const npc = state.npcs?.[next];
+    if (npc) {
+      if (npc.controllerId && state.players[npc.controllerId]) state.activePlayerId = npc.controllerId;
+      this.startNpcTurn(state, npc, ctx);
+      trace(ctx, 'ANNOUNCEMENT', `— ${npc.name}（NPC · ${npc.controllerId ? state.players[npc.controllerId]?.name ?? npc.controllerId : '剧本'} 控制）的回合 —`, 300);
+      return;
+    }
+
+    state.activePlayerId = next;
+    resetTurnResources(state, next);
+    state.players[next].customProps.ritualUsed = false;
+    state.players[next].customProps.chantUsed = false;
+    state.players[next].customProps.searchUsed = false;
+    state.players[next].customProps.elevatorUsed = false;
+
+    this.startOfTurn(state, next, ctx);
+    trace(ctx, 'ANNOUNCEMENT', `— ${state.players[next].name} 的回合 —`, 300);
+
+    if (!state.players[next].alive && depth < 4) {
+      this.advanceTurn(state, ctx, depth + 1);
+    }
+  }
+
+  private static startNpcTurn(
+    state: GameState,
+    npc: NonNullable<GameState['npcs']>[string],
+    ctx: ReduceContext
+  ): void {
+    const entity = npc.entityId ? state.entities[npc.entityId] : undefined;
+    const custom = entity?.components.custom ?? {};
+    npc.customProps = { ...(npc.customProps ?? {}), movesLeft: 0, attacksLeft: 0 };
+    if (!entity || custom.destroyed || npc.status !== 'ACTIVE') return;
+    if (custom.stunned) {
+      trace(ctx, 'ANNOUNCEMENT', `${npc.name} 仍处于击晕状态，跳过本回合`, 400);
+      return;
+    }
+    const stats = monsterStats(entity);
+    const roll = rollZeroDice(state.prngState, Math.max(1, stats.speed));
+    state.prngState = roll.nextSeed;
+    npc.customProps.movesLeft = roll.sum;
+    npc.customProps.attacksLeft = 1;
+    trace(ctx, 'DICE_ROLL', `${npc.name} 速度骰 [${roll.rolls.join('+')}] = ${roll.sum}`, 500);
+  }
+
+  private static endNpcTurn(state: GameState, npcId: string, ctx: ReduceContext): void {
+    const npc = state.npcs?.[npcId];
+    if (!npc?.entityId) {
+      this.advanceTurn(state, ctx);
+      return;
+    }
+    const entity = state.entities[npc.entityId];
+    const custom = entity?.components.custom ?? {};
+    if (custom.stunned) {
+      const turns = Number(custom.stunTurns ?? 1) - 1;
+      custom.stunTurns = turns;
+      if (turns <= 0) {
+        custom.stunned = false;
+        trace(ctx, 'ANNOUNCEMENT', `${npc.name} 恢复了行动`, 350);
+      }
+    }
+    const haunt = currentHaunt(state);
+    if (
+      haunt?.id === 'mummy' &&
+      custom.monster === 'MUMMY' &&
+      custom.carryingGirl &&
+      String(custom.roomId) === haunt.revealRoomId
+    ) {
+      haunt.mummyDelivered = true;
+      trace(ctx, 'RULE_MUTATE', '木乃伊把小女孩放入石棺——封印完成！', 1400);
+    }
+    this.advanceTurn(state, ctx);
+  }
+
+  private static startOfTurn(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    if (!player) return;
+
+    const effects = (player.customProps.effects ?? []) as string[];
+    for (const effect of [...effects]) {
+      if (effect === 'DRIP') {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 5, reason: '滴血之声' });
+        if (!check.success) damagePlayer(state, pid, 'MENTAL', 1);
+      } else if (effect === 'POSSESSION') {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 4, reason: '恶灵附体' });
+        if (!check.success) {
+          player.customProps.skipActions = true;
+          trace(ctx, 'ANNOUNCEMENT', `${player.name} 被恶灵夺走身体，本回合无法行动`, 700);
+        }
+      } else if (effect === 'CHILL') {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 5, reason: '刺骨寒意' });
+        if (!check.success) damagePlayer(state, pid, 'MENTAL', 1);
+      } else if (effect === 'HAUNTING_MELODY') {
+        const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 5, reason: '萦绕旋律' });
+        if (!check.success) applyTraitSteps(state, pid, 'knowledge', -1);
+      } else if (effect === 'MARK_OF_FEAR') {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 4, reason: '恐惧印记' });
+        if (!check.success) damagePlayer(state, pid, 'MENTAL', 1);
+      }
+    }
+
+    if (player.customProps.controlled) {
+      const haunt = currentHaunt(state);
+      if (!haunt) return;
+      const target = haunt.revealRoomId;
+      if (activeRoom(state, pid) === target) {
+        player.alive = false;
+        player.customProps.abducted = true;
+        player.customProps.controlled = false;
+        trace(ctx, 'RULE_MUTATE', `🛸 ${player.name} 被拖入飞船，消失在地球之外`, 1100);
+        this.dropAll(state, pid);
+        return;
+      }
+      const path = shortestPath(state, activeRoom(state, pid), target);
+      if (path.length > 1) {
+        movePlayerTo(state, pid, path[1]);
+        trace(ctx, 'MOVE_OBJECT', `${player.name} 目光空洞地走向飞船`, 600);
+      }
+      player.customProps.movesLeft = 0;
+      player.customProps.attacksLeft = 0;
+      player.customProps.skipActions = true;
+    }
+  }
+
+  private static dropAll(state: GameState, pid: PlayerId): void {
+    const player = state.players[pid];
+    if (!player) return;
+    const hand = state.zones[`zone_hand_${pid}`];
+    if (!hand) return;
+    const zone = ensureRoomZone(state, activeRoom(state, pid));
+    for (const entityId of [...hand.orderedEntities]) {
+      const entity = state.entities[entityId];
+      if (!entity) continue;
+      entity.ownerId = undefined;
+      const next = ECSManager.moveEntity(state, entityId, zone.id);
+      state.entities = next.entities;
+      state.zones = next.zones;
+    }
+  }
+
+  /** @deprecated Kept for reference; monsters now run as NPC actors. */
+  private static monsterPhase(state: GameState, ctx: ReduceContext): void {
+    const monsters = monsterEntities(state).filter(monster => !monster.components.custom?.destroyed);
+    if (monsters.length === 0) return;
+
+    trace(ctx, 'ANNOUNCEMENT', '👹 怪物回合', 400);
+
+    for (const monster of monsters) {
+      const custom = monster.components.custom ?? {};
+      if (custom.stunned) {
+        const turns = Number(custom.stunTurns ?? 1) - 1;
+        custom.stunTurns = turns;
+        if (turns <= 0) {
+          custom.stunned = false;
+          trace(ctx, 'ANNOUNCEMENT', `${custom.name} 恢复了行动`, 350);
+        }
+        continue;
+      }
+
+      const haunt = currentHaunt(state);
+      if (!haunt) continue;
+      const roomId = String(custom.roomId ?? '');
+      const stats = monsterStats(monster);
+
+      if (custom.monster === 'MUMMY' && !custom.carryingGirl) {
+        const roomZone = state.zones[`zone_room_${roomId}`];
+        const girl = (roomZone?.orderedEntities ?? [])
+          .map(id => state.entities[id])
+          .find(entity => entity && cardDef(entity) === 'girl');
+        if (girl) {
+          custom.carryingGirl = true;
+          haunt.girlHolder = monster.id;
+          girl.ownerId = undefined;
+          const next = ECSManager.moveEntity(state, girl.id, 'zone_monsters');
+          state.entities = next.entities;
+          state.zones = next.zones;
+          trace(ctx, 'RULE_MUTATE', '木乃伊从物品堆中抱起了小女孩', 800);
+        }
+      }
+
+      const targetRoom =
+        custom.monster === 'MUMMY' && custom.carryingGirl
+          ? haunt.revealRoomId
+          : this.nearestHeroRoom(state, roomId, custom.monster);
+
+      const stepRoll = rollZeroDice(state.prngState, Math.max(1, stats.speed));
+      state.prngState = stepRoll.nextSeed;
+      const steps = stepRoll.sum;
+
+      const path = shortestPath(state, roomId, targetRoom, custom.incorporeal === true);
+      const maxSteps = Math.min(steps, path.length - 1);
+      for (let i = 1; i <= maxSteps; i++) {
+        moveMonster(state, monster.id, path[i]);
+        if (custom.monster === 'PHANTOM') addFrost(state, path[i]);
+      }
+
+      const currentRoom = String(monster.components.custom?.roomId ?? '');
+      trace(ctx, 'MOVE_OBJECT', `${custom.name} 移动 ${Math.max(0, maxSteps)} 步至 ${roomName(state, currentRoom)}`, 450);
+
+      if (custom.monster === 'MUMMY' && custom.carryingGirl && currentRoom === haunt.revealRoomId) {
+        haunt.mummyDelivered = true;
+        trace(ctx, 'RULE_MUTATE', '木乃伊把小女孩放入石棺——封印完成！', 1400);
+        return;
+      }
+
+      const victims = playersInRoom(state, currentRoom).filter(id => state.players[id].role !== 'TRAITOR');
+      const victimId = victims[0];
+      if (!victimId) continue;
+
+      this.monsterAttack(state, monster, victimId, ctx);
+    }
+  }
+
+  private static nearestHeroRoom(state: GameState, fromRoomId: string, monsterKind: string): string {
+    const heroes = state.playerOrder.filter(
+      id => state.players[id]?.alive && state.players[id].role !== 'TRAITOR' && !state.players[id].customProps.banished
+    );
+    let best = fromRoomId;
+    let bestDistance = Infinity;
+    for (const heroId of heroes) {
+      const roomId = activeRoom(state, heroId);
+      const distance = shortestPath(state, fromRoomId, roomId, monsterKind === 'PHANTOM').length;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = roomId;
+      }
+    }
+    return best;
+  }
+
+  private static monsterAttack(state: GameState, monster: Entity, victimId: PlayerId, ctx: ReduceContext): void {
+    const custom = monster.components.custom ?? {};
+    const stats = monsterStats(monster);
+    const victim = state.players[victimId];
+    if (!victim) return;
+
+    const attackDice = rollZeroDice(state.prngState, Math.max(1, stats.might));
+    state.prngState = attackDice.nextSeed;
+
+    const mental = custom.attack === 'MENTAL';
+    const defenseTrait: TraitKey = mental ? 'sanity' : 'might';
+    const defense = rollZeroDice(state.prngState, Math.max(1, traitValue(victim, defenseTrait)));
+    state.prngState = defense.nextSeed;
+
+    trace(
+      ctx,
+      'DICE_ROLL',
+      `${custom.name} 攻击 ${victim.name} · [${attackDice.rolls.join('+')}]=${attackDice.sum} vs [${defense.rolls.join('+')}]=${defense.sum}`,
+      700
+    );
+
+    if (attackDice.sum > defense.sum) {
+      const diff = attackDice.sum - defense.sum;
+      if (custom.monster === 'EYE' && custom.control) {
+        if (!victim.customProps.immuneMindControl) {
+          victim.customProps.controlled = true;
+          trace(ctx, 'RULE_MUTATE', `👁️ ${victim.name} 被巨眼夺走了心智`, 900);
+        }
+      } else if (custom.monster === 'MUMMY') {
+        const girlHolder = currentHaunt(state)?.girlHolder;
+        const girl = handEntities(state, victimId).find(entity => cardDef(entity) === 'girl');
+        damagePlayer(state, victimId, 'PHYSICAL', diff, 'might');
+        if (girlHolder === victimId) {
+          const haunt = currentHaunt(state);
+          if (haunt) haunt.girlHolder = monster.id;
+          custom.carryingGirl = true;
+          if (girl) {
+            girl.ownerId = undefined;
+            const next = ECSManager.moveEntity(state, girl.id, 'zone_monsters');
+            state.entities = next.entities;
+            state.zones = next.zones;
+          }
+          trace(ctx, 'RULE_MUTATE', '木乃伊夺走了小女孩，开始走向石棺', 1100);
+        }
+      } else {
+        damagePlayer(state, victimId, mental ? 'MENTAL' : 'PHYSICAL', diff);
+      }
+    } else if (defense.sum > attackDice.sum) {
+      this.stunMonster(state, monster);
+      trace(ctx, 'ANNOUNCEMENT', `${victim.name} 击退了 ${custom.name}，怪物被击晕`, 600);
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Outcomes & decision cleanup                                          */
+  /* ------------------------------------------------------------------ */
+
+  public static onDecisionResolved(state: GameState, window: DecisionWindow): GameState {
+    const s: GameState = JSON.parse(JSON.stringify(state));
+
+    if (window.payload?.kind === 'damage') {
+      const pending = s.globalVars.pendingDamage as
+        | { playerId: PlayerId; amount: number; kind: 'PHYSICAL' | 'MENTAL' }
+        | null;
+      if (pending) {
+        const traits = TRAIT_OPTIONS[pending.kind];
+        damagePlayer(s, pending.playerId, pending.kind, pending.amount, traits[0].value);
+        s.globalVars.pendingDamage = null;
+      }
+    }
+
+    if (window.payload?.kind === 'trade') {
+      s.globalVars.tradeOffer = null;
+    }
+
+    if (window.payload?.kind === 'peek') {
+      s.globalVars.peek = null;
+    }
+
+    return s;
+  }
+
+  public static checkWinCondition(state: GameState): { gameOver: boolean; winner: PlayerId | PlayerId[] | null; reason?: string } {
+    if (!state.globalVars.hauntTriggered) return { gameOver: false, winner: null };
+
+    const haunt = currentHaunt(state);
+    const heroes = heroesOf(state);
+    const traitor = traitorOf(state);
+
+    if (!haunt) return { gameOver: false, winner: null };
+
+    const allHeroesOut = heroes.length === 0;
+
+    if (haunt.id === 'mummy') {
+      if (Number(haunt.progress ?? 0) >= 2) {
+        return { gameOver: true, winner: heroes, reason: '石棺重新封印，木乃伊归于尘土' };
+      }
+      if (haunt.mummyDelivered) {
+        return { gameOver: true, winner: traitor, reason: '木乃伊带走了小女孩' };
+      }
+    }
+
+    if (haunt.id === 'phantom') {
+      if (Number(haunt.progress ?? 0) >= 3) {
+        return { gameOver: true, winner: heroes, reason: '安魂仪式完成，怨灵消散' };
+      }
+    }
+
+    if (haunt.id === 'floating_eye') {
+      if (haunt.beaconDestroyed) {
+        return { gameOver: true, winner: heroes, reason: '飞船信标被炸毁，母舰坠入云层' };
+      }
+    }
+
+    if (allHeroesOut) {
+      return { gameOver: true, winner: traitor, reason: '所有英雄都已死亡或被带走' };
+    }
+
+    if (traitor && !state.players[traitor]?.alive && haunt.id !== 'floating_eye') {
+      return { gameOver: true, winner: heroes, reason: '叛徒死亡' };
+    }
+
+    return { gameOver: false, winner: null };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Local utilities                                                             */
+/* -------------------------------------------------------------------------- */
+
+function traceIdle(state: GameState, text: string): void {
+  state.globalVars.lastNarration = text;
+}
+
+function graphDistances(state: GameState, from: string): Map<string, number> {
+  const distances = new Map<string, number>();
+  if (!state.mapGraph.nodes[from]) return distances;
+  distances.set(from, 0);
+  const queue = [from];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const distance = distances.get(current)!;
+    for (const neighbor of state.mapGraph.nodes[current]?.neighbors ?? []) {
+      if (!distances.has(neighbor)) {
+        distances.set(neighbor, distance + 1);
+        queue.push(neighbor);
+      }
+    }
+  }
+  return distances;
+}
+
+function shortestPath(state: GameState, from: string, to: string, throughWalls = false): string[] {
+  if (from === to) return [from];
+  if (!state.mapGraph.nodes[from] || !state.mapGraph.nodes[to]) return [from];
+
+  const previous = new Map<string, string>();
+  const seen = new Set<string>([from]);
+  const queue = [from];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current === to) break;
+
+    const node = state.mapGraph.nodes[current];
+    const neighbors = new Set<string>(node?.neighbors ?? []);
+
+    if (throughWalls) {
+      const grid = nodeGrid(node);
+      if (grid) {
+        for (const other of Object.values(state.mapGraph.nodes)) {
+          const otherGrid = nodeGrid(other);
+          if (!otherGrid || otherGrid.floor !== grid.floor) continue;
+          const distance = Math.abs(otherGrid.col - grid.col) + Math.abs(otherGrid.row - grid.row);
+          if (distance === 1) neighbors.add(other.id);
+        }
+      }
+    }
+
+    for (const neighbor of [...neighbors].sort()) {
+      if (seen.has(neighbor)) continue;
+      seen.add(neighbor);
+      previous.set(neighbor, current);
+      queue.push(neighbor);
+    }
+  }
+
+  if (!seen.has(to)) return [from];
+  const path = [to];
+  let cursor = to;
+  while (cursor !== from) {
+    const parent = previous.get(cursor);
+    if (!parent) break;
+    path.unshift(parent);
+    cursor = parent;
+  }
+  return path;
+}
+
+void TRAIT_OPTIONS_KEYS;

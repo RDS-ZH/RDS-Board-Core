@@ -1,0 +1,183 @@
+import * as THREE from 'three';
+import {
+  LabelAnchor,
+  LabelPlacement,
+  ScreenRect,
+  layoutLabels
+} from './labelLayout';
+
+export interface WorldLabel {
+  id: string;
+  text: string;
+  world: [number, number, number];
+  priority: number;
+  kind?: string;
+  count?: number;
+  interactive?: boolean;
+  visible?: boolean;
+  /** Presentation-only card group; dragging the badge moves the whole group. */
+  groupId?: string;
+}
+
+/**
+ * DOM/SVG screen-space labels.
+ *
+ * Rendering stays in the presentation layer: the scene provides world anchors,
+ * the overlay projects them through the camera and resolves overlaps in pixels.
+ */
+export class LabelOverlay {
+  private readonly container: HTMLElement;
+  private readonly root: HTMLDivElement;
+  private readonly svg: SVGSVGElement;
+  private readonly chipHost: HTMLDivElement;
+  private labels: WorldLabel[] = [];
+  private chips = new Map<string, HTMLDivElement>();
+  private leaders = new Map<string, SVGLineElement>();
+  private onClick?: (id: string) => void;
+  private onGroupDrag?: (groupId: string, phase: 'start' | 'move' | 'end', clientX: number, clientY: number) => void;
+
+  constructor(container: HTMLElement) {
+    this.container = container;
+    if (getComputedStyle(container).position === 'static') {
+      container.style.position = 'relative';
+    }
+    this.root = document.createElement('div');
+    this.root.className = 'label-overlay';
+    this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.svg.classList.add('label-leaders');
+    this.root.appendChild(this.svg);
+    this.chipHost = document.createElement('div');
+    this.chipHost.className = 'label-chips';
+    this.root.appendChild(this.chipHost);
+    container.appendChild(this.root);
+  }
+
+  public setLabels(labels: WorldLabel[]): void {
+    this.labels = labels.filter(label => label.visible !== false);
+  }
+
+  public setOnClick(callback: (id: string) => void): void {
+    this.onClick = callback;
+  }
+
+  public setOnGroupDrag(
+    callback: (groupId: string, phase: 'start' | 'move' | 'end', clientX: number, clientY: number) => void
+  ): void {
+    this.onGroupDrag = callback;
+  }
+
+  public render(
+    camera: THREE.Camera,
+    viewport: { width: number; height: number },
+    obstacles: ScreenRect[] = []
+  ): void {
+    const anchors: LabelAnchor[] = [];
+    const anchorWorld = new Map<string, { x: number; y: number }>();
+    for (const label of this.labels) {
+      const vector = new THREE.Vector3(...label.world).project(camera);
+      if (vector.z < -1 || vector.z > 1) continue;
+      const x = (vector.x * 0.5 + 0.5) * viewport.width;
+      const y = (-vector.y * 0.5 + 0.5) * viewport.height;
+      anchors.push({ ...label, x, y });
+      anchorWorld.set(label.id, { x, y });
+    }
+
+    const placements = layoutLabels(anchors, viewport, obstacles);
+    const visible = new Set(placements.map(place => place.id));
+
+    for (const placement of placements) {
+      let chip = this.chips.get(placement.id);
+      if (!chip) {
+        chip = document.createElement('div');
+        chip.className = 'label-chip';
+        chip.dataset.labelId = placement.id;
+        this.chipHost.appendChild(chip);
+        this.chips.set(placement.id, chip);
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.classList.add('label-leader-line');
+        this.svg.appendChild(line);
+        this.leaders.set(placement.id, line);
+      }
+      chip.className = `label-chip label-kind-${placement.kind ?? 'generic'}`;
+      chip.replaceChildren(...this.chipContent(placement));
+      chip.title = placement.text;
+      chip.style.transform = `translate(${placement.left}px, ${placement.top}px)`;
+      chip.style.width = `${placement.width}px`;
+      chip.style.height = `${placement.height}px`;
+      chip.style.pointerEvents = placement.interactive || placement.groupId ? 'auto' : 'none';
+      chip.style.cursor = placement.groupId ? 'grab' : placement.interactive ? 'pointer' : 'default';
+      chip.onclick = placement.interactive
+        ? event => {
+            event.stopPropagation();
+            this.onClick?.(placement.id);
+          }
+        : null;
+      if (placement.groupId) {
+        chip.onpointerdown = event => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.stopPropagation();
+          chip?.setPointerCapture(event.pointerId);
+          this.onGroupDrag?.(placement.groupId!, 'start', event.clientX, event.clientY);
+        };
+        chip.onpointermove = event => {
+          if (!chip?.hasPointerCapture(event.pointerId)) return;
+          this.onGroupDrag?.(placement.groupId!, 'move', event.clientX, event.clientY);
+        };
+        chip.onpointerup = event => {
+          if (!chip?.hasPointerCapture(event.pointerId)) return;
+          chip.releasePointerCapture(event.pointerId);
+          this.onGroupDrag?.(placement.groupId!, 'end', event.clientX, event.clientY);
+        };
+        chip.onpointercancel = event => {
+          if (chip?.hasPointerCapture(event.pointerId)) chip.releasePointerCapture(event.pointerId);
+          this.onGroupDrag?.(placement.groupId!, 'end', event.clientX, event.clientY);
+        };
+      }
+
+      const leader = this.leaders.get(placement.id);
+      if (leader) {
+        leader.setAttribute('x1', String(placement.anchorX));
+        leader.setAttribute('y1', String(placement.anchorY));
+        leader.setAttribute('x2', String(placement.left + placement.width / 2));
+        leader.setAttribute('y2', String(placement.top + placement.height / 2));
+      }
+    }
+
+    for (const [id, chip] of this.chips) {
+      if (!visible.has(id)) chip.style.display = 'none';
+      else chip.style.display = '';
+    }
+    for (const [id, leader] of this.leaders) {
+      leader.style.display = visible.has(id) ? '' : 'none';
+    }
+  }
+
+  private chipContent(placement: LabelPlacement): Node[] {
+    const text = document.createElement('span');
+    text.className = 'label-text';
+    text.textContent = placement.text;
+    const nodes: Node[] = [text];
+    if (placement.count && placement.count > 1) {
+      const count = document.createElement('span');
+      count.className = 'label-count';
+      count.textContent = `×${placement.count}`;
+      nodes.push(count);
+    }
+    return nodes;
+  }
+
+  public clear(): void {
+    this.labels = [];
+    this.chips.clear();
+    this.leaders.clear();
+    this.chipHost.replaceChildren();
+    this.svg.replaceChildren();
+  }
+
+  public destroy(): void {
+    this.clear();
+    this.root.remove();
+  }
+}
