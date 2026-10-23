@@ -1,0 +1,2148 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Entity, GameState, NodeId, ProjectedGameState } from '../core/types';
+import { TransactionalAnimationQueue } from './animationQueue';
+import { BoardRaycaster, InteractiveObjectData } from './raycaster';
+import { CardMeshBuilder } from './procedural/cardMesh';
+import { DiceMeshBuilder } from './procedural/diceMesh';
+import { HexTileBuilder } from './procedural/hexTile';
+import { RoomTileBuilder } from './procedural/roomTile';
+import { TokenMeshBuilder } from './procedural/tokenMesh';
+import { GameTableBuilder } from './table';
+import { createDefaultProjectionRegistry, computeAutoLayerOffsets, ProjectionRegistry } from './projectionPort';
+import { LabelOverlay, WorldLabel } from './labels/labelOverlay';
+import { ScreenRect } from './labels/labelLayout';
+import { buildCardGroups } from './cardGroups';
+import { cardGroupKey } from './cardGroups';
+import { PresentationPhysics } from './physics';
+
+export type CameraPreset = 'ISOMETRIC' | 'TOP_DOWN' | 'PLAYER_1' | 'PLAYER_2';
+
+export interface PlacementPreview {
+  name: string;
+  position: [number, number, number];
+  rotation: number;
+  doors: string[];
+  color: string;
+  /** Logical floor/column/row, used to apply dynamic floor offsets. */
+  floor?: string;
+  col?: number;
+  row?: number;
+}
+
+/** Presentation-only hints; the app layer supplies these, never core state. */
+export interface LayoutHints {
+  padding?: number;
+  cameraDirection?: [number, number, number];
+  minDistance?: number;
+}
+
+export interface RenderStats {
+  calls: number;
+  triangles: number;
+  geometries: number;
+  textures: number;
+  lastSyncMs: number;
+}
+
+export class BoardGameScene {
+  private container: HTMLElement;
+  private renderer: THREE.WebGLRenderer;
+  private scene: THREE.Scene;
+  private camera: THREE.PerspectiveCamera;
+  private controls: OrbitControls;
+  private raycaster: BoardRaycaster;
+  private animQueue: TransactionalAnimationQueue;
+  private projection: ProjectionRegistry = createDefaultProjectionRegistry();
+  private physics = new PresentationPhysics();
+  private lastFrameTime = performance.now();
+  private readonly labels: LabelOverlay;
+
+  // Scene entities mapping: entityId -> THREE.Object3D
+  private entityMeshes = new Map<string, THREE.Object3D>();
+  private nodeMeshes = new Map<string, THREE.Object3D>();
+  private edgeMeshes = new Map<string, THREE.Object3D>();
+
+  private boardObjectsGroup = new THREE.Group();
+  private dragTargetGroup = new THREE.Group();
+  private isDestroyed = false;
+  private lastRawState: ProjectedGameState | null = null;
+  private lastState: ProjectedGameState | null = null;
+  private lastPlacement?: PlacementPreview;
+  private lastLayout?: LayoutHints;
+  private lastFitSignature = '';
+  private lastBoardKey = '';
+  private prePlacementCamera?: { position: THREE.Vector3; target: THREE.Vector3 };
+  private cameraTween?: {
+    fromPosition: THREE.Vector3;
+    fromTarget: THREE.Vector3;
+    toPosition: THREE.Vector3;
+    toTarget: THREE.Vector3;
+    startedAt: number;
+    duration: number;
+  };
+  private skipFitUntil = 0;
+  private previewObjects: THREE.Object3D[] = [];
+  private hasFitted = false;
+  private lastSyncMs = 0;
+  private hoveredEntityId?: string;
+  private fanZoneId?: string;
+  private cardVisualOffsets = new Map<string, { dx: number; dz: number }>();
+  private groupMembers = new Map<string, string[]>();
+  private groupDrag?: {
+    groupId: string;
+    startWorld: [number, number, number];
+    bases: Map<string, [number, number, number]>;
+    offsets: Map<string, { dx: number; dz: number }>;
+  };
+  private draggedEntityId?: string;
+  private draggedEntityOrigin?: {
+    position: [number, number, number];
+    offset: { dx: number; dz: number };
+  };
+  private draggedHeldY?: number;
+  private groupHeldY?: number;
+  private cardSettles = new Map<
+    string,
+    { startY: number; targetY: number; startedAt: number; duration: number }
+  >();
+  private highlightIds = new Set<string>();
+  private framing = {
+    isoPos: new THREE.Vector3(1.8, 24, 29),
+    isoTarget: new THREE.Vector3(1.8, 0, -0.2),
+    topHeight: 36
+  };
+
+  private onInteractiveClickCallback?: (data: InteractiveObjectData) => void;
+
+  constructor(container: HTMLElement) {
+    this.container = container;
+
+    // 1. Renderer
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Static board: shadows only need an update when the scene changes.
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.84;
+    container.appendChild(this.renderer.domElement);
+    this.labels = new LabelOverlay(container);
+    this.labels.setOnClick(id => {
+      if (!id.startsWith('stack:')) return;
+      const zoneId = id.slice('stack:'.length);
+      this.fanZoneId = this.fanZoneId === zoneId ? undefined : zoneId;
+      this.lastBoardKey = '';
+      if (this.lastRawState) this.syncState(this.lastRawState, this.lastPlacement, this.lastLayout);
+    });
+    this.labels.setOnGroupDrag((groupId, phase, clientX, clientY) => {
+      this.handleGroupDrag(groupId, phase, clientX, clientY);
+    });
+
+    // 2. Scene
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x070a0e);
+    this.scene.fog = new THREE.FogExp2(0x070a0e, 0.02);
+
+    // 3. Camera & Controls
+    this.camera = new THREE.PerspectiveCamera(42, container.clientWidth / container.clientHeight, 0.1, 120);
+    this.setCameraPreset('ISOMETRIC');
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.05;
+    this.controls.maxPolarAngle = Math.PI / 2 - 0.05; // Do not go below table
+    this.controls.minDistance = 3;
+    this.controls.maxDistance = 80;
+    this.controls.target.set(0, 0, 0);
+
+    // 4. Lighting
+    this.setupLighting();
+
+    // 5. Table
+    const table = GameTableBuilder.createTable();
+    this.scene.add(table);
+    this.scene.add(this.boardObjectsGroup);
+    this.scene.add(this.dragTargetGroup);
+
+    // 6. Raycaster & Animation Queue
+    this.raycaster = new BoardRaycaster(this.camera, this.renderer.domElement);
+    this.raycaster.onEntityPress(() => {
+      // Lock the camera before OrbitControls processes the first drag pixels.
+      this.controls.enabled = false;
+    });
+    this.raycaster.onClick((data) => {
+      this.controls.enabled = true;
+      if (this.onInteractiveClickCallback) {
+        this.onInteractiveClickCallback(data);
+      }
+    });
+    this.raycaster.onDragMove((entityId, clientX, clientY) => {
+      this.followCardDrag(entityId, clientX, clientY);
+    });
+
+    this.animQueue = new TransactionalAnimationQueue(this.scene, this.camera);
+
+    // 7. Event listeners & Render loop
+    window.addEventListener('resize', this.onResize.bind(this));
+    this.renderLoop();
+  }
+
+  private setupLighting(): void {
+    // Warm ambient bounce
+    const ambientLight = new THREE.AmbientLight(0xffe9c9, 0.58);
+    this.scene.add(ambientLight);
+
+    const hemisphere = new THREE.HemisphereLight(0x9db4d8, 0x1b1410, 0.38);
+    this.scene.add(hemisphere);
+
+    // Key lamp above the table (soft, warm)
+    const keyLight = new THREE.DirectionalLight(0xfff2dd, 1.02);
+    keyLight.position.set(7, 16, 9);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.width = 2048;
+    keyLight.shadow.mapSize.height = 2048;
+    keyLight.shadow.camera.near = 0.5;
+    keyLight.shadow.camera.far = 40;
+    keyLight.shadow.camera.left = -16;
+    keyLight.shadow.camera.right = 16;
+    keyLight.shadow.camera.top = 16;
+    keyLight.shadow.camera.bottom = -16;
+    keyLight.shadow.bias = -0.0004;
+    keyLight.shadow.radius = 3;
+    this.scene.add(keyLight);
+
+    // Cool rim light from the back for depth separation
+    const fillLight = new THREE.DirectionalLight(0x8ab6ff, 0.34);
+    fillLight.position.set(-10, 9, -12);
+    this.scene.add(fillLight);
+
+    // Hanging pendant lamp: tight warm pool over the play surface
+    const pendant = new THREE.PointLight(0xffdfae, 46, 46, 2);
+    pendant.position.set(0, 8.5, 0);
+    this.scene.add(pendant);
+  }
+
+  public getAnimationQueue(): TransactionalAnimationQueue {
+    return this.animQueue;
+  }
+
+  public onInteractiveClick(cb: (data: InteractiveObjectData) => void): void {
+    this.onInteractiveClickCallback = cb;
+  }
+
+  /** Hover updates the card-title label without rebuilding the board. */
+  public onInteractiveHover(cb: (data: InteractiveObjectData | null) => void): void {
+    this.raycaster.onHover(data => {
+      this.hoveredEntityId = data?.type === 'ENTITY' ? data.id : undefined;
+      if (this.lastState) this.refreshLabels(this.lastState);
+      cb(data);
+    });
+  }
+
+  public onEntityDrop(
+    cb: (entityId: string, target: InteractiveObjectData | null, clientX: number, clientY: number) => void
+  ): void {
+    this.raycaster.onDrop(cb);
+  }
+
+  public onEntityDragStart(cb: (entityId: string) => void): void {
+    this.raycaster.onDragStart(entityId => {
+      // An entity drag is a placement gesture, not a camera orbit gesture.
+      this.controls.enabled = false;
+      const mesh = this.entityMeshes.get(entityId);
+      if (mesh) {
+        const offset = this.cardVisualOffsets.get(entityId) ?? { dx: 0, dz: 0 };
+        this.draggedEntityId = entityId;
+        const surfaceY = this.surfaceYAt(mesh.position.x, mesh.position.z, entityId);
+        this.draggedHeldY = surfaceY + 0.45;
+        this.draggedEntityOrigin = {
+          position: [mesh.position.x, mesh.position.y, mesh.position.z],
+          offset: { ...offset }
+        };
+      }
+      cb(entityId);
+    });
+  }
+
+  public onEntityDragEnd(cb: () => void): void {
+    this.raycaster.onDragEnd(() => {
+      this.controls.enabled = true;
+      cb();
+      this.draggedEntityId = undefined;
+      this.draggedEntityOrigin = undefined;
+      this.draggedHeldY = undefined;
+    });
+  }
+
+  /** Show non-authoritative target rings while dragging an entity. */
+  public setDropTargets(nodeIds: string[]): void {
+    this.clearDropTargets();
+    const unique = new Set(nodeIds);
+    for (const id of unique) {
+      const mesh = this.nodeMeshes.get(id);
+      if (!mesh) continue;
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(1.0, 1.22, 48),
+        new THREE.MeshBasicMaterial({
+          color: 0xf6dc9c,
+          transparent: true,
+          opacity: 0.9,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        })
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(mesh.position.x, mesh.position.y + 0.24, mesh.position.z);
+      this.dragTargetGroup.add(ring);
+    }
+  }
+
+  public clearDropTargets(): void {
+    while (this.dragTargetGroup.children.length > 0) {
+      const child = this.dragTargetGroup.children[0];
+      this.dragTargetGroup.remove(child);
+      this.disposeObject3D(child);
+    }
+  }
+
+  /**
+   * Presentation-only card repositioning. This never changes GameState; it is
+   * an escape hatch for visually overlapping cards on the table.
+   */
+  public moveCardToScreen(entityId: string, clientX: number, clientY: number): boolean {
+    const mesh = this.entityMeshes.get(entityId);
+    if (!mesh) return false;
+    const point = this.screenToTable(clientX, clientY);
+    if (!point) return false;
+
+    const origin = this.draggedEntityOrigin;
+    const old = this.cardVisualOffsets.get(entityId) ?? { dx: 0, dz: 0 };
+    const baseX = origin ? origin.position[0] - origin.offset.dx : mesh.position.x - old.dx;
+    const baseZ = origin ? origin.position[2] - origin.offset.dz : mesh.position.z - old.dz;
+    const dx = point[0] - baseX;
+    const dz = point[2] - baseZ;
+    this.cardVisualOffsets.set(entityId, { dx, dz });
+    mesh.position.x = baseX + dx;
+    mesh.position.z = baseZ + dz;
+    this.settleCard(entityId);
+    if (this.lastState) this.refreshLabels(this.lastState);
+    return true;
+  }
+
+  private screenToTable(clientX: number, clientY: number): [number, number, number] | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, this.camera);
+    const point = new THREE.Vector3();
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.2);
+    if (!ray.ray.intersectPlane(plane, point)) return null;
+    return [point.x, 0.08, point.z];
+  }
+
+  private followCardDrag(entityId: string, clientX: number, clientY: number): void {
+    if (entityId !== this.draggedEntityId) return;
+    const mesh = this.entityMeshes.get(entityId);
+    const point = this.screenToTable(clientX, clientY);
+    if (!mesh || !point) return;
+    this.cardSettles.delete(entityId);
+    mesh.position.x = point[0];
+    mesh.position.z = point[2];
+    const surfaceY = this.surfaceYAt(point[0], point[2], entityId);
+    this.draggedHeldY = surfaceY + 0.45;
+  }
+
+  /** Highest mesh top under an x/z point, excluding specified entity/entities. */
+  private surfaceYAt(x: number, z: number, excludeIds?: string | string[]): number {
+    const ids = excludeIds
+      ? (Array.isArray(excludeIds) ? excludeIds : [excludeIds])
+      : [];
+    const excludedObjects = new Set<THREE.Object3D>();
+    for (const id of ids) {
+      const obj = this.entityMeshes.get(id);
+      if (obj) {
+        excludedObjects.add(obj);
+        obj.traverse(child => excludedObjects.add(child));
+      }
+    }
+
+    const ray = new THREE.Raycaster(new THREE.Vector3(x, 30, z), new THREE.Vector3(0, -1, 0));
+    ray.camera = this.camera;
+    // Newly created room/card meshes have not rendered yet. Raycaster reads
+    // matrixWorld directly, so refresh it before querying the surface or a
+    // freshly discarded card lands on the table height and clips the room tile.
+    this.scene.updateMatrixWorld(true);
+    const hits = ray.intersectObjects(this.boardObjectsGroup.children, true);
+
+    const hit = hits.find(entry => {
+      if (!(entry.object as THREE.Mesh).isMesh) return false;
+      if (excludedObjects.has(entry.object)) return false;
+      return true;
+    });
+
+    return hit?.point.y ?? 0.02;
+  }
+
+  public resetCardDrag(entityId: string): void {
+    const origin = this.draggedEntityOrigin;
+    const mesh = this.entityMeshes.get(entityId);
+    if (!origin || !mesh) return;
+    this.draggedHeldY = undefined;
+    mesh.position.x = origin.position[0];
+    mesh.position.z = origin.position[2];
+    this.cardVisualOffsets.set(entityId, { ...origin.offset });
+    this.cardSettles.set(entityId, {
+      startY: mesh.position.y,
+      targetY: origin.position[1],
+      startedAt: performance.now(),
+      duration: 220
+    });
+    if (this.lastState) this.refreshLabels(this.lastState);
+  }
+
+  public settleCard(entityId: string): void {
+    const mesh = this.entityMeshes.get(entityId);
+    if (!mesh) return;
+    const surfaceY = this.surfaceYAt(mesh.position.x, mesh.position.z, entityId);
+    const targetY = Math.max(0.08, surfaceY + 0.015);
+    if (Math.abs(mesh.position.y - targetY) < 0.005) {
+      mesh.position.y = targetY;
+      return;
+    }
+    this.cardSettles.set(entityId, {
+      startY: mesh.position.y,
+      targetY,
+      startedAt: performance.now(),
+      duration: 220
+    });
+  }
+
+  private scheduleCardSettles(): void {
+    for (const [id, entity] of Object.entries(this.lastState?.entities ?? {})) {
+      if (entity?.type === 'CARD') {
+        const zone = entity.zoneId ? this.lastState?.zones[entity.zoneId] : undefined;
+        if (zone?.type === 'HAND' || zone?.type === 'DISCARD' || zone?.type === 'DECK' || zone?.type === 'EQUIP') {
+          continue;
+        }
+        this.settleCard(id);
+      }
+    }
+  }
+
+  private updateCardSettles(now: number): void {
+    if (this.draggedEntityId && this.draggedHeldY !== undefined && !this.cardSettles.has(this.draggedEntityId)) {
+      const mesh = this.entityMeshes.get(this.draggedEntityId);
+      if (mesh) mesh.position.y += (this.draggedHeldY - mesh.position.y) * 0.22;
+    }
+    if (this.groupDrag && this.groupHeldY !== undefined) {
+      for (const id of this.groupDrag.bases.keys()) {
+        const mesh = this.entityMeshes.get(id);
+        if (mesh) mesh.position.y += (this.groupHeldY - mesh.position.y) * 0.22;
+      }
+    }
+    for (const [id, settle] of this.cardSettles) {
+      const mesh = this.entityMeshes.get(id);
+      if (!mesh) {
+        this.cardSettles.delete(id);
+        continue;
+      }
+      const t = Math.min(1, Math.max(0, (now - settle.startedAt) / settle.duration));
+      const eased = 1 - (1 - t) * (1 - t);
+      mesh.position.y = settle.startY + (settle.targetY - settle.startY) * eased;
+      if (t >= 1) {
+        mesh.position.y = settle.targetY;
+        this.cardSettles.delete(id);
+      }
+    }
+  }
+
+  /** Presentation-only merge compatibility; never changes GameState. */
+  public canMergeCards(sourceId: string, targetId: string): boolean {
+    if (sourceId === targetId) return false;
+    const state = this.lastState;
+    const source = state?.entities[sourceId];
+    const target = state?.entities[targetId];
+    if (!source || !target || !source.zoneId || source.zoneId !== target.zoneId) return false;
+    return cardGroupKey(source as never) === cardGroupKey(target as never);
+  }
+
+  /** Snap a dragged card onto another card's visual pile. */
+  public mergeCardsVisually(sourceId: string, targetId: string): void {
+    const source = this.entityMeshes.get(sourceId);
+    const target = this.entityMeshes.get(targetId);
+    if (!source || !target) return;
+    const old = this.cardVisualOffsets.get(sourceId) ?? { dx: 0, dz: 0 };
+    const baseX = source.position.x - old.dx;
+    const baseZ = source.position.z - old.dz;
+    const dx = target.position.x - baseX + 0.12;
+    const dz = target.position.z - baseZ + 0.08;
+    this.cardVisualOffsets.set(sourceId, { dx, dz });
+    source.position.set(baseX + dx, target.position.y + 0.02, baseZ + dz);
+    if (this.lastState) this.refreshLabels(this.lastState);
+  }
+
+  /** Visual-only group drag from the ×N badge; never mutates GameState. */
+  private handleGroupDrag(
+    groupId: string,
+    phase: 'start' | 'move' | 'end',
+    clientX: number,
+    clientY: number
+  ): void {
+    if (phase === 'start') {
+      const ids = this.groupMembers.get(groupId) ?? [];
+      const bases = new Map<string, [number, number, number]>();
+      const offsets = new Map<string, { dx: number; dz: number }>();
+      for (const id of ids) {
+        const mesh = this.entityMeshes.get(id);
+        if (!mesh) continue;
+        const old = this.cardVisualOffsets.get(id) ?? { dx: 0, dz: 0 };
+        offsets.set(id, { ...old });
+        bases.set(id, [mesh.position.x - old.dx, mesh.position.y, mesh.position.z - old.dz]);
+      }
+      const startWorld = this.screenToTable(clientX, clientY) ?? [0, 0, 0];
+      const maxSurface = Math.max(
+        ...[...bases.values()].map(([x, , z]) => this.surfaceYAt(x, z, ids))
+      );
+      this.groupHeldY = maxSurface + 0.45;
+      this.groupDrag = { groupId, startWorld, bases, offsets };
+      return;
+    }
+    if (!this.groupDrag || this.groupDrag.groupId !== groupId) return;
+    if (phase === 'end') {
+      const ids = [...this.groupDrag.bases.keys()];
+      this.groupDrag = undefined;
+      this.groupHeldY = undefined;
+      for (const id of ids) this.settleCard(id);
+      if (this.lastState) this.refreshLabels(this.lastState);
+      return;
+    }
+
+    const current = this.screenToTable(clientX, clientY);
+    if (!current) return;
+    const dx = current[0] - this.groupDrag.startWorld[0];
+    const dz = current[2] - this.groupDrag.startWorld[2];
+
+    for (const [id, [bx, by, bz]] of this.groupDrag.bases) {
+      const mesh = this.entityMeshes.get(id);
+      if (!mesh) continue;
+      const start = this.groupDrag.offsets.get(id) ?? { dx: 0, dz: 0 };
+      const next = { dx: start.dx + dx, dz: start.dz + dz };
+      this.cardVisualOffsets.set(id, next);
+      mesh.position.x = bx + next.dx;
+      mesh.position.z = bz + next.dz;
+    }
+  }
+
+  /** Feed kernel visual events into the transactional animation queue. */
+  public enqueueAnimations(events: import('../core/types').VisualTraceEvent[]): void {
+    if (events.length > 0) this.animQueue.enqueue(events);
+  }
+
+  /** Frame one floor (or the whole board) without changing logical coordinates. */
+  public focusFloor(floorId: string): void {
+    if (!this.lastState) return;
+    if (floorId === 'ALL') {
+      this.fitCameraToBoard(this.lastState, this.lastPlacement, this.lastLayout);
+      return;
+    }
+    const anchors = this.floorAnchorsFor(this.lastState);
+    const anchor = anchors[floorId];
+    if (!anchor) return;
+    const center = new THREE.Vector3(anchor.x, 0, anchor.z);
+    const direction = this.camera.position.clone().sub(this.controls.target).normalize();
+    const distance = Math.max(anchor.width, anchor.depth) * 1.35 + 6;
+    this.controls.target.copy(center);
+    this.camera.position.copy(center.clone().add(direction.multiplyScalar(distance)));
+    this.controls.update();
+  }
+
+  public setCameraPreset(preset: CameraPreset): void {
+    const framing = this.framing;
+    const scale = this.framingScale();
+
+    switch (preset) {
+      case 'ISOMETRIC': {
+        const target = framing.isoTarget;
+        const base = framing.isoPos;
+        this.camera.position.set(
+          target.x + (base.x - target.x) * scale,
+          target.y + (base.y - target.y) * scale,
+          target.z + (base.z - target.z) * scale
+        );
+        if (this.controls) this.controls.target.copy(target);
+        break;
+      }
+      case 'TOP_DOWN':
+        this.camera.position.set(framing.isoTarget.x, framing.topHeight * scale, 0.02);
+        if (this.controls) this.controls.target.set(framing.isoTarget.x, 0, framing.isoTarget.z + 1.4);
+        break;
+      case 'PLAYER_1':
+        this.camera.position.set(0, 7.5, 13);
+        if (this.controls) this.controls.target.set(0, 0, 1.2);
+        break;
+      case 'PLAYER_2':
+        this.camera.position.set(0, 7.5, -13);
+        if (this.controls) this.controls.target.set(0, 0, -1.2);
+        break;
+    }
+    this.controls?.update();
+  }
+
+  /** Pull the camera back on narrower windows so the board still fits. */
+  private framingScale(): number {
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    return Math.min(1.25, Math.max(1, 1300 / Math.max(w, 900)));
+  }
+
+  /**
+   * Map high-dimensional logical coordinates to renderer-world positions once
+   * per sync; every renderer subsystem then works in ordinary XYZ.
+   */
+  private projectForDisplay(state: ProjectedGameState): ProjectedGameState {
+    const projected = this.projection.projectAll(state.mapGraph.nodes, {
+      gameId: state.gameId,
+      topology: state.mapGraph.topology,
+      frames: state.mapGraph.frames
+    });
+    const nodes: ProjectedGameState['mapGraph']['nodes'] = {};
+    for (const [id, node] of Object.entries(state.mapGraph.nodes)) {
+      nodes[id] = {
+        ...node,
+        position: projected[id]?.position ?? node.position
+      };
+    }
+    return {
+      ...state,
+      mapGraph: {
+        ...state.mapGraph,
+        nodes
+      }
+    };
+  }
+
+  /** Keep the ghost room on the same dynamic floor band as real rooms. */
+  private adjustPlacement(state: ProjectedGameState, placement: PlacementPreview): PlacementPreview {
+    if (!placement.floor) return placement;
+    const spec = state.mapGraph.topology?.geometrySpec;
+    const layer = state.mapGraph.topology?.layers?.find(entry => entry.id === placement.floor)?.index;
+    if (!spec || spec.layerMode !== 'auto' || layer === undefined) return placement;
+    const offsets = computeAutoLayerOffsets(state.mapGraph.nodes, {
+      gameId: state.gameId,
+      topology: state.mapGraph.topology,
+      frames: state.mapGraph.frames
+    });
+    if (!offsets) return placement;
+    const staticOffset = (layer - 1) * (spec.layerSpacing ?? 9.6);
+    const delta = (offsets[layer] ?? staticOffset) - staticOffset;
+    return { ...placement, position: [placement.position[0] + delta, placement.position[1], placement.position[2]] };
+  }
+
+  /** Install a game/presentation-specific projection registry. */
+  public setProjectionRegistry(registry: ProjectionRegistry): void {
+    this.projection = registry;
+    this.lastBoardKey = '';
+    if (this.lastRawState) {
+      this.syncState(this.lastRawState, this.lastPlacement, this.lastLayout);
+    }
+  }
+
+  /**
+   * Synchronize 3D Scene with Projected State
+   */
+  public syncState(
+    rawState: ProjectedGameState,
+    placement?: PlacementPreview,
+    layout?: LayoutHints
+  ): void {
+    const syncStarted = performance.now();
+    this.lastRawState = rawState;
+    const state = this.projectForDisplay(rawState);
+    const displayPlacement = placement ? this.adjustPlacement(state, placement) : undefined;
+    const wasPlacing = !!this.lastPlacement;
+    const isPlacing = !!displayPlacement;
+    this.lastState = state;
+    this.lastPlacement = displayPlacement;
+    this.lastLayout = layout;
+
+    if (!wasPlacing && isPlacing) {
+      this.beginPlacementCamera(state, displayPlacement!, layout);
+    } else if (wasPlacing && !isPlacing) {
+      this.endPlacementCamera();
+    }
+
+    const boardKey = `${state.viewerId}:${state.actionLog.length}:${state.clock}:${[...this.highlightIds]
+      .sort()
+      .join(',')}`;
+    const boardChanged = boardKey !== this.lastBoardKey;
+    if (!boardChanged) {
+      // Placement rotation only changes the preview mesh, not the board.
+      this.clearPreviewObjects();
+      if (displayPlacement) this.renderPlacementPreview(displayPlacement);
+      const fitSignature = `${Object.keys(state.mapGraph.nodes).length}:${displayPlacement ? 'placing' : ''}`;
+      if (fitSignature !== this.lastFitSignature) {
+        this.lastFitSignature = fitSignature;
+        if (!this.cameraTween && performance.now() >= this.skipFitUntil) {
+          this.fitCameraToBoard(state, displayPlacement, layout);
+        }
+      }
+      this.lastSyncMs = performance.now() - syncStarted;
+      return;
+    }
+
+    this.lastBoardKey = boardKey;
+    this.raycaster.clearInteractive();
+
+    // Clear previous board objects (dispose GPU resources; keep cached textures).
+    this.clearBoardObjects();
+    this.previewObjects = [];
+    this.entityMeshes.clear();
+    this.nodeMeshes.clear();
+    this.edgeMeshes.clear();
+    this.renderer.shadowMap.needsUpdate = true;
+
+    // 1. Render Map Graph (Catan Hexes / Betrayal Rooms / Sanguosha Seats)
+    this.renderMapGraph(state);
+
+    // 2. Render Entities (Cards, Tokens, Buildings, Dice)
+    this.renderEntities(state);
+    this.scheduleCardSettles();
+    if (displayPlacement) this.renderPlacementPreview(displayPlacement);
+
+    // 3. Re-apply candidate highlights (build spots / buyable cards)
+    this.applyHighlights();
+
+    const fitSignature = `${Object.keys(state.mapGraph.nodes).length}:${displayPlacement ? 'placing' : ''}`;
+    if (fitSignature !== this.lastFitSignature) {
+      this.lastFitSignature = fitSignature;
+      if (!this.cameraTween && performance.now() >= this.skipFitUntil) {
+        this.fitCameraToBoard(state, displayPlacement, layout);
+      }
+    }
+    this.refreshLabels(state);
+    this.lastSyncMs = performance.now() - syncStarted;
+  }
+
+  /** Build the label set from projected board state; rendering is screen-space. */
+  private clusterMeshes(
+    members: { id: string; mesh: THREE.Object3D }[],
+    threshold: number
+  ): { id: string; mesh: THREE.Object3D }[][] {
+    const remaining = new Set(members.map((_, index) => index));
+    const clusters: { id: string; mesh: THREE.Object3D }[][] = [];
+    while (remaining.size > 0) {
+      const seed = remaining.values().next().value as number;
+      remaining.delete(seed);
+      const cluster = [members[seed]];
+      const queue = [seed];
+      while (queue.length > 0) {
+        const current = members[queue.shift()!];
+        for (const index of [...remaining]) {
+          const candidate = members[index];
+          const dx = current.mesh.position.x - candidate.mesh.position.x;
+          const dz = current.mesh.position.z - candidate.mesh.position.z;
+          if (dx * dx + dz * dz <= threshold * threshold) {
+            remaining.delete(index);
+            cluster.push(candidate);
+            queue.push(index);
+          }
+        }
+      }
+      clusters.push(cluster);
+    }
+    return clusters;
+  }
+
+  private refreshLabels(state: ProjectedGameState): void {
+    const labels: WorldLabel[] = [];
+    this.groupMembers.clear();
+    const activeActor = state.activeActorId ?? state.activePlayerId;
+
+    for (const node of Object.values(state.mapGraph.nodes)) {
+      if (node.type !== 'ROOM') continue;
+      labels.push({
+        id: `room:${node.id}`,
+        text: String(node.props?.name ?? '房间'),
+        world: [node.position[0], node.position[1] + 0.25, node.position[2] + 1.0],
+        priority: 20,
+        kind: 'room'
+      });
+    }
+
+    for (const player of Object.values(state.players)) {
+      if (!player.alive) continue;
+      const roomId = String(player.customProps?.currentRoomId ?? '');
+      const room = state.mapGraph.nodes[roomId];
+      const seat = Object.values(state.mapGraph.nodes).find(
+        node => node.type === 'SEAT' && node.props?.playerId === player.id
+      );
+      const node = room ?? seat;
+      if (!node) continue;
+      labels.push({
+        id: `player:${player.id}`,
+        text: player.id === activeActor ? `▶ ${player.name}` : player.name,
+        world: [node.position[0], node.position[1] + 0.9, node.position[2]],
+        priority: player.id === activeActor ? 100 : 60,
+        kind: 'player'
+      });
+    }
+
+    for (const entity of Object.values(state.entities)) {
+      const custom = entity.components?.custom;
+      if (!custom?.monster || custom.dead) continue;
+      const entityId = entity.id;
+      if (!entityId) continue;
+      const npc = Object.values(state.npcs ?? {}).find(candidate => candidate.entityId === entityId);
+      const mesh = this.entityMeshes.get(entityId);
+      const spatial = entity.components?.spatial;
+      const x = mesh?.position.x ?? spatial?.x ?? 0;
+      const y = mesh?.position.y ?? spatial?.y ?? 0;
+      const z = mesh?.position.z ?? spatial?.z ?? 0;
+      labels.push({
+        id: `monster:${entityId}`,
+        text: String(custom.name ?? '怪物'),
+        world: [x, y + 0.65, z],
+        priority: npc?.id === activeActor ? 100 : 75,
+        kind: 'monster'
+      });
+    }
+
+    for (const [zoneId, zone] of Object.entries(state.zones)) {
+      const groups = buildCardGroups(zone, state.entities as Record<string, any>);
+      for (const group of groups) {
+        if (group.count < 2) continue;
+        const members = group.entityIds
+          .map(id => ({ id, mesh: this.entityMeshes.get(id) }))
+          .filter((entry): entry is { id: string; mesh: THREE.Object3D } => !!entry.mesh);
+        if (members.length < 2) continue;
+        for (const cluster of this.clusterMeshes(members, 2.4)) {
+          if (cluster.length < 2) continue;
+          const center = cluster.reduce<[number, number, number]>(
+            (sum, member) => [
+              sum[0] + member.mesh.position.x,
+              sum[1] + member.mesh.position.y,
+              sum[2] + member.mesh.position.z
+            ],
+            [0, 0, 0]
+          );
+          const first = state.entities[group.topId];
+          const title =
+            first?.components?.cardFace?.title ??
+            String(first?.components?.custom?.zh ?? first?.components?.custom?.defId ?? group.defId);
+          const id = `${group.id}:${cluster[0].id}`;
+          labels.push({
+            id,
+            text: title,
+            count: cluster.length,
+            world: [
+              center[0] / cluster.length,
+              center[1] / cluster.length + 0.55,
+              center[2] / cluster.length
+            ],
+            priority: 60,
+            kind: 'group',
+            interactive: true,
+            groupId: id
+          });
+          this.groupMembers.set(id, cluster.map(member => member.id));
+        }
+      }
+    }
+
+    for (const id of this.highlightIds) {
+      const entity = state.entities[id];
+      const mesh = this.entityMeshes.get(id);
+      if (!entity || !mesh) continue;
+      const text =
+        entity.components?.cardFace?.title ??
+        String(entity.components?.custom?.zh ?? entity.components?.custom?.name ?? entity.id);
+      labels.push({
+        id: `card:${id}`,
+        text,
+        world: [mesh.position.x, mesh.position.y + 0.4, mesh.position.z],
+        priority: 95,
+        kind: 'card'
+      });
+    }
+
+    if (this.hoveredEntityId && !this.highlightIds.has(this.hoveredEntityId)) {
+      const entity = state.entities[this.hoveredEntityId];
+      const mesh = this.entityMeshes.get(this.hoveredEntityId);
+      if (entity && mesh) {
+        labels.push({
+          id: `card:${this.hoveredEntityId}`,
+          text:
+            entity.components?.cardFace?.title ??
+            String(entity.components?.custom?.zh ?? entity.components?.custom?.name ?? entity.id),
+          world: [mesh.position.x, mesh.position.y + 0.4, mesh.position.z],
+          priority: 96,
+          kind: 'card'
+        });
+      }
+    }
+
+    this.labels.setLabels(labels);
+  }
+
+  private labelObstacles(): ScreenRect[] {
+    const base = this.container.getBoundingClientRect();
+    const obstacles: ScreenRect[] = [];
+    for (const selector of ['.topbar', '.player-rail', '.action-dock', '.math-inspector-panel']) {
+      for (const element of Array.from(document.querySelectorAll(selector))) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        obstacles.push({
+          x: rect.left - base.left,
+          y: rect.top - base.top,
+          width: rect.width,
+          height: rect.height
+        });
+      }
+    }
+    return obstacles;
+  }
+
+  /** Lightweight profiling seam for deciding whether scene diffing is needed. */
+  public getRenderStats(): RenderStats {
+    const info = this.renderer.info;
+    return {
+      calls: info.render.calls,
+      triangles: info.render.triangles,
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+      lastSyncMs: Math.round(this.lastSyncMs * 100) / 100
+    };
+  }
+
+  private clearPreviewObjects(): void {
+    for (const object of this.previewObjects) {
+      this.boardObjectsGroup.remove(object);
+      this.disposeObject3D(object);
+    }
+    this.previewObjects = [];
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  /** Remove and release GPU-side resources; shared texture caches stay alive. */
+  private clearBoardObjects(): void {
+    this.physics.clear();
+    while (this.boardObjectsGroup.children.length > 0) {
+      const child = this.boardObjectsGroup.children[0];
+      this.boardObjectsGroup.remove(child);
+      this.disposeObject3D(child);
+    }
+  }
+
+  private disposeObject3D(root: THREE.Object3D): void {
+    root.traverse(child => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      const material = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
+      if (!material) return;
+      const materials = Array.isArray(material) ? material : [material];
+      for (const entry of materials) {
+        if (child.userData?.ownedTexture && 'map' in entry) {
+          (entry as THREE.MeshBasicMaterial).map?.dispose();
+        }
+        entry.dispose();
+      }
+    });
+  }
+
+  /**
+   * Highlight a set of interactive candidates (board targets, cards).
+   * Re-renders the board so previously highlighted objects return to normal.
+   */
+  public setHighlight(ids: string[] | null, resync = true): void {
+    this.highlightIds = new Set(ids ?? []);
+    if (resync && this.lastRawState) this.syncState(this.lastRawState, this.lastPlacement, this.lastLayout);
+  }
+
+  public getHighlight(): string[] {
+    return [...this.highlightIds];
+  }
+
+  private applyHighlights(): void {
+    if (this.highlightIds.size === 0) return;
+
+    const pulse = (obj: THREE.Object3D) => {
+      obj.traverse(child => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materials.forEach(mat => {
+          const m = mat as THREE.MeshStandardMaterial;
+          if ('emissive' in m && m.emissive) {
+            m.emissive = new THREE.Color(0xd9b45b);
+            m.emissiveIntensity = 0.85;
+          } else if ('color' in m && m.color) {
+            const basic = m as unknown as THREE.MeshBasicMaterial;
+            basic.color = new THREE.Color(0xf6dc9c);
+            basic.opacity = 0.85;
+          }
+        });
+      });
+    };
+
+    this.highlightIds.forEach(id => {
+      const obj = this.nodeMeshes.get(id) || this.edgeMeshes.get(id) || this.entityMeshes.get(id);
+      if (obj) pulse(obj);
+    });
+  }
+
+  private renderMapGraph(state: ProjectedGameState): void {
+    const graph = state.mapGraph;
+
+    // Render Nodes
+    Object.values(graph.nodes).forEach(node => {
+      if (node.type === 'HEX') {
+        const hexMesh = HexTileBuilder.createHexTileMesh(
+          2.15,
+          node.props.resource || 'wood',
+          node.props.diceNumber,
+          node.props.hasRobber
+        );
+        hexMesh.position.set(node.position[0], node.position[1], node.position[2]);
+        this.boardObjectsGroup.add(hexMesh);
+        this.nodeMeshes.set(node.id, hexMesh);
+
+        this.raycaster.registerInteractive(hexMesh, {
+          type: 'NODE',
+          id: node.id,
+          metadata: node.props
+        });
+      } else if (node.type === 'VERTEX') {
+        // Vertex spot for settlements
+        // Render subtle clickable marker if unoccupied
+        if (!node.occupantEntityId) {
+          const vGeom = new THREE.CylinderGeometry(0.17, 0.17, 0.04, 12);
+          const vMat = new THREE.MeshBasicMaterial({
+            color: 0xd9b45b,
+            transparent: true,
+            opacity: 0.22
+          });
+          const vMesh = new THREE.Mesh(vGeom, vMat);
+          vMesh.position.set(node.position[0], 0.205, node.position[2]);
+          this.boardObjectsGroup.add(vMesh);
+          this.nodeMeshes.set(node.id, vMesh);
+
+          this.raycaster.registerInteractive(vMesh, {
+            type: 'NODE',
+            id: node.id,
+            metadata: { type: 'VERTEX' }
+          });
+        }
+      } else if (node.type === 'ROOM') {
+        // Betrayal Room Tile
+        const roomMesh = RoomTileBuilder.createRoomMesh(
+          node.props.name || 'Room',
+          2.84,
+          node.props.color,
+          node.props.doors
+        );
+        roomMesh.position.set(node.position[0], node.position[1], node.position[2]);
+        this.boardObjectsGroup.add(roomMesh);
+        this.nodeMeshes.set(node.id, roomMesh);
+
+        const symbol = node.props?.symbol as string | undefined;
+        if (symbol) {
+          const icon = symbol === 'EVENT' ? '✦' : symbol === 'ITEM' ? '◆' : '👁';
+          const color = symbol === 'EVENT' ? '#e0a25c' : symbol === 'ITEM' ? '#78d6a4' : '#c79bf0';
+          const badge = this.createLabelSprite(icon, color, 46);
+          badge.position.set(node.position[0] + 0.95, 0.34, node.position[2] - 0.95);
+          badge.scale.set(0.42, 0.42, 1);
+          this.boardObjectsGroup.add(badge);
+        }
+
+        // Room names are rendered by the DOM label overlay for collision-free layout.
+
+        this.raycaster.registerInteractive(roomMesh, {
+          type: 'NODE',
+          id: node.id,
+          metadata: node.props
+        });
+      } else if (node.type === 'SEAT') {
+        // Sanguosha seat: brass ring + tinted disc + floating nameplate
+        const seatPlayer = state.players[node.props.playerId];
+        const seatColor = seatPlayer ? new THREE.Color(seatPlayer.color) : new THREE.Color(0x455a64);
+
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(1.45, 0.05, 8, 48),
+          new THREE.MeshStandardMaterial({
+            color: seatColor,
+            emissive: seatColor,
+            emissiveIntensity: 0.35,
+            metalness: 0.7,
+            roughness: 0.3
+          })
+        );
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(node.position[0], 0.06, node.position[2]);
+        this.boardObjectsGroup.add(ring);
+
+        const disc = new THREE.Mesh(
+          new THREE.CircleGeometry(1.42, 48),
+          new THREE.MeshStandardMaterial({
+            color: seatColor,
+            transparent: true,
+            opacity: 0.12,
+            roughness: 0.8
+          })
+        );
+        disc.rotation.x = -Math.PI / 2;
+        disc.position.set(node.position[0], 0.05, node.position[2]);
+        this.boardObjectsGroup.add(disc);
+
+        this.nodeMeshes.set(node.id, ring);
+      }
+    });
+
+    // Render Edges (Catan Road Slots)
+    Object.values(graph.edges).forEach(edge => {
+      if (edge.type === 'ROAD_SLOT' && !edge.occupantEntityId) {
+        const fromNode = graph.nodes[edge.from];
+        const toNode = graph.nodes[edge.to];
+        if (fromNode && toNode) {
+          const mx = (fromNode.position[0] + toNode.position[0]) / 2;
+          const mz = (fromNode.position[2] + toNode.position[2]) / 2;
+
+          const slotGeom = new THREE.BoxGeometry(0.18, 0.04, 1.2);
+          const slotMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.2
+          });
+          const slotMesh = new THREE.Mesh(slotGeom, slotMat);
+          slotMesh.position.set(mx, 0.195, mz);
+
+          // Align rotation with edge angle
+          const angle = Math.atan2(toNode.position[0] - fromNode.position[0], toNode.position[2] - fromNode.position[2]);
+          slotMesh.rotation.y = angle;
+
+          this.boardObjectsGroup.add(slotMesh);
+          this.edgeMeshes.set(edge.id, slotMesh);
+
+          this.raycaster.registerInteractive(slotMesh, {
+            type: 'EDGE',
+            id: edge.id,
+            metadata: { type: 'ROAD_SLOT' }
+          });
+        }
+      }
+    });
+  }
+
+  private renderEntities(state: ProjectedGameState): void {
+    // ---------- Card zones ----------
+    Object.values(state.zones).forEach(zone => {
+      const items = zone.orderedEntities
+        .map(id => state.entities[id])
+        .filter((e): e is Partial<Entity> & { isMasked?: boolean; id: string } => !!e && !!e.id && e.type === 'CARD');
+
+      if (items.length === 0) return;
+
+      if (zone.type === 'DECK' || zone.type === 'DISCARD') {
+        this.renderCardPile(state, zone, items);
+        return;
+      }
+
+      if (zone.type === 'HAND') {
+        this.renderHand(state, zone, items);
+        return;
+      }
+
+      if (zone.type === 'EQUIP' || zone.type === 'JUDGE') {
+        this.renderSeatCards(state, zone, items);
+        return;
+      }
+
+      items.forEach((entity, index) =>
+        this.renderCardEntity(
+          entity,
+          zone,
+          index,
+          items.length,
+          !zone.id.startsWith('zone_room_') || index === items.length - 1
+        )
+      );
+    });
+
+    // ---------- Board buildings (Catan) ----------
+    Object.values(state.entities).forEach(entity => {
+      if (!entity || !entity.id || !entity.components) return;
+
+      if (entity.type === 'BUILDING' && entity.components.building) {
+        const b = entity.components.building;
+        const sp = entity.components.spatial || { x: 0, y: 0.1, z: 0 };
+
+        if (b.type === 'SETTLEMENT') {
+          const mesh = TokenMeshBuilder.createSettlementMesh(b.color);
+          mesh.position.set(sp.x, 0.2, sp.z);
+          this.boardObjectsGroup.add(mesh);
+          this.entityMeshes.set(entity.id, mesh);
+          this.raycaster.registerInteractive(mesh, { type: 'ENTITY', id: entity.id });
+        } else if (b.type === 'CITY') {
+          const mesh = TokenMeshBuilder.createCityMesh(b.color);
+          mesh.position.set(sp.x, 0.2, sp.z);
+          this.boardObjectsGroup.add(mesh);
+          this.entityMeshes.set(entity.id, mesh);
+          this.raycaster.registerInteractive(mesh, { type: 'ENTITY', id: entity.id });
+        } else if (b.type === 'ROAD') {
+          const mesh = TokenMeshBuilder.createRoadMesh(b.color);
+          mesh.position.set(sp.x, 0.19, sp.z);
+
+          if (sp.nodeId && state.mapGraph.edges[sp.nodeId]) {
+            const edge = state.mapGraph.edges[sp.nodeId];
+            const fn = state.mapGraph.nodes[edge.from];
+            const tn = state.mapGraph.nodes[edge.to];
+            if (fn && tn) {
+              mesh.rotation.y = Math.atan2(tn.position[0] - fn.position[0], tn.position[2] - fn.position[2]);
+            }
+          }
+          this.boardObjectsGroup.add(mesh);
+          this.entityMeshes.set(entity.id, mesh);
+        }
+      } else if (entity.type === 'TILE' && entity.components.cardFace?.type === 'NOBLE') {
+        const face = entity.components.cardFace;
+        const mesh = CardMeshBuilder.createCardMesh(face, 1.3, 1.3, !!entity.isMasked);
+        const nobleEntities = Object.values(state.entities).filter(e => e?.components?.cardFace?.type === 'NOBLE');
+        const index = nobleEntities.indexOf(entity);
+        mesh.position.set(-7.6, 0.1, (index - 1) * 1.55);
+        mesh.rotation.y = 0;
+        this.boardObjectsGroup.add(mesh);
+        this.entityMeshes.set(entity.id, mesh);
+      }
+    });
+
+    // ---------- Dice ----------
+    if (state.globalVars.lastDiceRoll && Array.isArray(state.globalVars.lastDiceRoll)) {
+      const rolls = state.globalVars.lastDiceRoll;
+      rolls.forEach((val: number, i: number) => {
+        const diceMesh = DiceMeshBuilder.createDiceMesh(0.55);
+        diceMesh.position.set(4.6 + i * 0.85, 0.28, 3.6);
+        DiceMeshBuilder.setFaceUp(diceMesh, val);
+        this.boardObjectsGroup.add(diceMesh);
+        this.raycaster.registerInteractive(diceMesh, { type: 'DICE', id: `dice_${i}`, metadata: { value: val } });
+        this.physics.add(`dice_${i}`, diceMesh, {
+          kind: 'box',
+          halfExtents: [0.275, 0.275, 0.275]
+        });
+      });
+    }
+
+    // ---------- Splendor gem bank ----------
+    if (state.globalVars.bank) {
+      const bank = state.globalVars.bank;
+      const gemList = ['diamond', 'sapphire', 'emerald', 'ruby', 'onyx', 'gold'] as const;
+      gemList.forEach((gem, idx) => {
+        const count = bank[gem] || 0;
+        const xPos = 7.4;
+        const zPos = (idx - 2.5) * 1.05;
+
+        for (let h = 0; h < Math.min(count, 5); h++) {
+          const chip = TokenMeshBuilder.createGemTokenMesh(gem, 0.36);
+          chip.position.set(xPos - h * 0.16, 0.05 + h * 0.07, zPos);
+          this.boardObjectsGroup.add(chip);
+          this.raycaster.registerInteractive(chip, {
+            type: 'ENTITY',
+            id: `chip_bank_${gem}`,
+            metadata: { gem, count }
+          });
+        }
+      });
+    }
+
+    // ---------- Betrayal explorers ----------
+    if (state.gameId === 'betrayal') {
+      const occupantsByRoom = new Map<string, number>();
+      Object.values(state.players).forEach(p => {
+        if (!p.alive || p.customProps.banished) return;
+        const roomId = p.customProps.currentRoomId;
+        const room = state.mapGraph.nodes[roomId];
+        if (!room) return;
+
+        const slot = occupantsByRoom.get(roomId) ?? 0;
+        occupantsByRoom.set(roomId, slot + 1);
+
+        const angle = (slot % 3) * ((Math.PI * 2) / 3) + Math.PI / 6;
+        const meeple = TokenMeshBuilder.createMeepleMesh(p.role === 'TRAITOR' ? '#d50000' : p.color);
+        meeple.position.set(room.position[0] + Math.cos(angle) * 0.75, 0.1, room.position[2] + 0.42 + Math.sin(angle) * 0.35);
+        meeple.scale.setScalar(0.8);
+        this.boardObjectsGroup.add(meeple);
+        this.entityMeshes.set(`meeple_${p.id}`, meeple);
+      });
+
+      // Monsters are MEEPLE entities with a `monster` custom component.
+      Object.values(state.entities).forEach(entity => {
+        const custom = entity?.components?.custom;
+        if (!entity?.id || entity.type !== 'MEEPLE' || !custom?.monster) return;
+        const spatial = entity.components?.spatial ?? { x: 0, y: 0.12, z: 0 };
+        const roomNode = state.mapGraph.nodes[String(custom.roomId ?? '')];
+        const x = roomNode ? roomNode.position[0] + 0.7 : spatial.x;
+        const z = roomNode ? roomNode.position[2] + 0.5 : spatial.z;
+        const stunned = !!custom.stunned;
+        const monster = TokenMeshBuilder.createMeepleMesh(String(custom.color ?? '#b07bf0'));
+        monster.position.set(x, 0.12, z);
+        monster.scale.setScalar(stunned ? 1.05 : 1.3);
+        if (stunned) monster.rotation.z = Math.PI / 2;
+        this.boardObjectsGroup.add(monster);
+        this.entityMeshes.set(entity.id, monster);
+        this.raycaster.registerInteractive(monster, {
+          type: 'ENTITY',
+          id: entity.id,
+          metadata: custom
+        });
+
+        // Monster nameplates are DOM labels; keep the spatial mesh only.
+      });
+    }
+
+    // ---------- Generic token stacks ----------
+    const tokens = Object.values(state.entities).filter(
+      entity => entity?.id && entity.type === 'TOKEN'
+    );
+    for (const candidate of tokens) {
+      const entity = candidate as Entity;
+      const entityId = String(entity.id);
+      const zone = state.zones[entity.zoneId];
+      if (!zone) continue;
+      const spatial = entity.components?.spatial;
+      const anchor = spatial
+        ? [spatial.x, spatial.y, spatial.z]
+        : zone.anchorPosition ?? [0, 0.1, 0];
+      const index = Math.max(0, zone.orderedEntities.indexOf(entityId));
+      const color = String(entity.components?.custom?.color ?? '#d9b45b');
+      const token = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2, 0.2, 0.07, 24),
+        new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.4 })
+      );
+      token.position.set(anchor[0], anchor[1] + index * 0.06, anchor[2]);
+      this.boardObjectsGroup.add(token);
+      this.entityMeshes.set(entityId, token);
+      this.physics.add(entityId, token, { kind: 'cylinder', radius: 0.2, halfHeight: 0.035 });
+      if (index === zone.orderedEntities.length - 1) {
+        this.raycaster.registerInteractive(token, { type: 'ENTITY', id: entityId });
+      }
+    }
+
+    // ---------- Game-specific table dressing ----------
+    this.renderGameDecor(state);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Card piles (draw deck / discard)                                     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Presentation-only fit: logical coordinates never change. Layout hints
+   * come from GameCapabilities, not from a gameId switch in the renderer.
+   */
+  private fitCameraToBoard(
+    state: ProjectedGameState,
+    placement?: PlacementPreview,
+    layout?: LayoutHints
+  ): void {
+    if (!this.controls) return;
+    const xs: number[] = [];
+    const zs: number[] = [];
+    for (const node of Object.values(state.mapGraph.nodes)) {
+      xs.push(node.position[0]);
+      zs.push(node.position[2]);
+    }
+    if (placement) {
+      xs.push(placement.position[0]);
+      zs.push(placement.position[2]);
+    }
+    if (xs.length === 0) return;
+
+    const padding = layout?.padding ?? 4;
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minZ = Math.min(...zs);
+    const maxZ = Math.max(...zs);
+    const targetX = (minX + maxX) / 2;
+    const targetZ = (minZ + maxZ) / 2;
+    const spanX = maxX - minX + padding * 2;
+    const spanZ = maxZ - minZ + padding * 2;
+    const target = new THREE.Vector3(targetX, 0, targetZ);
+    const direction = this.camera.position.clone().sub(this.controls.target);
+    if ((!this.hasFitted || direction.lengthSq() < 0.001) && layout?.cameraDirection) {
+      direction.set(...layout.cameraDirection);
+    } else if (direction.lengthSq() < 0.001) {
+      direction.set(0.6, 24, 31);
+    }
+    const currentDistance = direction.length();
+    const needed = Math.max(layout?.minDistance ?? 18, Math.max(spanX, spanZ) * 1.22 + 6);
+    const distance = Math.min(180, Math.max(currentDistance, needed));
+
+    this.controls.target.copy(target);
+    this.camera.position.copy(target).add(direction.normalize().multiplyScalar(distance));
+    this.controls.maxDistance = 190;
+    this.controls.update();
+    this.hasFitted = true;
+  }
+
+  private beginPlacementCamera(
+    state: ProjectedGameState,
+    placement: PlacementPreview,
+    layout?: LayoutHints
+  ): void {
+    if (this.cameraTween) return;
+    const startPosition = this.camera.position.clone();
+    const startTarget = this.controls.target.clone();
+    this.prePlacementCamera = {
+      position: startPosition.clone(),
+      target: startTarget.clone()
+    };
+
+    // Use the normal framing computation, then raise it slightly. Restore the
+    // starting pose and tween to the raised pose so placement never snaps.
+    this.fitCameraToBoard(state, placement, layout);
+    const raisedPosition = this.camera.position.clone();
+    const raisedTarget = this.controls.target.clone();
+    this.camera.position.copy(startPosition);
+    this.controls.target.copy(startTarget);
+    raisedPosition.y += Math.max(4, Math.abs(raisedPosition.y) * 0.12);
+    this.startCameraTween(raisedPosition, raisedTarget, 650);
+  }
+
+  private endPlacementCamera(): void {
+    const previous = this.prePlacementCamera;
+    this.prePlacementCamera = undefined;
+    this.skipFitUntil = performance.now() + 850;
+    if (previous) this.startCameraTween(previous.position, previous.target, 650);
+  }
+
+  private startCameraTween(
+    toPosition: THREE.Vector3,
+    toTarget: THREE.Vector3,
+    duration: number
+  ): void {
+    this.cameraTween = {
+      fromPosition: this.camera.position.clone(),
+      fromTarget: this.controls.target.clone(),
+      toPosition: toPosition.clone(),
+      toTarget: toTarget.clone(),
+      startedAt: performance.now(),
+      duration
+    };
+    this.controls.enabled = false;
+  }
+
+  private updateCameraTween(now: number): void {
+    const tween = this.cameraTween;
+    if (!tween) return;
+    const t = Math.min(1, Math.max(0, (now - tween.startedAt) / tween.duration));
+    const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    this.camera.position.lerpVectors(tween.fromPosition, tween.toPosition, eased);
+    this.controls.target.lerpVectors(tween.fromTarget, tween.toTarget, eased);
+    if (t >= 1) {
+      this.cameraTween = undefined;
+      this.controls.enabled = true;
+      this.controls.update();
+    }
+  }
+
+  private renderPlacementPreview(placement: PlacementPreview): void {
+    const group = RoomTileBuilder.createRoomMesh(
+      placement.name,
+      2.84,
+      placement.color,
+      placement.doors as ('N' | 'S' | 'E' | 'W')[]
+    );
+    group.position.set(placement.position[0], placement.position[1] + 0.12, placement.position[2]);
+    group.rotation.y = -placement.rotation * (Math.PI / 2);
+    group.traverse(child => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const material of materials) {
+        if (!material) continue;
+        material.transparent = true;
+        material.opacity = 0.82;
+        material.depthWrite = false;
+      }
+    });
+    this.boardObjectsGroup.add(group);
+    this.previewObjects.push(group);
+
+    const label = this.createLabelSprite(
+      `预览 · ${placement.name} · ${placement.rotation * 90}°`,
+      '#e3c77b',
+      34
+    );
+    label.position.set(placement.position[0], placement.position[1] + 1.1, placement.position[2]);
+    label.scale.set(2.8, 0.42, 1);
+    this.boardObjectsGroup.add(label);
+    this.previewObjects.push(label);
+  }
+
+  private renderCardPile(
+    state: ProjectedGameState,
+    zone: ProjectedGameState['zones'][string],
+    items: (Partial<Entity> & { isMasked?: boolean; id: string })[]
+  ): void {
+    const anchor = zone.anchorPosition ?? [0, 0.06, 0];
+    const isDiscard = zone.type === 'DISCARD';
+    const visible = Math.min(items.length, 4);
+
+    for (let i = 0; i < visible; i++) {
+      const isTop = i === visible - 1;
+      const faceUp = isDiscard && isTop;
+      const face = faceUp ? items[i].components?.cardFace || { title: 'Discard' } : { title: 'Card' };
+      const mesh = CardMeshBuilder.createCardMesh(face, 1.25, 1.85, !faceUp);
+      mesh.position.set(anchor[0], anchor[1] + i * 0.02, anchor[2]);
+      mesh.rotation.y = i % 2 === 0 ? 0.02 : -0.03;
+      this.boardObjectsGroup.add(mesh);
+      if (isTop) this.entityMeshes.set(items[i].id, mesh);
+    }
+
+    const label = this.createLabelSprite(`${zone.name} · ${items.length}`, '#cbb57a');
+    label.position.set(anchor[0], 0.55, anchor[2]);
+    label.scale.set(2.6, 0.52, 1);
+    this.boardObjectsGroup.add(label);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Hands around the table                                              */
+  /* ------------------------------------------------------------------ */
+
+  private seatFrame(state: ProjectedGameState, ownerId?: string) {
+    const seatNode = Object.values(state.mapGraph.nodes).find(
+      n => n.type === 'SEAT' && n.props.playerId === ownerId
+    );
+
+    if (seatNode) {
+      const x = seatNode.position[0];
+      const z = seatNode.position[2];
+      const len = Math.max(0.0001, Math.hypot(x, z));
+      return {
+        x,
+        z,
+        outX: x / len,
+        outZ: z / len,
+        facing: Math.atan2(x / len, z / len)
+      };
+    }
+
+    const ownerIndex = Math.max(0, state.playerOrder.indexOf(ownerId || 'p1'));
+    const seatCount = Math.max(state.playerOrder.length, 2);
+    const theta = Math.PI / 2 + (ownerIndex * Math.PI * 2) / seatCount;
+    const x = Math.cos(theta) * 8.2;
+    const z = Math.sin(theta) * 5.2;
+    return {
+      x,
+      z,
+      outX: Math.cos(theta),
+      outZ: Math.sin(theta),
+      facing: Math.atan2(Math.cos(theta), Math.sin(theta))
+    };
+  }
+
+  private renderHand(
+    state: ProjectedGameState,
+    zone: ProjectedGameState['zones'][string],
+    items: (Partial<Entity> & { isMasked?: boolean; id: string })[]
+  ): void {
+    const frame = this.seatFrame(state, zone.ownerId);
+    const perpX = -frame.outZ;
+    const perpZ = frame.outX;
+
+    const limit = Math.min(items.length, 10);
+    const cardScale = limit > 6 ? 0.5 : limit > 4 ? 0.56 : 0.62;
+    const step = 1.12 * cardScale + 0.08;
+
+    for (let i = 0; i < limit; i++) {
+      const entity = items[i];
+      const face = entity.components?.cardFace || { title: 'Card' };
+      const mesh = CardMeshBuilder.createCardMesh(face, 1.12, 1.68, !!entity.isMasked);
+
+      const spread = (i - (limit - 1) / 2) * step;
+      const fanAngle = (i - (limit - 1) / 2) * 0.055;
+      mesh.scale.set(cardScale, cardScale, cardScale);
+      mesh.position.set(
+        frame.x + frame.outX * 2.0 + perpX * spread,
+        0.13 + Math.abs(fanAngle) * 0.18,
+        frame.z + frame.outZ * 2.0 + perpZ * spread
+      );
+      mesh.rotation.y = frame.facing + fanAngle;
+      this.applyCardVisualOffset(entity.id, mesh);
+      this.boardObjectsGroup.add(mesh);
+      this.entityMeshes.set(entity.id, mesh);
+      this.raycaster.registerInteractive(mesh, { type: 'ENTITY', id: entity.id, metadata: face });
+    }
+  }
+
+  /** Equipment / judgement cards sit beside their owner's seat. */
+  private renderSeatCards(
+    state: ProjectedGameState,
+    zone: ProjectedGameState['zones'][string],
+    items: (Partial<Entity> & { isMasked?: boolean; id: string })[]
+  ): void {
+    const frame = this.seatFrame(state, zone.ownerId);
+    const isEquip = zone.type === 'EQUIP';
+    const perpX = -frame.outZ;
+    const perpZ = frame.outX;
+    const side = isEquip ? 1 : -1;
+    const limit = Math.min(items.length, 4);
+
+    for (let i = 0; i < limit; i++) {
+      const entity = items[i];
+      const face = entity.components?.cardFace || { title: 'Card' };
+      const mesh = CardMeshBuilder.createCardMesh(face, 0.78, 1.16, !!entity.isMasked);
+      const offset = 1.9 + i * 0.55;
+
+      mesh.position.set(
+        frame.x + perpX * side * offset - frame.outX * 0.4,
+        0.12,
+        frame.z + perpZ * side * offset - frame.outZ * 0.4
+      );
+      mesh.rotation.y = frame.facing;
+      this.applyCardVisualOffset(entity.id, mesh);
+      this.boardObjectsGroup.add(mesh);
+      this.entityMeshes.set(entity.id, mesh);
+      this.raycaster.registerInteractive(mesh, { type: 'ENTITY', id: entity.id, metadata: face });
+    }
+
+    const label = this.createLabelSprite(isEquip ? '装备' : '判定区', '#c9b57a', 36);
+    label.position.set(
+      frame.x + perpX * side * 2.05 - frame.outX * 1.4,
+      0.7,
+      frame.z + perpZ * side * 2.05 - frame.outZ * 1.4
+    );
+    label.scale.set(1.5, 0.42, 1);
+    this.boardObjectsGroup.add(label);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Table dressing per game                                             */
+  /* ------------------------------------------------------------------ */
+
+  private renderGameDecor(state: ProjectedGameState): void {
+    if (state.gameId === 'sanguosha') {
+      this.addTableMat(9.6, 7.4, 0, -0.2);
+      const title = this.createLabelSprite('SANGUOSHA · 三国杀', '#c9b57a', 40);
+      title.position.set(0, 0.5, 2.4);
+      title.scale.set(4.4, 0.72, 1);
+      this.boardObjectsGroup.add(title);
+    }
+
+    if (state.gameId === 'splendor') {
+      this.addTableMat(10.2, 7.6, 0.2, 0.1);
+      this.addTableMat(2.3, 6.2, -7.6, 0.1);
+      const title = this.createLabelSprite('DEVELOPMENT MARKET · 发展卡市场', '#c9b57a', 38);
+      title.position.set(0.2, 0.5, -3.9);
+      title.scale.set(5.2, 0.68, 1);
+      this.boardObjectsGroup.add(title);
+
+      // Gem bank tray
+      this.addTableMat(2.4, 7.0, 7.6, 0.1);
+    }
+
+    if (state.gameId === 'catan') {
+      const ports = (state.globalVars.ports ?? []) as {
+        position: [number, number, number];
+        type: string;
+        resource?: string;
+      }[];
+
+      for (const port of ports) {
+        const resLabel: Record<string, string> = {
+          wood: '木材',
+          brick: '砖',
+          sheep: '羊毛',
+          wheat: '麦',
+          ore: '矿'
+        };
+        const text = port.resource ? `${port.type} ${resLabel[port.resource] ?? port.resource}` : port.type;
+        const label = this.createLabelSprite(text, port.type === '2:1' ? '#f6dc9c' : '#cbd5e1', 44);
+        label.position.set(port.position[0], 0.42, port.position[2]);
+        label.scale.set(2.1, 0.46, 1);
+        this.boardObjectsGroup.add(label);
+      }
+
+      const title = this.createLabelSprite('CATAN · 卡坦岛', '#c9b57a', 38);
+      title.position.set(0, 0.5, -6.6);
+      title.scale.set(3.6, 0.62, 1);
+      this.boardObjectsGroup.add(title);
+    }
+
+    if (state.gameId === 'dune_mahjong') {
+      this.renderDuneDecor(state);
+    }
+
+    if (state.gameId === 'betrayal') {
+      const anchors = this.floorAnchorsFor(state);
+      const labels: [string, string][] = [
+        ['BASEMENT', '地下室 · BASEMENT'],
+        ['GROUND', '一楼 · GROUND'],
+        ['UPPER', '二楼 · UPPER']
+      ];
+      for (const [key, text] of labels) {
+        const anchor = anchors[key];
+        if (!anchor) continue;
+        this.addTableMat(anchor.width + 2, anchor.depth + 2, anchor.x, anchor.z);
+        const plate = this.createLabelSprite(text, key === 'BASEMENT' ? '#a9c2d8' : key === 'UPPER' ? '#cbb4e8' : '#e0c98a', 34);
+        plate.position.set(anchor.x, 0.55, anchor.z + anchor.depth / 2 + 1.3);
+        plate.scale.set(6.4, 0.78, 1);
+        this.boardObjectsGroup.add(plate);
+      }
+
+      const title = this.createLabelSprite('BETRAYAL · 山屋惊魂', '#c9b57a', 38);
+      title.position.set(0, 0.5, 9.8);
+      title.scale.set(5.4, 0.66, 1);
+      this.boardObjectsGroup.add(title);
+
+      const roomDeckCount = state.zones.zone_room_deck?.orderedEntities.length ?? 0;
+      const roomDeckLabel = this.createLabelSprite(`房间板块堆 · ${roomDeckCount}`, '#cbb57a', 34);
+      roomDeckLabel.position.set(-12, 0.55, 7.4);
+      roomDeckLabel.scale.set(3.4, 0.5, 1);
+      this.boardObjectsGroup.add(roomDeckLabel);
+
+      if (state.globalVars.hauntTriggered) {
+        const haunt = state.globalVars.haunt as { revealRoomId?: string } | null;
+        const room = haunt?.revealRoomId ? state.mapGraph.nodes[haunt.revealRoomId] : undefined;
+        const sigil = new THREE.Mesh(
+          new THREE.TorusGeometry(1.55, 0.05, 8, 48),
+          new THREE.MeshStandardMaterial({ color: 0xd50000, emissive: 0xd50000, emissiveIntensity: 0.9, roughness: 0.4 })
+        );
+        sigil.rotation.x = -Math.PI / 2;
+        sigil.position.set(room?.position[0] ?? 0, 0.08, room?.position[2] ?? 0);
+        this.boardObjectsGroup.add(sigil);
+      }
+    }
+  }
+
+  private floorAnchorsFor(state: ProjectedGameState): Record<string, { x: number; z: number; width: number; depth: number }> {
+    const groups = new Map<string, { minX: number; maxX: number; minZ: number; maxZ: number }>();
+    for (const node of Object.values(state.mapGraph.nodes)) {
+      if (node.type !== 'ROOM') continue;
+      const floor = String(node.props?.floor ?? '');
+      if (!floor) continue;
+      const range = groups.get(floor) ?? { minX: node.position[0], maxX: node.position[0], minZ: node.position[2], maxZ: node.position[2] };
+      range.minX = Math.min(range.minX, node.position[0]);
+      range.maxX = Math.max(range.maxX, node.position[0]);
+      range.minZ = Math.min(range.minZ, node.position[2]);
+      range.maxZ = Math.max(range.maxZ, node.position[2]);
+      groups.set(floor, range);
+    }
+    const anchors: Record<string, { x: number; z: number; width: number; depth: number }> = {};
+    for (const [floor, range] of groups) {
+      anchors[floor] = {
+        x: (range.minX + range.maxX) / 2,
+        z: (range.minZ + range.maxZ) / 2,
+        width: Math.max(12.6, range.maxX - range.minX + 2.84),
+        depth: Math.max(8, range.maxZ - range.minZ + 2.84)
+      };
+    }
+    return anchors;
+  }
+
+  /** Dark inset mat with a thin brass outline, used to frame card areas. */
+  private addTableMat(width: number, depth: number, x: number, z: number): void {
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.02, depth),
+      new THREE.MeshStandardMaterial({ color: 0x0a1712, roughness: 0.96, metalness: 0.02 })
+    );
+    plate.position.set(x, 0.012, z);
+    plate.receiveShadow = true;
+    this.boardObjectsGroup.add(plate);
+
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(plate.geometry),
+      new THREE.LineBasicMaterial({ color: 0xc9a24a, transparent: true, opacity: 0.4 })
+    );
+    edges.position.set(x, 0.024, z);
+    this.boardObjectsGroup.add(edges);
+  }
+
+  private renderDuneDecor(state: ProjectedGameState): void {
+    // Sand arena floor
+    const sandTex = this.createSandTexture();
+    const inner = new THREE.Mesh(
+      new THREE.CircleGeometry(4.4, 72),
+      new THREE.MeshStandardMaterial({ map: sandTex, roughness: 0.95, metalness: 0.02 })
+    );
+    inner.rotation.x = -Math.PI / 2;
+    inner.position.y = 0.03;
+    inner.receiveShadow = true;
+    this.boardObjectsGroup.add(inner);
+
+    const arena = new THREE.Mesh(
+      new THREE.TorusGeometry(4.42, 0.06, 10, 96),
+      new THREE.MeshStandardMaterial({ color: 0xc9a24a, metalness: 0.85, roughness: 0.28 })
+    );
+    arena.rotation.x = -Math.PI / 2;
+    arena.position.y = 0.05;
+    this.boardObjectsGroup.add(arena);
+
+    // Radial ticks around the wheel
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      const tick = new THREE.Mesh(
+        new THREE.BoxGeometry(0.03, 0.012, i % 3 === 0 ? 0.42 : 0.22),
+        new THREE.MeshStandardMaterial({ color: 0x8a6a2f, roughness: 0.6 })
+      );
+      tick.position.set(Math.cos(a) * 4.15, 0.045, Math.sin(a) * 4.15);
+      tick.rotation.y = -a;
+      this.boardObjectsGroup.add(tick);
+    }
+
+    // Spice tokens clustered at the centre
+    for (let i = 0; i < 16; i++) {
+      const a = i * 0.82;
+      const r = 0.55 + (i % 4) * 0.5;
+      const spice = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.17, 0),
+        new THREE.MeshStandardMaterial({
+          color: 0xe0922f,
+          emissive: 0x6b3f0a,
+          emissiveIntensity: 0.55,
+          roughness: 0.32,
+          metalness: 0.45
+        })
+      );
+      spice.position.set(Math.cos(a) * r, 0.15 + (i % 3) * 0.05, Math.sin(a) * r);
+      spice.rotation.set(i, i * 1.7, i * 0.6);
+      spice.castShadow = true;
+      this.boardObjectsGroup.add(spice);
+    }
+
+    // Two battle dials
+    const dials: { id: string; x: number; color: string; label: string; troops: number }[] = [
+      { id: 'p1', x: -5.9, color: '#2e7d32', label: 'ATREIDES', troops: state.players.p1?.customProps.troops ?? 8 },
+      { id: 'p2', x: 5.9, color: '#c62828', label: 'HARKONNEN', troops: state.players.p2?.customProps.troops ?? 10 }
+    ];
+
+    dials.forEach(dial => {
+      const committed = !!state.globalVars.committedDials?.[dial.id];
+
+      const outer = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.25, 1.3, 0.08, 48),
+        new THREE.MeshStandardMaterial({ color: 0x1b1f24, roughness: 0.6, metalness: 0.3 })
+      );
+      outer.position.set(dial.x, 0.06, 3.4);
+      outer.receiveShadow = true;
+      this.boardObjectsGroup.add(outer);
+
+      const base = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.02, 1.02, 0.1, 48),
+        new THREE.MeshStandardMaterial({
+          color: new THREE.Color(dial.color),
+          roughness: 0.4,
+          metalness: 0.3,
+          emissive: new THREE.Color(dial.color),
+          emissiveIntensity: committed ? 0.55 : 0.08
+        })
+      );
+      base.position.set(dial.x, 0.11, 3.4);
+      this.boardObjectsGroup.add(base);
+
+      const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(1.14, 0.035, 8, 48),
+        new THREE.MeshStandardMaterial({
+          color: committed ? 0xf6dc9c : 0x8a6a2f,
+          emissive: committed ? 0xd9b45b : 0x000000,
+          emissiveIntensity: committed ? 0.9 : 0,
+          metalness: 0.85,
+          roughness: 0.3
+        })
+      );
+      rim.rotation.x = -Math.PI / 2;
+      rim.position.set(dial.x, 0.17, 3.4);
+      this.boardObjectsGroup.add(rim);
+
+      // Troop pips
+      for (let i = 0; i < Math.min(dial.troops, 10); i++) {
+        const a = (i / 10) * Math.PI * 2;
+        const pip = new THREE.Mesh(
+          new THREE.SphereGeometry(0.075, 8, 8),
+          new THREE.MeshStandardMaterial({ color: 0xf0e6cf, roughness: 0.5 })
+        );
+        pip.position.set(dial.x + Math.cos(a) * 0.86, 0.19, 3.4 + Math.sin(a) * 0.86);
+        this.boardObjectsGroup.add(pip);
+      }
+
+      const glyph = this.createLabelSprite(committed ? `LOCKED · ${dial.label}` : dial.label, committed ? '#f6dc9c' : '#cfd8e6', 44);
+      glyph.position.set(dial.x, 0.72, 3.4);
+      glyph.scale.set(2.6, 0.72, 1);
+      this.boardObjectsGroup.add(glyph);
+    });
+
+    // Mahjong mode: tile + pond
+    if (state.globalVars.battleMode === 'MAHJONG') {
+      const tileTex = this.createMahjongTileTexture();
+      const tile = new THREE.Mesh(
+        new THREE.BoxGeometry(1.05, 0.26, 1.45),
+        [
+          new THREE.MeshStandardMaterial({ color: 0xf2efe6, roughness: 0.6 }),
+          new THREE.MeshStandardMaterial({ color: 0xf2efe6, roughness: 0.6 }),
+          new THREE.MeshStandardMaterial({ map: tileTex, roughness: 0.55 }),
+          new THREE.MeshStandardMaterial({ color: 0xe4dfd2, roughness: 0.6 }),
+          new THREE.MeshStandardMaterial({ color: 0xf2efe6, roughness: 0.6 }),
+          new THREE.MeshStandardMaterial({ color: 0xf2efe6, roughness: 0.6 })
+        ]
+      );
+      tile.position.set(0, 0.15, 0.2);
+      tile.rotation.y = 0.35;
+      tile.castShadow = true;
+      this.boardObjectsGroup.add(tile);
+
+      const label = this.createLabelSprite('PRIORITY CLAIM · 吃 / 碰 / 胡', '#f6dc9c', 42);
+      label.position.set(0, 0.95, 5.5);
+      label.scale.set(4.6, 0.7, 1);
+      this.boardObjectsGroup.add(label);
+    } else {
+      const title = this.createLabelSprite('SIMULTANEOUS BATTLE WHEEL', '#d8c9a0', 38);
+      title.position.set(0, 0.8, -5.3);
+      title.scale.set(4.6, 0.66, 1);
+      this.boardObjectsGroup.add(title);
+    }
+  }
+
+  /** Procedural sand texture for the Arrakis battle wheel. */
+  private createSandTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d')!;
+
+    const grad = ctx.createRadialGradient(256, 256, 40, 256, 256, 300);
+    grad.addColorStop(0, '#c9a367');
+    grad.addColorStop(0.55, '#b58a4e');
+    grad.addColorStop(1, '#8d6535');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 512, 512);
+
+    // Ripples
+    ctx.strokeStyle = 'rgba(90, 62, 30, 0.18)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 26; i++) {
+      ctx.beginPath();
+      ctx.arc(256, 256, 26 + i * 9, 0.15 * i, 0.15 * i + 2.2);
+      ctx.stroke();
+    }
+
+    // Grain
+    for (let i = 0; i < 9000; i++) {
+      const x = Math.random() * 512;
+      const y = Math.random() * 512;
+      const a = Math.random() * 0.09;
+      ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,236,196,${a})` : `rgba(80,54,24,${a})`;
+      ctx.fillRect(x, y, 2, 2);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  private createMahjongTileTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 340;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.fillStyle = '#f6f2e6';
+    ctx.fillRect(0, 0, 256, 340);
+    ctx.strokeStyle = '#cfc7b3';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(10, 10, 236, 320);
+
+    // 9 bamboo sticks, stylised
+    ctx.fillStyle = '#1f8a4c';
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        const x = 46 + col * 58;
+        const y = 62 + row * 72;
+        ctx.fillRect(x, y, 16, 48);
+        ctx.beginPath();
+        ctx.arc(x + 8, y - 4, 9, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    ctx.fillStyle = '#2f6b4f';
+    ctx.font = 'bold 30px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('九条', 128, 318);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  private createLabelSprite(text: string, color = '#ffffff', fontSize = 52): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+
+    ctx.clearRect(0, 0, 512, 128);
+    ctx.fillStyle = 'rgba(10,13,19,0.55)';
+    ctx.beginPath();
+    ctx.roundRect(6, 18, 500, 92, 20);
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(217,180,91,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.font = `600 ${fontSize}px "Segoe UI", "PingFang SC", sans-serif`;
+    let fitted = fontSize;
+    while (ctx.measureText(text).width > 462 && fitted > 16) {
+      fitted -= 2;
+      ctx.font = `600 ${fitted}px "Segoe UI", "PingFang SC", sans-serif`;
+    }
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 256, 64);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+    const sprite = new THREE.Sprite(material);
+    sprite.userData.ownedTexture = true;
+    return sprite;
+  }
+
+  private applyCardVisualOffset(entityId: string, mesh: THREE.Object3D): void {
+    const offset = this.cardVisualOffsets.get(entityId);
+    if (!offset) return;
+    mesh.position.x += offset.dx;
+    mesh.position.z += offset.dz;
+  }
+
+  private renderCardEntity(
+    entity: Partial<Entity> & { isMasked?: boolean; id: string },
+    zone: ProjectedGameState['zones'][string],
+    index: number,
+    totalInZone: number,
+    interactive = true
+  ): void {
+    const face = entity.components?.cardFace || { title: 'Card' };
+    const isMasked = !!entity.isMasked;
+    const mesh = CardMeshBuilder.createCardMesh(face, 1.35, 2.0, isMasked);
+
+    if (zone.id === 'zone_market_t1') {
+      mesh.position.set(-3.9 + index * 1.52, 0.1, 2.5);
+      mesh.rotation.y = 0;
+    } else if (zone.id === 'zone_market_t2') {
+      mesh.position.set(-3.9 + index * 1.52, 0.1, 0.1);
+      mesh.rotation.y = 0;
+    } else if (zone.id === 'zone_market_t3') {
+      mesh.position.set(-3.9 + index * 1.52, 0.1, -2.3);
+      mesh.rotation.y = 0;
+    } else if (zone.id.startsWith('zone_tableau_')) {
+      mesh.position.set(-9.4 + (index % 5) * 0.72, 0.1 + index * 0.012, 3.2 + Math.floor(index / 5) * 0.78);
+      mesh.scale.set(0.55, 0.55, 0.55);
+      mesh.rotation.y = 0;
+    } else if (zone.type === 'BOARD') {
+      const roomId = zone.id.startsWith('zone_room_') ? zone.id.slice('zone_room_'.length) : '';
+      const roomNode = roomId ? this.lastState?.mapGraph.nodes[roomId] : undefined;
+      const anchor = roomNode
+        ? [roomNode.position[0], roomNode.position[1] + 0.16, roomNode.position[2]]
+        : zone.anchorPosition ?? [0, 0.16, 0];
+      if (zone.id.startsWith('zone_room_')) {
+        // The module-owned slot is the single source of truth for the item
+        // anchor, layout, scale and layer height. The renderer only converts
+        // that contract into world coordinates.
+        const slot = Object.values(this.lastState?.mapGraph.slots ?? {}).find(
+          candidate =>
+            candidate.nodeId === roomId &&
+            (!candidate.accepts?.entityTypes || candidate.accepts.entityTypes.includes('CARD'))
+        );
+        const local = slot?.local?.position ?? [0.38, 0.16, 0.48];
+        const base = roomNode
+          ? [roomNode.position[0] + local[0], roomNode.position[1] + local[1], roomNode.position[2] + local[2]]
+          : [anchor[0] + local[0], anchor[1] + local[1], anchor[2] + local[2]];
+        const layout = slot?.layout ?? (totalInZone > 1 ? 'FAN' : 'STACK');
+        const scale = slot?.visual?.scale ?? 0.3;
+        const gap = slot?.visual?.gap ?? 0.58;
+        const layerHeight = slot?.visual?.height ?? 0.01;
+        const spread = (index - (totalInZone - 1) / 2) * gap;
+        mesh.scale.set(scale, scale, scale);
+        if (layout === 'FAN') {
+          mesh.position.set(base[0] + spread, base[1], base[2]);
+          mesh.rotation.y = spread * 0.35;
+        } else if (layout === 'STACK') {
+          mesh.position.set(base[0], base[1] + index * layerHeight, base[2]);
+          mesh.rotation.y = 0.18;
+        } else {
+          mesh.position.set(base[0] + spread, base[1], base[2]);
+          mesh.rotation.y = 0;
+        }
+      } else {
+        const shown = Math.min(totalInZone, 4);
+        mesh.scale.set(0.34, 0.34, 0.34);
+        mesh.position.set(anchor[0] + (index - (shown - 1) / 2) * 0.62, anchor[1], anchor[2] + 0.85);
+        mesh.rotation.y = 0;
+      }
+    } else if (zone.type === 'HAND' && zone.anchorPosition) {
+      const anchor = zone.anchorPosition;
+      const shown = Math.min(totalInZone, 7);
+      mesh.scale.set(0.62, 0.62, 0.62);
+      mesh.position.set(anchor[0] + (index - (shown - 1) / 2) * 0.9, anchor[1], anchor[2]);
+      mesh.rotation.y = 0;
+    } else {
+      mesh.position.set((index - totalInZone / 2) * 1.5, 0.1, 0);
+      mesh.rotation.y = 0;
+    }
+
+    this.applyCardVisualOffset(entity.id, mesh);
+    this.boardObjectsGroup.add(mesh);
+    this.entityMeshes.set(entity.id, mesh);
+    if (interactive) {
+      this.raycaster.registerInteractive(mesh, {
+        type: 'ENTITY',
+        id: entity.id,
+        metadata: face
+      });
+    }
+  }
+
+  private onResize(): void {
+    if (!this.container || this.isDestroyed) return;
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h);
+  }
+
+  private renderLoop(): void {
+    if (this.isDestroyed) return;
+    requestAnimationFrame(this.renderLoop.bind(this));
+
+    this.controls.update();
+    this.animQueue.update();
+    const now = performance.now();
+    this.updateCameraTween(now);
+    const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
+    this.lastFrameTime = now;
+    this.physics.step(dt);
+    this.updateCardSettles(now);
+    this.renderer.render(this.scene, this.camera);
+    this.labels.render(
+      this.camera,
+      { width: this.container.clientWidth, height: this.container.clientHeight },
+      this.labelObstacles()
+    );
+  }
+
+  public destroy(): void {
+    this.isDestroyed = true;
+    window.removeEventListener('resize', this.onResize.bind(this));
+    this.clearBoardObjects();
+    this.labels.destroy();
+    this.physics.dispose();
+    this.renderer.dispose();
+  }
+}
