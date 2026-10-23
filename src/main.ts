@@ -101,7 +101,26 @@ class BoardGameSimulatorApp {
       this.scene.clearDropTargets();
     });
     this.bindSession(this.session);
-    this.session.onVisualEvent(events => this.scene.enqueueAnimations(events));
+    this.session.onVisualEvent(events => {
+      this.scene.enqueueAnimations(events);
+      for (const ev of events) {
+        if (ev.type === 'EXPLORE_ROOM') {
+          BoardGameAudio.playDoorOpen();
+        } else if (ev.type === 'CARD_DRAW') {
+          BoardGameAudio.playCardDraw();
+        } else if (ev.type === 'CARD_DISCARD') {
+          BoardGameAudio.playCardDiscard();
+        } else if (ev.type === 'DICE_ROLL') {
+          BoardGameAudio.playDiceRoll();
+        } else if (ev.type === 'DAMAGE_EFFECT') {
+          BoardGameAudio.playCombat('PHYSICAL', true);
+        } else if (ev.type === 'RULE_MUTATE') {
+          BoardGameAudio.playHauntAlarm();
+        } else if (ev.type === 'MOVE_OBJECT') {
+          BoardGameAudio.playFootstep();
+        }
+      }
+    });
     const bootSnapshot = this.session.getSnapshot();
     this.scene.syncState(bootSnapshot.board, bootSnapshot.placement, layoutForGame(this.currentGameId));
     this.lastRevision = bootSnapshot.revision;
@@ -133,6 +152,25 @@ class BoardGameSimulatorApp {
         this.lastPlacementKey = placementKey;
         this.scene.setHighlight(null, false);
         this.scene.syncState(snapshot.board, snapshot.placement, layoutForGame(this.currentGameId));
+      }
+
+      // Dynamic situational ambient soundscape & music update
+      if (this.currentGameId === 'betrayal') {
+        const floor = snapshot.spatial?.activeFloor || 'GROUND';
+        const haunt = snapshot.board.globalVars.haunt as { id: string } | null | undefined;
+        if (haunt) {
+          if (haunt.id === 'mummy') BoardGameAudio.setSoundscape('HAUNT_MUMMY');
+          else if (haunt.id === 'floating_eye') BoardGameAudio.setSoundscape('HAUNT_EYE');
+          else if (haunt.id === 'phantom') BoardGameAudio.setSoundscape('HAUNT_PHANTOM');
+          else if (haunt.id === 'living_dead') BoardGameAudio.setSoundscape('HAUNT_ZOMBIE');
+          else if (haunt.id === 'werewolf') BoardGameAudio.setSoundscape('HAUNT_WEREWOLF');
+        } else {
+          if (floor === 'BASEMENT') BoardGameAudio.setSoundscape('EXPLORATION_BASEMENT');
+          else if (floor === 'UPPER') BoardGameAudio.setSoundscape('EXPLORATION_UPPER');
+          else BoardGameAudio.setSoundscape('EXPLORATION_GROUND');
+        }
+      } else {
+        BoardGameAudio.stopSoundscape();
       }
     });
   }
@@ -186,7 +224,11 @@ class BoardGameSimulatorApp {
         ? 'dice'
         : 'entity';
 
-    this.session.pickTarget({ kind, id: data.id, metadata: data.metadata });
+    this.session.pickTarget({
+      kind,
+      id: data.id,
+      metadata: { ...((data.metadata as object) || {}), intent: 'interact' }
+    });
   }
 
   private wireBootScreen(): void {

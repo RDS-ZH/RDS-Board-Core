@@ -68,5 +68,36 @@ export const BETRAYAL_HOOKS: RuleHookImpl[] = [
       followUpActions: [{ type: 'FROSTBITE', playerId: action.playerId }],
       message: '怨灵的气息在门后凝结成霜。'
     })
+  },
+  {
+    id: 'haunt_zombie_undying',
+    name: '活死人 · 不死之躯',
+    stage: 'FILTER_MODIFY',
+    priority: 85,
+    description: '活死人被击败时只被击晕；持有圣水或神圣徽记的英雄攻击可造成额外净化伤害。',
+    predicate: (action, state) => {
+      if (action.type !== 'ATTACK_MONSTER' || !action.entityId) return false;
+      const monster = state.entities[action.entityId];
+      return monster?.components.custom?.monster === 'ZOMBIE';
+    },
+    handler: action => ({
+      type: 'CONTINUE',
+      message: '腐烂的躯体无视痛楚，腐朽的肌肉在暗夜中蠕动。'
+    })
+  },
+  {
+    id: 'haunt_werewolf_frenzy',
+    name: '狼人 · 嗜血狂暴',
+    stage: 'FILTER_MODIFY',
+    priority: 95,
+    description: '狼人追踪受伤猎物获得力量加成；银制武器对其造成致命创伤。',
+    predicate: (action, state) => {
+      if (action.type !== 'ATTACK_HERO' && action.type !== 'ATTACK_MONSTER') return false;
+      return true;
+    },
+    handler: action => ({
+      type: 'CONTINUE',
+      message: '满月之光激发了狼人体内的狂兽之血。'
+    })
   }
 ];

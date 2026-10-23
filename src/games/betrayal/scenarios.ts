@@ -238,5 +238,62 @@ export const BETRAYAL_SCENARIOS: Record<string, GameScenario> = {
       state.globalVars.bonesRoomId = 'room_crypt';
       return state;
     }
+  },
+
+  haunt_zombie: {
+    description: '剧本 3「活死人之夜」：亡者大军破土而出，英雄需调配圣水净化洋馆。',
+    setup: seed => {
+      const state = setupBetrayal(seed);
+      addExploredRoom(state, 'pentagram_chamber', 2, 1, 'room_basement_landing');
+      addExploredRoom(state, 'laboratory', 2, 2, 'room_basement_landing');
+      addExploredRoom(state, 'kitchen', 1, 0, 'room_entrance_hall');
+      connectRooms(state, 'room_pentagram_chamber', 'room_laboratory', 'DOOR');
+
+      setRoom(state, 'p1', 'room_pentagram_chamber');
+      setRoom(state, 'p2', 'room_laboratory');
+      setRoom(state, 'p3', 'room_kitchen');
+
+      grantItem(state, 'p2', 'revolver');
+      grantItem(state, 'p3', 'medical_kit');
+
+      BetrayalRules.beginHaunt(state, 'p1', 'living_dead', 'room_pentagram_chamber', scenarioContext());
+      state.globalVars.hauntObjectives = {
+        hero: '在实验室调配圣水，前往五芒星堂完成 2 次圣化仪式；或消灭死灵法师。',
+        traitor: '操控活死人大军消灭所有探索者。'
+      };
+      state.activePlayerId = 'p2';
+      state.activeActorId = 'p2';
+      state.players.p2.customProps.movesLeft = 4;
+      state.players.p2.customProps.attacksLeft = 1;
+      return state;
+    }
+  },
+
+  haunt_werewolf: {
+    description: '剧本 5「月圆狂兽」：叛徒化为嗜血狼人，英雄需铸造银弹或压制月相。',
+    setup: seed => {
+      const state = setupBetrayal(seed);
+      addExploredRoom(state, 'workshop', 1, 2, 'room_basement_landing');
+      addExploredRoom(state, 'observatory', 3, 2, 'room_upper_landing');
+      addExploredRoom(state, 'master_bedroom', 1, 2, 'room_upper_landing');
+
+      setRoom(state, 'p1', 'room_workshop');
+      setRoom(state, 'p2', 'room_workshop');
+      setRoom(state, 'p3', 'room_observatory');
+
+      grantItem(state, 'p2', 'revolver');
+      grantItem(state, 'p3', 'candle');
+
+      BetrayalRules.beginHaunt(state, 'p1', 'werewolf', 'room_workshop', scenarioContext());
+      state.globalVars.hauntObjectives = {
+        hero: '在工坊打造银弹射杀狼人；或在观星室完成 3 次月相压制仪式驱散狼人诅咒。',
+        traitor: '在黎明前猎杀并撕碎所有探索者。'
+      };
+      state.activePlayerId = 'p2';
+      state.activeActorId = 'p2';
+      state.players.p2.customProps.movesLeft = 4;
+      state.players.p2.customProps.attacksLeft = 1;
+      return state;
+    }
   }
 };

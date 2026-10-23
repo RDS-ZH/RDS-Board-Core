@@ -39,6 +39,7 @@ import {
   moveMonster,
   movePlayerTo,
   movementCost,
+  ownsDef,
   rollZeroDice
 } from '../../games/betrayal/helpers';
 import { addExploredRoom, grantItem, grantOmen } from '../../games/betrayal/scenarios';
@@ -2006,6 +2007,45 @@ test('fixture betrayal: phantom bones, frost trail and the requiem ritual', () =
   assert(!!chant, 'requiem chant available with bones + holy symbol');
   assert(engine.dispatch(chant!).ok, 'chant accepted');
   assertEqual(engine.getRawState().globalVars.haunt?.progress, 1, 'ritual progress advanced');
+});
+
+test('fixture betrayal: zombie haunt brews holy water, sanctifies house and defeats the dead', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'haunt_zombie' });
+  const raw = engine.getRawState();
+  raw.players.p2.customProps.forcedRoll = { value: 8 };
+
+  const brew = engine.getLegalActions('p2').find(action => action.type === 'BREW_HOLY_WATER');
+  assert(!!brew, 'brew holy water available in laboratory');
+  assert(engine.dispatch(brew!).ok, 'brew accepted');
+  assert(ownsDef(engine.getRawState(), 'p2', 'holy_water'), 'p2 received holy water');
+
+  const move = engine.getLegalActions('p2').find(action => action.type === 'MOVE_TO_ROOM');
+  assert(!!move, 'movement available to pentagram chamber');
+  assert(engine.dispatch({ ...move!, targets: ['room_pentagram_chamber'] }).ok, 'moved to pentagram chamber');
+
+  engine.getRawState().players.p2.customProps.forcedRoll = { value: 8 };
+  const sanctify = engine.getLegalActions('p2').find(action => action.type === 'SANCTIFY_HOUSE');
+  assert(!!sanctify, 'sanctify house available with holy water at sanctuary');
+  assert(engine.dispatch(sanctify!).ok, 'sanctify accepted');
+  assertEqual(engine.getRawState().globalVars.haunt?.progress, 1, 'consecration progress advanced');
+});
+
+test('fixture betrayal: werewolf haunt forges silver bullets and suppresses lunar curse', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'haunt_werewolf' });
+  const raw = engine.getRawState();
+  raw.players.p2.customProps.forcedRoll = { value: 8 };
+
+  const forge = engine.getLegalActions('p2').find(action => action.type === 'FORGE_SILVER');
+  assert(!!forge, 'forge silver available in workshop');
+  assert(engine.dispatch(forge!).ok, 'forge silver accepted');
+  assert(ownsDef(engine.getRawState(), 'p2', 'silver_bullets'), 'p2 received silver bullets');
+
+  movePlayerTo(engine.getRawState(), 'p2', 'room_observatory');
+  engine.getRawState().players.p2.customProps.forcedRoll = { value: 8 };
+  const suppress = engine.getLegalActions('p2').find(action => action.type === 'SUPPRESS_CURSE');
+  assert(!!suppress, 'suppress curse available in observatory');
+  assert(engine.dispatch(suppress!).ok, 'suppress curse accepted');
+  assertEqual(engine.getRawState().globalVars.haunt?.progress, 1, 'moon suppression progress advanced');
 });
 
 test('fixture betrayal: event checks auto-resolve and the safe pays out two items', () => {

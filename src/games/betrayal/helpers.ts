@@ -1173,3 +1173,26 @@ export interface HauntState {
 export function currentHaunt(state: GameState): HauntState | null {
   return (state.globalVars.haunt as HauntState | null | undefined) ?? null;
 }
+
+export function grantScenarioItem(
+  state: GameState,
+  playerId: PlayerId,
+  defId: string,
+  meta: { name: string; en: string; desc: string; kind?: 'weapon' | 'relic' | 'armor' | 'consumable' | 'tool' }
+): Entity {
+  const entity = makeCardEntity(
+    `scenario_item_${playerId}_${defId}_${(state.seq ?? 0).toString(36)}`,
+    `zone_hand_${playerId}`,
+    defId,
+    'ITEM',
+    { name: meta.name, en: meta.en, desc: meta.desc },
+    { tradeable: true, charges: 0, kind: meta.kind ?? 'relic', stealable: true }
+  );
+  entity.visibility = { type: 'PUBLIC' };
+  entity.ownerId = playerId;
+  const next = ECSManager.addEntity(state, entity);
+  state.entities = next.entities;
+  state.zones = next.zones;
+  return state.entities[entity.id];
+}
+

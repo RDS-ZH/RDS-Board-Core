@@ -46,6 +46,7 @@ import {
   drawRoomCandidate,
   ensureRoomZone,
   findHandEntity,
+  grantScenarioItem,
   gridToWorld,
   itemSlotId,
   handEntities,
@@ -464,6 +465,26 @@ export class BetrayalRules {
         );
         if (eyesLeft.length === 0) actions.push({ type: 'DESTROY_BEACON', playerId });
       }
+      if (haunt.id === 'living_dead') {
+        const hasHolyWater = ownsDef(state, playerId, 'holy_water') || ownsDef(state, playerId, 'holy_symbol');
+        const tags = roomTags(state, roomId);
+        if (!hasHolyWater && (tags.includes('science') || tags.includes('food') || roomId.includes('laboratory') || roomId.includes('kitchen'))) {
+          if (!player.customProps.brewUsed) actions.push({ type: 'BREW_HOLY_WATER', playerId });
+        }
+        const atSanctuary = tags.includes('pentagram') || roomId.includes('chapel');
+        if (atSanctuary && hasHolyWater && !player.customProps.sanctifyUsed) {
+          actions.push({ type: 'SANCTIFY_HOUSE', playerId });
+        }
+      }
+      if (haunt.id === 'werewolf') {
+        const tags = roomTags(state, roomId);
+        if (tags.includes('science') || tags.includes('tools') || roomId.includes('workshop')) {
+          if (!player.customProps.forgeUsed) actions.push({ type: 'FORGE_SILVER', playerId });
+        }
+        if (roomId.includes('observatory') || roomId.includes('tower') || tags.includes('high')) {
+          if (!player.customProps.suppressUsed) actions.push({ type: 'SUPPRESS_CURSE', playerId });
+        }
+      }
     }
 
     actions.push({ type: 'END_TURN', playerId });
@@ -744,6 +765,18 @@ export class BetrayalRules {
         break;
       case 'DESTROY_BEACON':
         this.destroyBeacon(s, pid, ctx);
+        break;
+      case 'BREW_HOLY_WATER':
+        this.brewHolyWater(s, pid, ctx);
+        break;
+      case 'SANCTIFY_HOUSE':
+        this.sanctifyHouse(s, pid, ctx);
+        break;
+      case 'FORGE_SILVER':
+        this.forgeSilver(s, pid, ctx);
+        break;
+      case 'SUPPRESS_CURSE':
+        this.suppressCurse(s, pid, ctx);
         break;
       case 'PEEK_TOP':
         s.globalVars.peek = null;
@@ -2164,6 +2197,76 @@ export class BetrayalRules {
     trace(ctx, 'RULE_MUTATE', `💥 ${state.players[pid].name} 炸毁了飞船信标，母舰开始坠落！`, 1200);
   }
 
+  private static brewHolyWater(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    if (!player) return;
+    player.customProps.brewUsed = true;
+    const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 4, reason: '配制圣水' });
+    trace(ctx, 'DICE_ROLL', `调配圣水 · 知识 [${check.dice.join('+')}] = ${check.total} vs 4`, 800);
+    if (check.success) {
+      grantScenarioItem(state, pid, 'holy_water', {
+        name: '圣水',
+        en: 'Holy Water',
+        desc: '在五芒星堂倒入圣水池完成圣化仪式；或对亡者投掷造成净化。',
+        kind: 'relic'
+      });
+      trace(ctx, 'RULE_MUTATE', `⚗️ 【${player.name}】在实验台成功调配出了【圣水】！`, 900);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', `⚗️ 【${player.name}】调配圣水失败，试管中的液体蒸发了。`, 600);
+    }
+  }
+
+  private static sanctifyHouse(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    const haunt = currentHaunt(state);
+    if (!player || !haunt || haunt.id !== 'living_dead') return;
+    player.customProps.sanctifyUsed = true;
+    const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 4, reason: '圣化洋馆' });
+    trace(ctx, 'DICE_ROLL', `圣水池注圣 · 知识 [${check.dice.join('+')}] = ${check.total} vs 4`, 900);
+    if (check.success) {
+      haunt.progress = Number(haunt.progress ?? 0) + 1;
+      trace(ctx, 'RULE_MUTATE', `✨ 【${player.name}】将圣水倒入圣水池！（圣化进度：${haunt.progress}/2）`, 1000);
+    } else {
+      damagePlayer(state, pid, 'MENTAL', 1);
+      trace(ctx, 'DAMAGE_EFFECT', '阴风骤起扑灭了烛光，神智 -1', 500);
+    }
+  }
+
+  private static forgeSilver(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    if (!player) return;
+    player.customProps.forgeUsed = true;
+    const check = rollTraitCheck(state, pid, 'might', { threshold: 4, reason: '打造银弹' });
+    trace(ctx, 'DICE_ROLL', `打造银弹 · 力量 [${check.dice.join('+')}] = ${check.total} vs 4`, 800);
+    if (check.success) {
+      grantScenarioItem(state, pid, 'silver_bullets', {
+        name: '银色子弹',
+        en: 'Silver Bullets',
+        desc: '受祝福的纯银弹药。对狼人进行攻击时力量骰额外 +3。',
+        kind: 'weapon'
+      });
+      trace(ctx, 'RULE_MUTATE', `⚔️ 【${player.name}】成功铸造了对付狂兽的【银色子弹】！`, 900);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', `坩埚火候不足，银弹浇筑失败。`, 600);
+    }
+  }
+
+  private static suppressCurse(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    const haunt = currentHaunt(state);
+    if (!player || !haunt || haunt.id !== 'werewolf') return;
+    player.customProps.suppressUsed = true;
+    const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 4, reason: '月相压制' });
+    trace(ctx, 'DICE_ROLL', `月相压制 · 知识 [${check.dice.join('+')}] = ${check.total} vs 4`, 900);
+    if (check.success) {
+      haunt.progress = Number(haunt.progress ?? 0) + 1;
+      trace(ctx, 'RULE_MUTATE', `🌕 【${player.name}】引导星光压制满月诅咒！（压制进度：${haunt.progress}/3）`, 1000);
+    } else {
+      damagePlayer(state, pid, 'PHYSICAL', 1);
+      trace(ctx, 'DAMAGE_EFFECT', '狼人感应到了星象干扰发出怒嚎，力量震荡受到 1 点创伤', 500);
+    }
+  }
+
   /* ------------------------------------------------------------------ */
   /* Turn flow & monsters                                                */
   /* ------------------------------------------------------------------ */
@@ -2239,6 +2342,10 @@ export class BetrayalRules {
     state.players[next].customProps.chantUsed = false;
     state.players[next].customProps.searchUsed = false;
     state.players[next].customProps.elevatorUsed = false;
+    state.players[next].customProps.brewUsed = false;
+    state.players[next].customProps.sanctifyUsed = false;
+    state.players[next].customProps.forgeUsed = false;
+    state.players[next].customProps.suppressUsed = false;
 
     this.startOfTurn(state, next, ctx);
     trace(ctx, 'ANNOUNCEMENT', `— ${state.players[next].name} 的回合 —`, 300);
@@ -2565,6 +2672,24 @@ export class BetrayalRules {
     if (haunt.id === 'floating_eye') {
       if (haunt.beaconDestroyed) {
         return { gameOver: true, winner: heroes, reason: '飞船信标被炸毁，母舰坠入云层' };
+      }
+    }
+
+    if (haunt.id === 'living_dead') {
+      if (Number(haunt.progress ?? 0) >= 2) {
+        return { gameOver: true, winner: heroes, reason: '圣水净化了洋馆，死者重归安息' };
+      }
+    }
+
+    if (haunt.id === 'werewolf') {
+      if (Number(haunt.progress ?? 0) >= 3) {
+        return { gameOver: true, winner: heroes, reason: '月相压制仪式完成，狼人诅咒被彻底驱散' };
+      }
+      const werewolfLeft = monsterEntities(state).filter(
+        monster => monster.components.custom?.monster === 'WEREWOLF' && !monster.components.custom?.destroyed
+      );
+      if (werewolfLeft.length === 0) {
+        return { gameOver: true, winner: heroes, reason: '银器贯穿了狂兽的心脏，狼人倒在血泊中' };
       }
     }
 
