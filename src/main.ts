@@ -6,6 +6,7 @@ import { BoardGameHUD } from './ui/hud';
 import { MathematicalInspectorUI } from './ui/mathInspector';
 import { CameraView, GameSnapshot, PresentationPorts } from './app/contracts';
 import { layoutForGame } from './app/layout';
+import { NetSession, NetSessionOptions } from './app/netSession';
 import { UniversalSession } from './app/session';
 import type { InteractiveObjectData } from './render/raycaster';
 
@@ -16,7 +17,9 @@ import type { InteractiveObjectData } from './render/raycaster';
  */
 class BoardGameSimulatorApp {
   private readonly scene: BoardGameScene;
-  private session: UniversalSession;
+  private session: UniversalSession | NetSession;
+  /** Set when URL params request a hub-backed lobby session. */
+  private readonly netOptions?: NetSessionOptions;
   private readonly hud: BoardGameHUD;
   private readonly inspector: MathematicalInspectorUI;
   private readonly ports: PresentationPorts;
@@ -39,6 +42,7 @@ class BoardGameSimulatorApp {
     const params = new URLSearchParams(window.location.search);
     this.initialScenario = params.get('scenario') ?? undefined;
     this.currentGameId = params.get('game') ?? 'catan';
+    this.netOptions = parseNetSessionOptions(params);
 
     this.scene = new BoardGameScene(canvasContainer);
     this.session = this.createSession(this.currentGameId, this.initialScenario);
@@ -218,13 +222,19 @@ class BoardGameSimulatorApp {
     }
   }
 
-  private createSession(gameId: string, scenario?: string): UniversalSession {
+  private createSession(gameId: string, scenario?: string): UniversalSession | NetSession {
     const module = GAME_REGISTRY[gameId];
     if (!module) throw new Error(`Unknown game module: ${gameId}`);
+    if (this.netOptions) {
+      const net = new NetSession(module, this.netOptions);
+      // Async connect; failures surface as onNotice toasts, not boot crashes.
+      void net.start();
+      return net;
+    }
     return new UniversalSession(module, 42, scenario);
   }
 
-  private bindSession(session: UniversalSession): void {
+  private bindSession(session: UniversalSession | NetSession): void {
     session.subscribe(snapshot => {
       // Hold every paint until the webfont is usable; the boot promise flushes
       // the newest snapshot it finds.
@@ -286,6 +296,9 @@ class BoardGameSimulatorApp {
 
   private switchGame(gameId: string): void {
     if (gameId === this.currentGameId) return;
+    // Lobby sessions are bound to the room's module; switching would strand
+    // the peer mesh on a different game.
+    if (this.netOptions) return;
     const module = GAME_REGISTRY[gameId];
     if (!module) return;
 
@@ -380,3 +393,31 @@ class BoardGameSimulatorApp {
 window.addEventListener('DOMContentLoaded', () => {
   new BoardGameSimulatorApp();
 });
+
+/**
+ * Lobby URL: ?hub=<origin>&room=<roomId>&token=<hubToken>&player=<playerId>
+ * plus role=host, or role=guest&host=<hostHubUserId>. All four base params
+ * are required; anything less falls back to the local single-player session.
+ */
+function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | undefined {
+  const hub = params.get('hub');
+  const room = params.get('room');
+  const token = params.get('token');
+  const player = params.get('player');
+  if (!hub || !room || !token || !player) return undefined;
+  const role = params.get('role') === 'host' ? 'host' : 'guest';
+  const hostId = params.get('host') ?? undefined;
+  if (role === 'guest' && !hostId) {
+    console.warn('[net-session] guest role requires &host=<hostHubUserId>; falling back to local session');
+    return undefined;
+  }
+  return {
+    hub,
+    roomId: room,
+    token,
+    role,
+    playerId: player,
+    hostId,
+    scenario: params.get('scenario') ?? undefined
+  };
+}

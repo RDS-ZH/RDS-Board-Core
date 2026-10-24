@@ -1,7 +1,9 @@
 import { UniversalGameEngine } from '../core/engine';
 import { describeActionView } from './actionText';
 import { GameModule } from '../core/module';
-import { Action, PlayerId, ProjectedGameState, VisualTraceEvent } from '../core/types';
+import { Action, ActorId, GameState, PlayerId, ProjectedGameState, SelectionCandidate, SelectionSpec, VisualTraceEvent } from '../core/types';
+import { topDecision } from '../core/decisions';
+import { InterruptStackManager } from '../core/stack';
 import {
   BoardPick,
   GamePresenter,
@@ -20,7 +22,7 @@ import {
   ViewerId
 } from './contracts';
 
-interface BoundAction {
+export interface BoundAction {
   ui: UiAction;
   action?: Action;
   highlight?: string[];
@@ -601,6 +603,20 @@ export class UniversalSession implements GamePresenter {
   }
 
   /* ------------------------------------------------------------------ */
+  /* Network bridge seams (used by NetSession host mirroring)            */
+  /* ------------------------------------------------------------------ */
+
+  /** Tail the append-only action log so an external mirror can replay it. */
+  public getActionHistory(): Action[] {
+    return this.engine.getHistory();
+  }
+
+  /** Dispatch a raw action (guest-forwarded by NetSession) through the local engine. */
+  public dispatchAction(action: Action): { ok: boolean; error?: string } {
+    return this.dispatch(action);
+  }
+
+  /* ------------------------------------------------------------------ */
   /* Internals                                                           */
   /* ------------------------------------------------------------------ */
 
@@ -661,7 +677,9 @@ export class UniversalSession implements GamePresenter {
       : [actor];
 
     const legal = acting.flatMap(pid => this.engine.getLegalActions(pid));
-    this.bound = this.buildActions(state, legal);
+    this.bound = buildActionsView(state, legal, (actorId, spec) =>
+      this.engine.getSelectionCandidates(actorId, spec)
+    );
 
     const actorName =
       acting.length > 1 ? `${acting.length} 个行动者待提交` : this.engine.getActorName(acting[0] ?? actor);
@@ -674,8 +692,8 @@ export class UniversalSession implements GamePresenter {
       schemaCount: Object.keys(module.actionSchemas ?? {}).length,
       dependencyErrors: this.engine.getRules().dependencyErrors(),
 
-      phaseLabel: this.phaseLabel(state),
-      mission: this.missionLine(state),
+      phaseLabel: phaseLabelOf(state),
+      mission: missionLineOf(state),
       round: state.round,
       turn: state.turn,
       clock: state.clock,
@@ -688,17 +706,23 @@ export class UniversalSession implements GamePresenter {
         ...state.playerOrder.map(pid => ({ id: pid, name: state.players[pid]?.name ?? pid }))
       ],
 
-      players: this.buildPlayers(state, focus),
-      npcs: this.buildNpcs(state, focusActors),
+      players: buildPlayersView(state, focus),
+      npcs: buildNpcsView(state, focusActors, id => this.engine.getActorName(id)),
       actions: this.bound.map(entry => entry.ui),
       legalCount: legal.length,
 
       stackDepth: state.interruptStack.length,
-      stack: this.buildStack(state),
-      decision: openDecision ? this.buildDecision(state, openDecision) : undefined,
+      stack: buildStackView(state, id => this.engine.getActorName(id)),
+      decision: openDecision
+        ? buildDecisionView(state, openDecision, id => this.engine.getActorName(id))
+        : undefined,
       openDecisions: state.pendingDecisions.filter(w => w.status === 'OPEN').length,
 
-      hooks: this.buildHooks(state),
+      hooks: buildHooksView(
+        state,
+        hookId => this.engine.getRules().get(hookId),
+        id => this.engine.getActorName(id)
+      ),
       spatial: this.buildSpatial(state, actor),
       placement: this.buildPlacement(raw, actor),
       log: {
@@ -727,7 +751,77 @@ export class UniversalSession implements GamePresenter {
     };
   }
 
-  private phaseLabel(state: ProjectedGameState): string {
+
+
+  private buildPlacement(
+    raw: ReturnType<UniversalGameEngine['getRawState']>,
+    actor?: string
+  ): UiPlacement | undefined {
+    const pending = raw.globalVars.pendingRoomPlacement as
+      | { defId: string; rotations?: number[] }
+      | undefined;
+    if (!pending) {
+      this.placementRotation = undefined;
+      return undefined;
+    }
+    const rotations = pending.rotations ?? [0];
+    if (this.placementRotation === undefined || !rotations.includes(this.placementRotation)) {
+      const stored = this.readStoredRotation(pending.defId);
+      this.placementRotation =
+        stored !== undefined && rotations.includes(stored) ? stored : rotations[0];
+    }
+    return buildPlacementView(raw, this.engine.getViewer(), actor, this.placementRotation);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Players                                                             */
+  /* ------------------------------------------------------------------ */
+
+
+
+
+
+  private buildSpatial(state: ProjectedGameState, actor?: string): UiSpatialInfo | undefined {    const floors = state.mapGraph.topology?.layers ?? [];
+    if (floors.length === 0) return undefined;
+    const raw = this.engine.getRawState();
+    const playerRoom = actor ? raw.players[actor]?.customProps?.currentRoomId : undefined;
+    const npcRoom = actor ? raw.npcs?.[actor]?.customProps?.roomId : undefined;
+    const activeNodeId = String(playerRoom ?? npcRoom ?? '') || undefined;
+    return {
+      floors,
+      activeNodeId,
+      activeFloor: activeNodeId ? this.engine.getSpatialFloor(activeNodeId) : undefined
+    };
+  }
+
+
+
+
+
+  /* ------------------------------------------------------------------ */
+  /* Actions                                                             */
+  /* ------------------------------------------------------------------ */
+
+
+
+
+  /* ------------------------------------------------------------------ */
+  /* Stack / decisions / hooks                                           */
+  /* ------------------------------------------------------------------ */
+
+
+
+
+
+
+}
+
+/* -------------------------------------------------------------------------- */
+/* Pure projection → DTO view builders.                                        */
+/* Shared by UniversalSession (host/local) and NetSession (network guest).     */
+/* -------------------------------------------------------------------------- */
+
+export function phaseLabelOf(state: ProjectedGameState): string {
     const openDecision = state.pendingDecisions.find(window => window.status === 'OPEN');
     if (openDecision) {
       return openDecision.secret ? 'SECRET DECISION · 同步盲提' : 'DECISION · 等待提交';
@@ -772,11 +866,7 @@ export class UniversalSession implements GamePresenter {
     }
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Players                                                             */
-  /* ------------------------------------------------------------------ */
-
-  private missionLine(state: ProjectedGameState): string | undefined {
+export function missionLineOf(state: ProjectedGameState): string | undefined {
     if (state.gameId !== 'betrayal') return undefined;
     const objectives = state.globalVars.hauntObjectives as { hero?: string; traitor?: string } | undefined;
     if (!objectives) {
@@ -789,178 +879,7 @@ export class UniversalSession implements GamePresenter {
     return role === 'TRAITOR' ? `叛徒目标：${objectives.traitor ?? '—'}` : `英雄目标：${objectives.hero ?? '—'}`;
   }
 
-  private buildPlacement(
-    raw: ReturnType<UniversalGameEngine['getRawState']>,
-    actor?: string
-  ): UiPlacement | undefined {
-    const pending = raw.globalVars.pendingRoomPlacement as
-      | {
-          playerId?: string;
-          fromRoomId?: string;
-          dir?: string;
-          defId: string;
-          name?: string;
-          en?: string;
-          floor?: string;
-          col?: number;
-          row?: number;
-          position?: [number, number, number];
-          rotations?: number[];
-          localDoors?: string[];
-          color?: string;
-          cost?: number;
-          symbol?: string;
-          text?: string;
-          special?: string;
-          tags?: string[];
-        }
-      | undefined;
-    if (!pending) {
-      this.placementRotation = undefined;
-      return undefined;
-    }
-    const viewer = this.engine.getViewer();
-    if (viewer !== 'GOD' && pending.playerId !== viewer && pending.playerId !== actor) {
-      return undefined;
-    }
-    const rotations = pending.rotations ?? [0];
-    if (this.placementRotation === undefined || !rotations.includes(this.placementRotation)) {
-      const stored = this.readStoredRotation(pending.defId);
-      this.placementRotation =
-        stored !== undefined && rotations.includes(stored) ? stored : rotations[0];
-    }
-
-    const currentRotation = this.placementRotation;
-    const DIR_ORDER = ['N', 'E', 'S', 'W'];
-    const rotateDir = (dir: string, turns: number) => {
-      const idx = DIR_ORDER.indexOf(dir);
-      if (idx < 0) return dir;
-      return DIR_ORDER[(idx + turns) % 4];
-    };
-    const OPPOSITES: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
-    const DELTAS: Record<string, [number, number]> = {
-      N: [0, -1],
-      S: [0, 1],
-      E: [1, 0],
-      W: [-1, 0]
-    };
-    const DIR_ZH: Record<string, string> = { N: '北门', E: '东门', S: '南门', W: '西门' };
-
-    const rawDoors = (pending.localDoors ?? []) as string[];
-    const rotatedDoors = rawDoors.map(d => rotateDir(d, currentRotation));
-    const connections: UiPlacementDoorConnection[] = ['N', 'E', 'S', 'W'].map(dir => {
-      const hasDoor = rotatedDoors.includes(dir);
-      const [dc, dr] = DELTAS[dir] ?? [0, 0];
-      const targetCol = Number(pending.col ?? 0) + dc;
-      const targetRow = Number(pending.row ?? 0) + dr;
-
-      const neighbor = Object.values(raw.mapGraph.nodes).find(node => {
-        const p = node.props;
-        return (
-          node.type === 'ROOM' &&
-          p?.floor === pending.floor &&
-          Number(p?.col) === targetCol &&
-          Number(p?.row) === targetRow
-        );
-      });
-
-      if (!hasDoor) {
-        return {
-          dir,
-          dirZh: DIR_ZH[dir],
-          connected: false,
-          status: 'open'
-        };
-      }
-
-      if (!neighbor) {
-        return {
-          dir,
-          dirZh: DIR_ZH[dir],
-          connected: false,
-          status: 'open'
-        };
-      }
-
-      const neighborDoors = Array.isArray(neighbor.props?.doors) ? neighbor.props.doors : [];
-      const connects = neighborDoors.includes(OPPOSITES[dir]);
-      return {
-        dir,
-        dirZh: DIR_ZH[dir],
-        neighborRoomId: neighbor.id,
-        neighborRoomName: String(neighbor.props?.name ?? ''),
-        connected: connects,
-        status: connects ? 'connected' : 'blocked'
-      };
-    });
-
-    return {
-      defId: pending.defId,
-      name: pending.name ?? pending.defId,
-      en: pending.en,
-      floor: pending.floor ?? '',
-      col: Number(pending.col ?? 0),
-      row: Number(pending.row ?? 0),
-      position: pending.position ?? [0, 0.15, 0],
-      rotations,
-      rotation: this.placementRotation,
-      doors: pending.localDoors ?? [],
-      color: pending.color ?? '#3e2723',
-      cost: pending.cost,
-      symbol: pending.symbol,
-      text: pending.text,
-      special: pending.special,
-      tags: pending.tags,
-      fromRoomId: pending.fromRoomId,
-      entryDir: pending.dir,
-      connections
-    };
-  }
-
-  private buildSpatial(state: ProjectedGameState, actor?: string): UiSpatialInfo | undefined {    const floors = state.mapGraph.topology?.layers ?? [];
-    if (floors.length === 0) return undefined;
-    const raw = this.engine.getRawState();
-    const playerRoom = actor ? raw.players[actor]?.customProps?.currentRoomId : undefined;
-    const npcRoom = actor ? raw.npcs?.[actor]?.customProps?.roomId : undefined;
-    const activeNodeId = String(playerRoom ?? npcRoom ?? '') || undefined;
-    return {
-      floors,
-      activeNodeId,
-      activeFloor: activeNodeId ? this.engine.getSpatialFloor(activeNodeId) : undefined
-    };
-  }
-
-  private buildNpcs(state: ProjectedGameState, focusActors: string[]): UiNpc[] {    const focusSet = new Set(focusActors);
-    return Object.values(state.npcs ?? {}).map(npc => {
-      const entity = npc.entityId ? state.entities[npc.entityId] : undefined;
-      const custom = entity?.components?.custom ?? {};
-      const controller = npc.controllerId ? this.engine.getActorName(npc.controllerId) : undefined;
-      const statusLabels: Record<string, string> = {
-        ACTIVE: '活动',
-        DEAD: '死亡',
-        ELIMINATED: '已消灭',
-        SPECTATOR: '放逐'
-      };
-      const stats = [
-        { label: '状态', value: statusLabels[npc.status] ?? npc.status },
-        ...(controller ? [{ label: '控制者', value: controller }] : []),
-        ...(custom.stunned ? [{ label: '状态', value: '💫 击晕' }] : []),
-        ...(custom.carryingGirl ? [{ label: '携带', value: '小女孩' }] : [])
-      ];
-      return {
-        id: npc.id,
-        name: npc.name,
-        color: npc.color,
-        avatar: npc.avatar,
-        status: npc.status,
-        controllerName: controller,
-        isFocus: focusSet.has(npc.id),
-        stats
-      };
-    });
-  }
-
-  private buildPlayers(state: ProjectedGameState, focus: string[]): UiPlayer[] {
+export function buildPlayersView(state: ProjectedGameState, focus: string[]): UiPlayer[] {
     const focusSet = new Set(focus);
 
     return state.playerOrder.map(pid => {
@@ -1106,11 +1025,45 @@ export class UniversalSession implements GamePresenter {
     });
   }
 
-  /* ------------------------------------------------------------------ */
-  /* Actions                                                             */
-  /* ------------------------------------------------------------------ */
+export function buildNpcsView(
+  state: ProjectedGameState,
+  focusActors: string[],
+  actorName: (actorId: ActorId) => string
+): UiNpc[] {    const focusSet = new Set(focusActors);
+    return Object.values(state.npcs ?? {}).map(npc => {
+      const entity = npc.entityId ? state.entities[npc.entityId] : undefined;
+      const custom = entity?.components?.custom ?? {};
+      const controller = npc.controllerId ? actorName(npc.controllerId) : undefined;
+      const statusLabels: Record<string, string> = {
+        ACTIVE: '活动',
+        DEAD: '死亡',
+        ELIMINATED: '已消灭',
+        SPECTATOR: '放逐'
+      };
+      const stats = [
+        { label: '状态', value: statusLabels[npc.status] ?? npc.status },
+        ...(controller ? [{ label: '控制者', value: controller }] : []),
+        ...(custom.stunned ? [{ label: '状态', value: '💫 击晕' }] : []),
+        ...(custom.carryingGirl ? [{ label: '携带', value: '小女孩' }] : [])
+      ];
+      return {
+        id: npc.id,
+        name: npc.name,
+        color: npc.color,
+        avatar: npc.avatar,
+        status: npc.status,
+        controllerName: controller,
+        isFocus: focusSet.has(npc.id),
+        stats
+      };
+    });
+  }
 
-  private buildActions(state: ProjectedGameState, actions: Action[]): BoundAction[] {
+export function buildActionsView(
+  state: ProjectedGameState,
+  actions: Action[],
+  getSelectionCandidates: (actorId: ActorId, spec: SelectionSpec) => SelectionCandidate[]
+): BoundAction[] {
     const bound: BoundAction[] = [];
     const groups = new Map<string, { action: Action; ids: string[] }>();
 
@@ -1146,6 +1099,7 @@ export class UniversalSession implements GamePresenter {
       bound.push({
         ui: {
           id: `a${bound.length}`,
+          actionType: type,
           icon: config.icon,
           label: `${config.label} · ${bucket.ids.length} 处可选`,
           hint: config.hint,
@@ -1171,14 +1125,13 @@ export class UniversalSession implements GamePresenter {
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
-      const view = this.describeAction(state, action);
+      const view = describeActionView(state, action);
       if (!view) continue;
 
       const selection = action.selection
         ? {
             spec: action.selection,
-            candidates: this.engine
-              .getSelectionCandidates(action.actorId ?? action.playerId, action.selection)
+            candidates: getSelectionCandidates(action.actorId ?? action.playerId, action.selection)
               .map(candidate => ({ id: candidate.id, label: candidate.label, icon: candidate.icon }))
           }
         : undefined;
@@ -1191,6 +1144,7 @@ export class UniversalSession implements GamePresenter {
       bound.push({
         ui: {
           id: `a${bound.length}`,
+          actionType: action.type,
           icon: view.icon,
           label: view.label,
           hint: view.hint,
@@ -1212,26 +1166,18 @@ export class UniversalSession implements GamePresenter {
     return endTurn ? [...bound.filter(entry => entry !== endTurn), endTurn] : bound;
   }
 
-  private describeAction(
-    state: ProjectedGameState,
-    action: Action
-  ): { icon: string; label: string; hint: string; tone: UiAction['tone']; fields?: UiAction['fields'] } | null {
-    return describeActionView(state, action);
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* Stack / decisions / hooks                                           */
-  /* ------------------------------------------------------------------ */
-
-  private buildStack(state: ProjectedGameState): UiStackFrame[] {
+export function buildStackView(
+  state: ProjectedGameState,
+  actorName: (actorId: ActorId) => string
+): UiStackFrame[] {
     return [...state.interruptStack].reverse().map(frame => ({
       id: frame.id,
       title: frame.title,
       description: frame.description,
       status: frame.status,
-      sourceName: this.engine.getActorName(frame.sourcePlayerId),
+      sourceName: actorName(frame.sourcePlayerId),
       targetName: frame.targetPlayerId
-        ? this.engine.getActorName(frame.targetPlayerId)
+        ? actorName(frame.targetPlayerId)
         : undefined,
       window: frame.responseWindow
         ? {
@@ -1245,7 +1191,7 @@ export class UniversalSession implements GamePresenter {
               const response = frame.responseWindow!.pendingResponses[pid];
               return {
                 id: pid,
-                name: this.engine.getActorName(pid),
+                name: actorName(pid),
                 pending: !response || response === 'PENDING'
               };
             })
@@ -1254,7 +1200,11 @@ export class UniversalSession implements GamePresenter {
     }));
   }
 
-  private buildDecision(state: ProjectedGameState, window: ProjectedGameState['pendingDecisions'][number]): UiDecision {
+export function buildDecisionView(
+  state: ProjectedGameState,
+  window: ProjectedGameState['pendingDecisions'][number],
+  actorName: (actorId: ActorId) => string
+): UiDecision {
     return {
       id: window.id,
       title: window.title,
@@ -1269,17 +1219,19 @@ export class UniversalSession implements GamePresenter {
         window.deadline === undefined ? undefined : Math.max(0, window.deadline - state.clock),
       participants: window.participants.map(pid => ({
         id: pid,
-        name: this.engine.getActorName(pid),
+        name: actorName(pid),
         committed: window.submissions[pid] !== undefined
       }))
     };
   }
 
-  private buildHooks(state: ProjectedGameState): UiHook[] {
-    const registry = this.engine.getRules();
-
+export function buildHooksView(
+  state: ProjectedGameState,
+  lookup: (hookId: string) => { name: string; stage: string; priority: number; description: string } | undefined,
+  actorName: (actorId: ActorId) => string
+): UiHook[] {
     return state.activeHooks.map(instance => {
-      const impl = registry.get(instance.hookId);
+      const impl = lookup(instance.hookId);
       return {
         instanceId: instance.instanceId,
         hookId: instance.hookId,
@@ -1288,7 +1240,7 @@ export class UniversalSession implements GamePresenter {
         priority: impl?.priority ?? 0,
         description: impl?.description ?? '实现未注册：状态中只保存 hookId。',
         ownerName: instance.ownerId
-          ? this.engine.getActorName(instance.ownerId)
+          ? actorName(instance.ownerId)
           : undefined,
         params:
           instance.params && Object.keys(instance.params).length > 0
@@ -1297,4 +1249,147 @@ export class UniversalSession implements GamePresenter {
       };
     });
   }
+
+export type PlacementSource = Pick<ProjectedGameState, 'globalVars' | 'mapGraph'>;
+
+/** Build the pending-room-tile DTO from any state carrying globalVars + mapGraph. */
+export function buildPlacementView(
+  state: PlacementSource,
+  viewer: ViewerId,
+  actor: string | undefined,
+  rotation: number
+): UiPlacement | undefined {
+    const pending = state.globalVars.pendingRoomPlacement as
+      | {
+          playerId?: string;
+          fromRoomId?: string;
+          dir?: string;
+          defId: string;
+          name?: string;
+          en?: string;
+          floor?: string;
+          col?: number;
+          row?: number;
+          position?: [number, number, number];
+          rotations?: number[];
+          localDoors?: string[];
+          color?: string;
+          cost?: number;
+          symbol?: string;
+          text?: string;
+          special?: string;
+          tags?: string[];
+        }
+      | undefined;
+    if (!pending) return undefined;
+    if (viewer !== 'GOD' && pending.playerId !== viewer && pending.playerId !== actor) {
+      return undefined;
+    }
+    const currentRotation = rotation;
+    const DIR_ORDER = ['N', 'E', 'S', 'W'];
+    const rotateDir = (dir: string, turns: number) => {
+      const idx = DIR_ORDER.indexOf(dir);
+      if (idx < 0) return dir;
+      return DIR_ORDER[(idx + turns) % 4];
+    };
+    const OPPOSITES: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+    const DELTAS: Record<string, [number, number]> = {
+      N: [0, -1],
+      S: [0, 1],
+      E: [1, 0],
+      W: [-1, 0]
+    };
+    const DIR_ZH: Record<string, string> = { N: '北门', E: '东门', S: '南门', W: '西门' };
+
+    const rawDoors = (pending.localDoors ?? []) as string[];
+    const rotatedDoors = rawDoors.map(d => rotateDir(d, currentRotation));
+    const connections: UiPlacementDoorConnection[] = ['N', 'E', 'S', 'W'].map(dir => {
+      const hasDoor = rotatedDoors.includes(dir);
+      const [dc, dr] = DELTAS[dir] ?? [0, 0];
+      const targetCol = Number(pending.col ?? 0) + dc;
+      const targetRow = Number(pending.row ?? 0) + dr;
+
+      const neighbor = Object.values(state.mapGraph.nodes).find(node => {
+        const p = node.props;
+        return (
+          node.type === 'ROOM' &&
+          p?.floor === pending.floor &&
+          Number(p?.col) === targetCol &&
+          Number(p?.row) === targetRow
+        );
+      });
+
+      if (!hasDoor) {
+        return {
+          dir,
+          dirZh: DIR_ZH[dir],
+          connected: false,
+          status: 'open'
+        };
+      }
+
+      if (!neighbor) {
+        return {
+          dir,
+          dirZh: DIR_ZH[dir],
+          connected: false,
+          status: 'open'
+        };
+      }
+
+      const neighborDoors = Array.isArray(neighbor.props?.doors) ? neighbor.props.doors : [];
+      const connects = neighborDoors.includes(OPPOSITES[dir]);
+      return {
+        dir,
+        dirZh: DIR_ZH[dir],
+        neighborRoomId: neighbor.id,
+        neighborRoomName: String(neighbor.props?.name ?? ''),
+        connected: connects,
+        status: connects ? 'connected' : 'blocked'
+      };
+    });
+
+    return {
+      defId: pending.defId,
+      name: pending.name ?? pending.defId,
+      en: pending.en,
+      floor: pending.floor ?? '',
+      col: Number(pending.col ?? 0),
+      row: Number(pending.row ?? 0),
+      position: pending.position ?? [0, 0.15, 0],
+      rotations: pending.rotations ?? [0],
+      rotation,
+      doors: pending.localDoors ?? [],
+      color: pending.color ?? '#3e2723',
+      cost: pending.cost,
+      symbol: pending.symbol,
+      text: pending.text,
+      special: pending.special,
+      tags: pending.tags,
+      fromRoomId: pending.fromRoomId,
+      entryDir: pending.dir,
+      connections
+    };
+}
+
+/** Focus set P(s) computed from a (projected) state alone — no engine needed. */
+export function focusActorsOf(state: ProjectedGameState): ActorId[] {
+  const raw = state as unknown as GameState;
+  const decision = topDecision(raw);
+  if (decision && decision.status === 'OPEN') {
+    return decision.participants.filter(pid => decision.submissions[pid] === undefined);
+  }
+  const frame = InterruptStackManager.peek(raw);
+  if (frame && frame.status === 'WAITING_INPUT' && frame.responseWindow) {
+    const eligible = frame.responseWindow.eligibleActors ?? frame.responseWindow.eligiblePlayers;
+    return eligible.filter(
+      pid => !frame.responseWindow!.pendingResponses[pid] || frame.responseWindow!.pendingResponses[pid] === 'PENDING'
+    );
+  }
+  return state.gameOver ? [] : [state.activeActorId ?? state.activePlayerId];
+}
+
+/** Actor display name from a (projected) state alone. */
+export function actorNameOf(state: ProjectedGameState, actorId: ActorId): string {
+  return state.players[actorId]?.name ?? state.npcs?.[actorId]?.name ?? actorId;
 }
