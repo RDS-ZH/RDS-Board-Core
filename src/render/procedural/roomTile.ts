@@ -874,6 +874,60 @@ export class RoomTileBuilder {
   }
 
   /**
+   * The sealed front door of the mansion. The entrance hall is the first tile
+   * every game opens on, and its south wall is only a cutaway stub, so the door
+   * is a free-standing leaf pair that reads taller than the wall — implying the
+   * storey continues behind the cut.
+   */
+  private static addFrontDoor(target: THREE.Object3D): void {
+    const z = HALF - THICK - 0.02;
+    const W = DOOR_HALF * 2 - 0.02;
+    const H = 0.66;
+    const base = 0.12;
+
+    // Stone surround + carved lintel
+    this.addBox(target, W + 0.16, H + 0.12, 0.05, MAT.paleStone, 0, base + (H + 0.12) / 2, z - 0.01, false);
+    this.addBox(target, W + 0.26, 0.07, 0.09, MAT.marble, 0, base + H + 0.12, z + 0.01);
+    this.addBox(target, W + 0.3, 0.03, 0.11, MAT.brass, 0, base + H + 0.17, z + 0.01, false);
+
+    // Two leaves
+    for (const sx of [-1, 1]) {
+      const cx = sx * (W / 4 + 0.005);
+      this.addBox(target, W / 2 - 0.015, H, 0.045, MAT.mahogany, cx, base + H / 2, z + 0.035);
+      // Vertical plank seams
+      for (const dx of [-0.06, 0.06]) {
+        this.addBox(target, 0.008, H - 0.06, 0.05, MAT.ebony, cx + dx, base + H / 2, z + 0.036, false);
+      }
+      // Iron studs
+      for (let row = 0; row < 3; row += 1) {
+        for (let col = 0; col < 3; col += 1) {
+          this.addBox(
+            target,
+            0.014,
+            0.014,
+            0.012,
+            MAT.iron,
+            cx - 0.075 + col * 0.075,
+            base + 0.16 + row * 0.19,
+            z + 0.06,
+            false
+          );
+        }
+      }
+      // Ring knocker
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.032, 0.008, 6, 14), MAT.iron);
+      ring.position.set(cx + sx * 0.12, base + H * 0.52, z + 0.065);
+      target.add(ring);
+      this.addBox(target, 0.03, 0.02, 0.014, MAT.iron, cx + sx * 0.12, base + H * 0.52 + 0.035, z + 0.06, false);
+    }
+
+    // Centre stile with a heavy bar lock
+    this.addBox(target, 0.024, H, 0.055, MAT.ebony, 0, base + H / 2, z + 0.04, false);
+    this.addBox(target, 0.2, 0.035, 0.03, MAT.iron, 0, base + H * 0.6, z + 0.075, false);
+    this.addBox(target, 0.05, 0.05, 0.03, MAT.agedBrass, 0, base + H * 0.6, z + 0.09, false);
+  }
+
+  /**
    * Builds the complete 2.5D room: floor slab, cutaway walls with trim,
    * door openings, a door-aware furniture layout, and merged draw calls.
    *
@@ -977,6 +1031,11 @@ export class RoomTileBuilder {
     }
 
     /* --------------------------- wall decoration --------------------------- */
+    // The mansion's sealed front door anchors the entrance hall.
+    if (options?.special === 'FRONT_DOOR' || roomId === 'entrance_hall') {
+      this.addFrontDoor(shell);
+    }
+
     // Tall furniture hides anything hung at eye level, so record how much each
     // wall run is already occupied before choosing what to hang.
     const usedWalls = new Map<DoorDir, number>();

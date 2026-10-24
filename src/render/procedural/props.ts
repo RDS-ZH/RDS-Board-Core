@@ -202,25 +202,61 @@ const singleBed = (): THREE.Group => {
   );
 };
 
+/**
+ * Armoire with the right-hand door standing ajar, revealing a rail of hanging
+ * clothes. The gap is what sells the model at this scale — a closed box only
+ * ever reads as "cabinet".
+ */
 const wardrobe = (): THREE.Group => {
   const W = 0.58;
   const H = 0.56;
   const D = 0.26;
   const g = new THREE.Group();
-  g.add(box(W, H, D, MAT.mahogany, 0, H / 2 + 0.04, 0));
-  g.add(box(W + 0.06, 0.05, D + 0.05, MAT.ebony, 0, H + 0.075, 0));
-  g.add(box(W + 0.02, 0.05, D + 0.02, MAT.ebony, 0, 0.03, 0));
-  // Doors
-  g.add(box(W / 2 - 0.03, H - 0.1, 0.015, MAT.walnut, -W / 4, H / 2 + 0.04, D / 2 + 0.005));
-  g.add(box(W / 2 - 0.03, H - 0.1, 0.015, MAT.walnut, W / 4, H / 2 + 0.04, D / 2 + 0.005));
-  // Recessed panels
-  for (const sx of [-1, 1]) {
-    g.add(box(W / 2 - 0.1, H * 0.5, 0.008, MAT.ebony, (sx * W) / 4, H * 0.62, D / 2 + 0.013, 0, false));
-    g.add(box(W / 2 - 0.1, H * 0.16, 0.008, MAT.ebony, (sx * W) / 4, H * 0.3, D / 2 + 0.013, 0, false));
+  const bodyZ = -0.02;
+
+  // Carcass: back, sides, top, plinth
+  g.add(box(W, H, 0.016, MAT.mahogany, 0, H / 2 + 0.04, bodyZ - D / 2 + 0.008));
+  g.add(box(0.016, H, D, MAT.mahogany, -W / 2 + 0.008, H / 2 + 0.04, bodyZ));
+  g.add(box(0.016, H, D, MAT.mahogany, W / 2 - 0.008, H / 2 + 0.04, bodyZ));
+  g.add(box(W, 0.022, D, MAT.mahogany, 0, H + 0.028, bodyZ));
+  g.add(box(W + 0.06, 0.05, D + 0.05, MAT.ebony, 0, H + 0.075, bodyZ));
+  g.add(box(W + 0.03, 0.05, D + 0.03, MAT.ebony, 0, 0.03, bodyZ));
+  // Interior partition + shelf
+  g.add(box(0.012, H - 0.08, D - 0.04, MAT.walnut, 0.02, H / 2 + 0.04, bodyZ, 0, false));
+  g.add(box(W - 0.05, 0.014, D - 0.05, MAT.walnut, 0, H * 0.72, bodyZ, 0, false));
+
+  // Hanging rail with garments in the left bay
+  const railX = -W / 4;
+  g.add(cyl(0.006, 0.006, H * 0.36, MAT.brass, railX, H * 0.86, bodyZ, 5, false));
+  const coatColors = [MAT.wineVelvet, MAT.plumVelvet, MAT.leather];
+  for (let i = 0; i < 3; i += 1) {
+    const z = bodyZ - 0.06 + i * 0.045;
+    g.add(box(0.075, 0.22, 0.026, coatColors[i % coatColors.length], railX, H * 0.72, z, 0, false));
+    g.add(box(0.05, 0.03, 0.02, MAT.ebony, railX, H * 0.855, z, 0, false));
   }
-  // Brass knobs
-  g.add(sph(0.014, MAT.brass, -0.026, H * 0.5, D / 2 + 0.024));
-  g.add(sph(0.014, MAT.brass, 0.026, H * 0.5, D / 2 + 0.024));
+  // Folded linen stack on the shelf
+  for (let i = 0; i < 2; i += 1) {
+    g.add(box(0.11, 0.028, 0.1, i === 0 ? MAT.agedLinen : MAT.linen, W * 0.2, H * 0.74 + i * 0.03, bodyZ, 0, false));
+  }
+
+  // Left door, closed
+  g.add(box(W / 2 - 0.028, H - 0.08, 0.014, MAT.walnut, -W / 4, H / 2 + 0.04, bodyZ + D / 2 - 0.01));
+  g.add(box(W / 2 - 0.1, H * 0.46, 0.008, MAT.ebony, -W / 4, H * 0.63, bodyZ + D / 2 - 0.002, 0, false));
+  g.add(box(W / 2 - 0.1, H * 0.15, 0.008, MAT.ebony, -W / 4, H * 0.3, bodyZ + D / 2 - 0.002, 0, false));
+
+  // Right door, hinged open toward the viewer
+  const doorPivot = new THREE.Group();
+  doorPivot.position.set(W / 2 - 0.012, 0, bodyZ + D / 2 - 0.012);
+  doorPivot.rotation.y = -0.45;
+  const doorW = W / 2 - 0.028;
+  doorPivot.add(box(doorW, H - 0.08, 0.014, MAT.walnut, -doorW / 2, H / 2 + 0.04, 0));
+  doorPivot.add(box(doorW - 0.07, H * 0.46, 0.008, MAT.ebony, -doorW / 2, H * 0.63, 0.011, 0, false));
+  doorPivot.add(box(doorW - 0.07, H * 0.15, 0.008, MAT.ebony, -doorW / 2, H * 0.3, 0.011, 0, false));
+  doorPivot.add(sph(0.013, MAT.brass, -doorW + 0.02, H * 0.5, 0.018));
+  g.add(doorPivot);
+
+  // Brass knob on the closed door
+  g.add(sph(0.013, MAT.brass, -0.03, H * 0.5, bodyZ + D / 2 + 0.006));
   return g;
 };
 
@@ -1222,7 +1258,7 @@ const cobweb = (): THREE.Group => {
 export const PROPS: Record<string, PropSpec> = {
   fourPosterBed: { id: 'fourPosterBed', build: fourPosterBed, width: 0.9, depth: 0.96, height: 0.55, anchor: 'N' },
   singleBed: { id: 'singleBed', build: singleBed, width: 0.58, depth: 0.92, height: 0.35, anchor: 'N' },
-  wardrobe: { id: 'wardrobe', build: wardrobe, width: 0.62, depth: 0.3, height: 0.66, anchor: 'N' },
+  wardrobe: { id: 'wardrobe', build: wardrobe, width: 0.62, depth: 0.4, height: 0.66, anchor: 'N' },
   nightstand: { id: 'nightstand', build: nightstand, width: 0.24, depth: 0.24, height: 0.34, anchor: 'N' },
   cradle: { id: 'cradle', build: cradle, width: 0.38, depth: 0.34, height: 0.4, anchor: 'N' },
   rockingHorse: { id: 'rockingHorse', build: rockingHorse, width: 0.46, depth: 0.24, height: 0.38, anchor: 'CENTER' },

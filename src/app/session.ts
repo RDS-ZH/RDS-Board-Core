@@ -299,16 +299,20 @@ export class UniversalSession implements GamePresenter {
     if ((pick.kind === 'node' || pick.kind === 'edge') && !this.activeBoardGroup) {
       const node = this.snapshot.board.mapGraph.nodes[pick.id];
       const edge = this.snapshot.board.mapGraph.edges[pick.id];
+      const isRoom = pick.kind === 'node' && node?.type === 'ROOM';
       const title =
         pick.kind === 'node'
           ? String(node?.props?.name ?? node?.type ?? '节点')
           : String(edge?.id ?? '边');
       this.emit({
         kind: 'event',
-        icon: '🔍',
-        title: `已选中 ${title}`,
-        detail: '这是查看操作；移动/建造请先从动作栏选择动作。',
-        durationMs: 3200
+        icon: isRoom ? '🏚' : '🔍',
+        title: isRoom ? `察看了 ${title}` : `已选中 ${title}`,
+        detail: isRoom
+          ? '房间档案已更新；点 ◎ 可拉近镜头观察陈设。'
+          : '这是查看操作；移动/建造请先从动作栏选择动作。',
+        durationMs: 2600,
+        roomId: isRoom ? pick.id : undefined
       });
       return { handled: true };
     }
