@@ -903,6 +903,11 @@ export class UniversalSession implements GamePresenter {
       capabilities: { ...module.meta.capabilities },
       schemaCount: Object.keys(module.actionSchemas ?? {}).length,
       dependencyErrors: this.engine.getRules().dependencyErrors(),
+      scenarios: Object.entries(module.scenarios ?? {}).map(([id, scenario]) => ({
+        id,
+        description: scenario.description ?? id,
+        selected: id === this.scenario
+      })),
 
       phaseLabel: this.phaseLabel(state),
       mission: this.missionLine(state),
