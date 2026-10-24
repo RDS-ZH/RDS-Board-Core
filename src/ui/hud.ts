@@ -32,6 +32,9 @@ export class BoardGameHUD {
   /** Room the player last clicked; the dossier follows it until the turn moves. */
   private pinnedRoomId?: string;
   private lastActorRoomId?: string;
+  /** Set of room ids already seen, for the "new room discovered" reveal. */
+  private knownRooms?: Set<string>;
+  private sheetTimer: number | null = null;
 
   constructor(
     container: HTMLElement,
@@ -53,6 +56,10 @@ export class BoardGameHUD {
     this.unsubSnapshot?.();
     this.unsubNotice?.();
     this.closePayload();
+    // Switching fixtures must not treat the new board as "rooms discovered".
+    this.knownRooms = undefined;
+    this.pinnedRoomId = undefined;
+    this.lastActorRoomId = undefined;
     this.presenter = presenter;
     this.bindPresenter(presenter);
     this.syncSoundButton();
@@ -396,7 +403,7 @@ export class BoardGameHUD {
    * Framed card detail sheet in the mansion's own visual language: aged
    * parchment, a suit-coloured header ribbon, and a wax seal for omens.
    */
-  public showCardSheet(card: UiCardDetail): void {
+  public showCardSheet(card: UiCardDetail, options: { reveal?: boolean; footer?: string } = {}): void {
     let layer = this.container.querySelector('#card-sheet-layer') as HTMLElement | null;
     if (!layer) {
       layer = document.createElement('div');
@@ -417,6 +424,7 @@ export class BoardGameHUD {
       .map(row => `<li><span>${row.label}</span><b>${row.value}</b></li>`)
       .join('');
 
+    layer.classList.toggle('is-reveal', !!options.reveal);
     layer.innerHTML = `
       <article class="card-sheet" data-kind="${card.kind}" style="--ink:${theme.ink};--ribbon:${theme.ribbon}">
         <button class="cs-close" type="button" aria-label="关闭">×</button>
@@ -429,20 +437,66 @@ export class BoardGameHUD {
           <p class="cs-desc">${card.desc}</p>
           ${facts ? `<ul class="cs-facts">${facts}</ul>` : ''}
         </div>
-        <div class="cs-foot">点击牌堆或场景实体继续</div>
+        <div class="cs-foot">${options.footer ?? '点击牌堆或场景实体继续'}</div>
       </article>
     `;
     layer.classList.add('open');
 
     const close = () => {
-      layer!.classList.remove('open');
+      layer!.classList.remove('open', 'is-reveal');
       layer!.innerHTML = '';
     };
     layer.querySelector('.cs-close')?.addEventListener('click', close);
     layer.addEventListener('click', event => {
       if (event.target === layer) close();
     });
-    window.setTimeout(close, 9000);
+    if (this.sheetTimer) window.clearTimeout(this.sheetTimer);
+    this.sheetTimer = window.setTimeout(close, options.reveal ? 7000 : 9000);
+  }
+
+  /**
+   * Discovery moment: when a newly explored room enters the projection, present
+   * it like a drawn card instead of silently growing the board.
+   */
+  private maybeRevealRoom(snapshot: GameSnapshot): void {
+    const rooms = Object.values(snapshot.board.mapGraph.nodes).filter(node => node.type === 'ROOM');
+    if (!this.knownRooms) {
+      // First paint: register the opening layout without a cutscene.
+      this.knownRooms = new Set(rooms.map(node => node.id));
+      return;
+    }
+    const fresh = rooms.filter(node => !this.knownRooms!.has(node.id));
+    for (const node of rooms) this.knownRooms.add(node.id);
+    if (fresh.length === 0) return;
+
+    const node = fresh[fresh.length - 1];
+    const props = (node.props ?? {}) as Record<string, unknown>;
+    const floorId = String(props.floor ?? '');
+    const floorLabel = floorId === 'BASEMENT' ? '地下室' : floorId === 'UPPER' ? '二楼' : '一楼';
+    const doors = Array.isArray(props.doors) ? (props.doors as string[]) : [];
+    const symbol =
+      props.symbol === 'OMEN'
+        ? '预兆 👁'
+        : props.symbol === 'ITEM'
+        ? '遗物 ◆'
+        : props.symbol === 'EVENT'
+        ? '事件 ✦'
+        : '无符号';
+    this.pinnedRoomId = node.id;
+    this.showCardSheet(
+      {
+        title: String(props.name ?? '房间'),
+        en: String(props.en ?? ''),
+        kind: 'ROOM',
+        desc: String(props.text ?? ''),
+        facts: [
+          { label: '楼层', value: floorLabel },
+          { label: '已连通门位', value: doors.join(' · ') || '无' },
+          { label: '符号', value: symbol }
+        ]
+      },
+      { reveal: true, footer: '新房间已加入洋馆布局' }
+    );
   }
 
   private syncSoundButton(): void {
@@ -552,6 +606,7 @@ export class BoardGameHUD {
     this.renderPlayers(snapshot);
     this.renderRoomCard(snapshot);
     this.renderDock(snapshot);
+    this.maybeRevealRoom(snapshot);
   }
 
   /**
