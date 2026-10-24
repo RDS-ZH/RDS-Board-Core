@@ -11,7 +11,8 @@ export default defineConfig({
       { find: '@rds/games', replacement: pkg('games') },
       { find: '@rds/app', replacement: pkg('app') },
       { find: '@rds/net', replacement: pkg('net') },
-      { find: '@rds/web', replacement: fileURLToPath(new URL('./apps/web/src', import.meta.url)) }
+      { find: '@rds/web', replacement: fileURLToPath(new URL('./apps/web/src', import.meta.url)) },
+      { find: '@rds/room-protocol', replacement: fileURLToPath(new URL('./packages/room-protocol/src/index.ts', import.meta.url)) }
     ]
   },
   // 相对路径：dist 会被挂在子路径（如 Hub 的 /games/rds-board-core/）下提供，
