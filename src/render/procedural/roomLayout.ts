@@ -436,11 +436,13 @@ export function layoutRoom(request: LayoutRequest): LayoutResult {
       const host = centrepiece;
       const offX = host.rect.w / 2 + spec.width / 2 + gap;
       const offZ = host.rect.d / 2 + spec.depth / 2 + gap;
+      // Satellite props are built facing +Z, so the yaw must turn their front
+      // toward the host: north seat faces +Z (yaw 0), west seat faces +X (π/2).
       const candidates = [
-        { x: host.x, z: host.z - offZ, yaw: Math.PI },
-        { x: host.x, z: host.z + offZ, yaw: 0 },
-        { x: host.x - offX, z: host.z, yaw: -Math.PI / 2 },
-        { x: host.x + offX, z: host.z, yaw: Math.PI / 2 }
+        { x: host.x, z: host.z - offZ, yaw: 0 },
+        { x: host.x, z: host.z + offZ, yaw: Math.PI },
+        { x: host.x - offX, z: host.z, yaw: Math.PI / 2 },
+        { x: host.x + offX, z: host.z, yaw: -Math.PI / 2 }
       ];
       // Shuffle deterministically so chairs do not always ring in the same order.
       const rot = Math.floor(rng() * candidates.length);
