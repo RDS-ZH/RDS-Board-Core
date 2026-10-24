@@ -1050,6 +1050,30 @@ export class UniversalSession implements GamePresenter {
 
 
 
+
+  private buildHooks(state: ProjectedGameState): UiHook[] {
+    const registry = this.engine.getRules();
+
+    return state.activeHooks.map(instance => {
+      const impl = registry.get(instance.hookId);
+      return {
+        instanceId: instance.instanceId,
+        hookId: instance.hookId,
+        name: impl?.name ?? instance.hookId,
+        stage: impl?.stage ?? 'UNKNOWN',
+        priority: impl?.priority ?? 0,
+        description: impl?.description ?? '实现未注册：状态中只保存 hookId。',
+        ownerName: instance.ownerId
+          ? this.engine.getActorName(instance.ownerId)
+          : undefined,
+        params:
+          instance.params && Object.keys(instance.params).length > 0
+            ? JSON.stringify(instance.params)
+            : '—'
+      };
+    });
+  }
+
 }
 
 /* -------------------------------------------------------------------------- */

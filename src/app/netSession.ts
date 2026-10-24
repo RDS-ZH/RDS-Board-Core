@@ -39,6 +39,7 @@ import {
   GamePresenter,
   GameSnapshot,
   UiAction,
+  UiHistoryEntry,
   UiNotice,
   UiSpatialInfo,
   ViewerId
@@ -127,6 +128,7 @@ export class NetSession implements GamePresenter {
   private snapshot?: GameSnapshot;
   private bound: BoundAction[] = [];
   private legal: Action[] = [];
+  private history: UiHistoryEntry[] = [];
   private activeBoardGroup?: { type: string; idKey: 'targetEdgeId' | 'targetNodeId' | 'entityId'; targets: string[] };
   private armedPlacement?: { entityId: string };
   private placementRotation?: number;
@@ -818,6 +820,18 @@ export class NetSession implements GamePresenter {
     if (!placement) this.placementRotation = undefined;
     else if (this.placementRotation === undefined) this.placementRotation = placement.rotation;
 
+    // Guest activity feed: derive UiHistoryEntry from the authoritative actionLog
+    // (visual trace events do not cross the wire).
+    this.history = state.actionLog.slice(-60).map((action, i) => ({
+      id: `n${state.actionLog.length - Math.min(60, state.actionLog.length) + i}`,
+      kind: 'system' as const,
+      icon: '•',
+      title: `${actorName(action.actorId ?? action.playerId)}：${action.type}`,
+      round: state.round,
+      turn: state.turn,
+      actorName: actorName(action.actorId ?? action.playerId)
+    })).reverse();
+
     this.snapshot = {
       revision: this.netRevision,
       gameId: module.meta.id,
@@ -851,6 +865,7 @@ export class NetSession implements GamePresenter {
       openDecisions: state.pendingDecisions.filter(w => w.status === 'OPEN').length,
 
       hooks: buildHooksView(state, () => undefined, actorName),
+      history: this.history,
       spatial: this.buildSpatial(state, actor),
       placement,
       log: {
