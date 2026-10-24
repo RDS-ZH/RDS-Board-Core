@@ -66,6 +66,32 @@ export class LabelOverlay {
     this.onGroupDrag = callback;
   }
 
+  /**
+   * Exact chip text width using the same face the chip renders with.
+   *
+   * A per-character estimate cannot serve both "公爵夫人" and "Alice": CJK glyphs
+   * are ~1em wide while Latin averages half that, and the mismatch truncates
+   * room names with an ellipsis.
+   */
+  private readonly measureText = (() => {
+    const cache = new Map<string, number>();
+    let ctx: CanvasRenderingContext2D | null | undefined;
+    return (text: string): number => {
+      const cached = cache.get(text);
+      if (cached !== undefined) return cached;
+      if (ctx === undefined) {
+        ctx = document.createElement('canvas').getContext('2d');
+        if (ctx) {
+          // Mirrors .label-chip so layout boxes match painted boxes.
+          ctx.font = '500 12px "AlibabaPuHuiTi", "PingFang SC", "Segoe UI", sans-serif';
+        }
+      }
+      const width = ctx ? ctx.measureText(text).width : text.length * 12;
+      cache.set(text, width);
+      return width;
+    };
+  })();
+
   public render(
     camera: THREE.Camera,
     viewport: { width: number; height: number },
@@ -82,7 +108,7 @@ export class LabelOverlay {
       anchorWorld.set(label.id, { x, y });
     }
 
-    const placements = layoutLabels(anchors, viewport, obstacles);
+    const placements = layoutLabels(anchors, viewport, obstacles, this.measureText);
     const visible = new Set(placements.map(place => place.id));
 
     for (const placement of placements) {

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CatanResource } from '../../games/catan/setup';
+import { CANVAS_FONT_STACK } from '../fonts';
 
 /**
  * Procedural Catan hex tile builder.
@@ -197,7 +198,7 @@ export class HexTileBuilder {
 
     const isRed = number === 6 || number === 8;
     ctx.fillStyle = isRed ? '#c62828' : '#2b2b2b';
-    ctx.font = 'bold 84px "Segoe UI", Arial, sans-serif';
+    ctx.font = `700 84px ${CANVAS_FONT_STACK}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`${number}`, 128, 116);

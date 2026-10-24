@@ -16,6 +16,7 @@ import { buildCardGroups } from './cardGroups';
 import { cardGroupKey } from './cardGroups';
 import { PresentationPhysics } from './physics';
 import { BoardGameAudio } from './audio';
+import { CANVAS_FONT_STACK, ensureCanvasFontsReady } from './fonts';
 
 export type CameraPreset = 'ISOMETRIC' | 'TOP_DOWN' | 'PLAYER_1' | 'PLAYER_2';
 
@@ -2609,7 +2610,7 @@ export class BoardGameScene {
     }
 
     ctx.fillStyle = '#2f6b4f';
-    ctx.font = 'bold 30px "Segoe UI", sans-serif';
+    ctx.font = `700 30px ${CANVAS_FONT_STACK}`;
     ctx.textAlign = 'center';
     ctx.fillText('九条', 128, 318);
 
@@ -2620,33 +2621,39 @@ export class BoardGameScene {
 
   private createLabelSprite(text: string, color = '#ffffff', fontSize = 52): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 128;
+    canvas.width = 1024;
+    canvas.height = 256;
     const ctx = canvas.getContext('2d')!;
 
-    ctx.clearRect(0, 0, 512, 128);
-    ctx.fillStyle = 'rgba(10,13,19,0.55)';
+    ctx.clearRect(0, 0, 1024, 256);
+    ctx.fillStyle = 'rgba(10,13,19,0.72)';
     ctx.beginPath();
-    ctx.roundRect(6, 18, 500, 92, 20);
+    ctx.roundRect(12, 36, 1000, 184, 40);
     ctx.fill();
 
-    ctx.strokeStyle = 'rgba(217,180,91,0.35)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(217,180,91,0.45)';
+    ctx.lineWidth = 4;
     ctx.stroke();
 
-    ctx.font = `600 ${fontSize}px "Segoe UI", "PingFang SC", sans-serif`;
-    let fitted = fontSize;
-    while (ctx.measureText(text).width > 462 && fitted > 16) {
-      fitted -= 2;
-      ctx.font = `600 ${fitted}px "Segoe UI", "PingFang SC", sans-serif`;
+    const scale = 2;
+    const scaledFontSize = fontSize * scale;
+    ctx.font = `600 ${scaledFontSize}px ${CANVAS_FONT_STACK}`;
+    let fitted = scaledFontSize;
+    while (ctx.measureText(text).width > 920 && fitted > 28) {
+      fitted -= 4;
+      ctx.font = `600 ${fitted}px ${CANVAS_FONT_STACK}`;
     }
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, 256, 64);
+    ctx.fillText(text, 512, 128);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
+    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.anisotropy = 4;
     const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
     const sprite = new THREE.Sprite(material);
     sprite.userData.ownedTexture = true;

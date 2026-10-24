@@ -1,9 +1,10 @@
 import { GAME_REGISTRY } from './games/registry';
 import { BoardGameScene, CameraPreset } from './render/scene';
 import { BoardGameAudio } from './render/audio';
+import { ensureCanvasFontsReady } from './render/fonts';
 import { BoardGameHUD } from './ui/hud';
 import { MathematicalInspectorUI } from './ui/mathInspector';
-import { CameraView, PresentationPorts } from './app/contracts';
+import { CameraView, GameSnapshot, PresentationPorts } from './app/contracts';
 import { layoutForGame } from './app/layout';
 import { UniversalSession } from './app/session';
 import type { InteractiveObjectData } from './render/raycaster';
@@ -26,6 +27,9 @@ class BoardGameSimulatorApp {
   private lastRoomId = '';
   private freeDragEntityId?: string;
   private readonly initialScenario?: string;
+  /** True once the canvas webfont can be used; gates the first board paint. */
+  private fontsReady = false;
+  private pendingSnapshot?: GameSnapshot;
 
   constructor() {
     const canvasContainer = document.getElementById('canvas-container')!;
@@ -191,9 +195,20 @@ class BoardGameSimulatorApp {
       }
     });
     const bootSnapshot = this.session.getSnapshot();
-    this.scene.syncState(bootSnapshot.board, bootSnapshot.placement, layoutForGame(this.currentGameId));
-    this.lastRevision = bootSnapshot.revision;
-    this.lastPlacementKey = bootSnapshot.placement ? `${bootSnapshot.placement.defId}:${bootSnapshot.placement.rotation}` : '';
+    // Canvas compares glyphs against the loaded face: painting the board before
+    // the CJK webfont decodes would bake fallback glyphs into the tile/card
+    // texture caches, which are never rebuilt.
+    this.pendingSnapshot = bootSnapshot;
+    void ensureCanvasFontsReady().then(() => {
+      this.fontsReady = true;
+      const snapshot = this.pendingSnapshot ?? this.session.getSnapshot();
+      this.pendingSnapshot = undefined;
+      this.lastRevision = snapshot.revision;
+      this.lastPlacementKey = snapshot.placement
+        ? `${snapshot.placement.defId}:${snapshot.placement.rotation}`
+        : '';
+      this.scene.syncState(snapshot.board, snapshot.placement, layoutForGame(this.currentGameId));
+    });
 
     this.wireBootScreen();
     this.wireKeyboard();
@@ -211,6 +226,12 @@ class BoardGameSimulatorApp {
 
   private bindSession(session: UniversalSession): void {
     session.subscribe(snapshot => {
+      // Hold every paint until the webfont is usable; the boot promise flushes
+      // the newest snapshot it finds.
+      if (!this.fontsReady) {
+        this.pendingSnapshot = snapshot;
+        return;
+      }
       const placementKey = snapshot.placement
         ? `${snapshot.placement.defId}:${snapshot.placement.rotation}`
         : '';

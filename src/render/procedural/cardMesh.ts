@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CardFace } from '../../core/types';
+import { CANVAS_FONT_STACK, CANVAS_SERIF_STACK } from '../fonts';
 
 /**
  * Procedural Card Builder.
@@ -399,7 +400,7 @@ export class CardMeshBuilder {
     ctx.textAlign = 'center';
     ctx.fillText('• MEMENTO MORI •', 256, 545);
 
-    ctx.font = 'bold 14px "Segoe UI", sans-serif';
+    ctx.font = `700 14px ${CANVAS_FONT_STACK}`;
     ctx.fillStyle = 'rgba(201, 162, 74, 0.6)';
     ctx.fillText('BETRAYAL SIMULATOR', 256, 680);
 
@@ -449,10 +450,10 @@ export class CardMeshBuilder {
       ctx.textBaseline = 'middle';
       ctx.fillText('?', 256, 344);
 
-      ctx.font = '700 24px "Segoe UI", sans-serif';
+      ctx.font = `700 24px ${CANVAS_FONT_STACK}`;
       ctx.fillStyle = '#cfd9e8';
       ctx.fillText('未揭示的秘密', 256, 480);
-      ctx.font = '16px "Segoe UI", sans-serif';
+      ctx.font = `500 16px ${CANVAS_FONT_STACK}`;
       ctx.fillStyle = '#7a8b9e';
       ctx.fillText('HIDDEN INFORMATION · 𝒪(s, i)', 256, 518);
 
@@ -525,10 +526,10 @@ export class CardMeshBuilder {
     // Title
     ctx.fillStyle = '#ffffff';
     let titleSize = 34;
-    ctx.font = `700 ${titleSize}px "Segoe UI", "PingFang SC", "Songti SC", serif`;
+    ctx.font = `700 ${titleSize}px ${CANVAS_SERIF_STACK}`;
     while (ctx.measureText(face.title).width > 420 && titleSize > 18) {
       titleSize -= 2;
-      ctx.font = `700 ${titleSize}px "Segoe UI", "PingFang SC", "Songti SC", serif`;
+      ctx.font = `700 ${titleSize}px ${CANVAS_SERIF_STACK}`;
     }
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -538,14 +539,14 @@ export class CardMeshBuilder {
     if (face.suit && face.rank) {
       const isRed = face.suit === '\u2665' || face.suit === '\u2666';
       ctx.fillStyle = isRed ? '#b3261e' : '#22262b';
-      ctx.font = 'bold 38px "Segoe UI", sans-serif';
+      ctx.font = `700 38px ${CANVAS_FONT_STACK}`;
       ctx.textAlign = 'left';
       ctx.fillText(`${face.rank}`, 38, 154);
       ctx.font = '32px "Segoe UI Symbol", sans-serif';
       ctx.fillText(face.suit, 38, 188);
 
       ctx.textAlign = 'right';
-      ctx.font = 'bold 38px "Segoe UI", sans-serif';
+      ctx.font = `700 38px ${CANVAS_FONT_STACK}`;
       ctx.fillText(`${face.rank}`, 474, 154);
       ctx.font = '32px "Segoe UI Symbol", sans-serif';
       ctx.fillText(face.suit, 474, 188);
@@ -571,7 +572,7 @@ export class CardMeshBuilder {
           : face.type;
 
       ctx.fillStyle = '#fff4d6';
-      ctx.font = '700 16px "Segoe UI", "PingFang SC", sans-serif';
+      ctx.font = `700 16px ${CANVAS_FONT_STACK}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(typeZh, 256, 140);
@@ -611,7 +612,7 @@ export class CardMeshBuilder {
         ctx.lineWidth = 2;
         ctx.stroke();
         ctx.fillStyle = gem === 'diamond' ? '#2b2b2b' : '#ffffff';
-        ctx.font = '700 22px "Segoe UI", sans-serif';
+        ctx.font = `700 22px ${CANVAS_FONT_STACK}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`${req}`, 92, cy);
@@ -629,7 +630,7 @@ export class CardMeshBuilder {
       ctx.lineWidth = 3;
       ctx.stroke();
       ctx.fillStyle = '#231a08';
-      ctx.font = '700 28px "Segoe UI", sans-serif';
+      ctx.font = `700 28px ${CANVAS_FONT_STACK}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(`${face.score}`, 424, 208);
@@ -645,13 +646,13 @@ export class CardMeshBuilder {
     ctx.stroke();
 
     ctx.fillStyle = '#211812';
-    ctx.font = '600 19px "Segoe UI", "PingFang SC", "Songti SC", sans-serif';
+    ctx.font = `600 19px ${CANVAS_FONT_STACK}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
 
     let lines = this.wrapText(ctx, face.desc || '', 384);
     if (lines.length > 8) {
-      ctx.font = '500 16px "Segoe UI", "PingFang SC", "Songti SC", sans-serif';
+      ctx.font = `500 16px ${CANVAS_FONT_STACK}`;
       lines = this.wrapText(ctx, face.desc || '', 384);
     }
     lines.slice(0, 10).forEach((line, i) => ctx.fillText(line, 64, 480 + i * 22));
