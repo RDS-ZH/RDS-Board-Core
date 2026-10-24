@@ -954,6 +954,16 @@ export class BetrayalRules {
       state.globalVars.pendingRoomPlacement = null;
       return;
     }
+    if (!pending.rotations.includes(rotation)) {
+      trace(ctx, 'ANNOUNCEMENT', '该朝向无法接上入口门，请选择其他朝向', 400);
+      return;
+    }
+    const nodeId = `room_${pending.defId}`;
+    if (state.mapGraph.nodes[nodeId]) {
+      trace(ctx, 'ANNOUNCEMENT', `「${def.name}」已在洋馆中，无需重复放置`, 400);
+      state.globalVars.pendingRoomPlacement = null;
+      return;
+    }
     const placed = placeRoomCandidate(
       state,
       {

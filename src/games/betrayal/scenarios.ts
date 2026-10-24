@@ -13,7 +13,7 @@ import { Entity, GameState, PlayerId } from '../../core/types';
 import { ITEM_DEFS, OMEN_DEFS, RoomDef, ROOM_DEFS } from './cards';
 import { BetrayalRules } from './rules';
 import { setupBetrayal } from './setup';
-import { addRoomNode, applyItemGain, applyOmenGain, connectRooms, linkSpecialRooms, makeCardEntity, movePlayerTo } from './helpers';
+import { addRoomNode, applyItemGain, applyOmenGain, commit, connectRooms, linkSpecialRooms, makeCardEntity, movePlayerTo } from './helpers';
 
 function scenarioContext(): ReduceContext {
   let counter = 0;
@@ -33,6 +33,12 @@ export function addExploredRoom(state: GameState, defId: string, col: number, ro
   const nodeId = `room_${defId}`;
   if (!state.mapGraph.nodes[nodeId]) addRoomNode(state, def, col, row, 0, nodeId);
   state.mapGraph.nodes[nodeId].props.resolved = true;
+  const tileId = `roomtile_${defId}`;
+  if (state.entities[tileId]) {
+    commit(state, ECSManager.moveEntity(state, tileId, 'zone_room_placed'));
+    state.entities[tileId].visibility = { type: 'PUBLIC' };
+    state.mapGraph.nodes[nodeId].props.tileEntityId = tileId;
+  }
   if (parentId) connectRooms(state, parentId, nodeId, 'DOOR');
   linkSpecialRooms(state);
   return nodeId;

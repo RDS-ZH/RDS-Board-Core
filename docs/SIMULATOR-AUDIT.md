@@ -190,6 +190,7 @@
 | SA-79 | P2 | 探索出新房间时只有一行日志，缺一个"翻开板块"的仪式感 | 房间揭示没有任何表现层反馈 | 新增房间揭示浮层 `maybeRevealRoom()`：HUD 自己 diff 房间 id 集合（首帧只登记不演出），新板块以居中羊皮纸卡呈现——房名/英文名/印刷描述/楼层/已连通门位/符号，配 `room-reveal-in` 入场动画与 7s 自动收起；切夹具时重置已知集合 | `scripts/tmp-reveal` 实测 `rooms 14 → 15, reveal:true, 花园 / 房间·ROOM / N·S / 事件 ✦` |
 | SA-80 | P2 | 作祟触发的瞬间只有音效和一行文字，缺少整局最重要转折的呈现 | 无作祟过场层 | 新增全屏作祟过场 `maybeShowHaunt()`：暗红径向晕影 + 闪烁的 `THE HAUNT BEGINS` + `HAUNT No.xx` + 大字标题 + 分隔菱形 + 背叛者姓名 + 当前视角目标（`mission` 已按角色投影）+ 点击/9s 关闭。剧本直开时首帧只登记不重播 | 过渡触发实测 `木乃伊苏醒 / 背叛者·公牛奥克斯 / 目标文案` |
 | SA-81 | P1 | 摆放房间时布局变化（楼层自适应偏移、底板扩展、门位连通与UI展示）滞后到放置完成才更新 | `computeAutoLayerOffsets`、`projectForDisplay` 以及 `floorAnchorsFor` 只计算已落入图中的节点，预览中的待放房间被忽略；且旋转时 boardKey 不变跳过底板重绘 | 1. 投影时注入虚拟预览节点 `__placement_preview__`，楼层自适应偏移与桌面底板在预览阶段即完整容纳新房间，落块确认时零跳变零突兀；2. 3D 与 UI 实时计算并高亮门位连通（动态翡翠连通踏板、门洞光环、探索箭头、面墙阻挡标记）；3. 预览阶段 HUD 房间档案与底栏实时呈现待放房间详情与旋转罗盘 | `scripts/verify-placement-live.mjs` 实测通过；UI 矩阵通过 |
+| SA-82 | P0 | 剧本预置房间未从房间牌堆剔除，导致探索时重复抽取已存在房间，放置时被拒绝并误报「该朝向无法接上入口门」 | 剧本 `addExploredRoom` 仅向地图图结构添加节点，未将实体从 `zone_room_deck` 移出；且 `drawRoomCandidate` 未校验节点是否已存在于地图中；`rules.placeDrawnRoom` 将所有放置失败一律误报为门位朝向错误 | 1. `addExploredRoom` 自动将预置板块从牌堆移至 `zone_room_placed`；2. `drawRoomCandidate` 抽牌时检测地图节点存在性，已存在则自动移出并跳过；3. `placeDrawnRoom` 准确校验并提示重名房间，避免误导玩家朝向问题 | 实测二楼平台南门探索成功抽中新房间并顺利落块；全量测试矩阵通过 |
 
 ---
 

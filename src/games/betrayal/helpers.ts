@@ -764,6 +764,13 @@ export function drawRoomCandidate(
       continue;
     }
 
+    const nodeId = `room_${defId}`;
+    if (state.mapGraph.nodes[nodeId]) {
+      // Room tile is already on the board (e.g. pre-placed by scenario or previously explored).
+      commit(state, ECSManager.moveEntity(state, tileId, 'zone_room_placed'));
+      continue;
+    }
+
     if (def.floor !== grid.floor) {
       discarded.push(defId);
       commit(state, ECSManager.moveEntity(state, tileId, 'zone_room_discard'));
