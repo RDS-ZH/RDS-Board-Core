@@ -47,8 +47,8 @@ export class GameRoom implements RoomTransport {
   private caches = new Map<string, ViewerCache>();
   private authorizer?: RoomAuthorizer;
 
-  constructor(module: GameModule, seed = 1, authorizer?: RoomAuthorizer) {
-    this.engine = new UniversalGameEngine(module, seed);
+  constructor(module: GameModule, seed = 1, authorizer?: RoomAuthorizer, scenario?: string) {
+    this.engine = new UniversalGameEngine(module, seed, scenario ? { scenario } : undefined);
     this.authorizer = authorizer;
   }
 

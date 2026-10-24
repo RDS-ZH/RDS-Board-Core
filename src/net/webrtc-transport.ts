@@ -36,7 +36,9 @@ export class HubSignaling {
 
   public connect(roomId: string): Promise<{ selfId: string; peers: string[] }> {
     return new Promise((resolve, reject) => {
-      const url = this.hubOrigin.replace(/^http/, 'ws') + '/ws?token=' + encodeURIComponent(this.token);
+      // hub 参数可能是纯 origin（如 https://host）或已含 /ws 路径的 ws URL（契约形态），统一归一
+      const base = this.hubOrigin.replace(/^http/, 'ws').replace(/\/$/, '');
+      const url = (base.endsWith('/ws') ? base : base + '/ws') + '?token=' + encodeURIComponent(this.token);
       this.ws = new WebSocket(url);
       this.ws.onerror = () => reject(new Error('hub signaling failed: ' + url));
       this.ws.onmessage = ev => {

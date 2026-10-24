@@ -73,6 +73,8 @@ export interface UiActionSelection {
 
 export interface UiAction {
   id: string;
+  /** Underlying kernel action type (also present for board-group shortcuts). */
+  actionType?: string;
   icon: string;
   label: string;
   hint: string;
