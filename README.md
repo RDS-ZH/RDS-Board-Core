@@ -27,6 +27,8 @@ pnpm shots         # 按需生成全部验证截图到 shots/（自动起停 dev
 
 内核本身可在 Node 中通过 Vite SSR 直接加载（见 `scripts/test-core.mjs`），不依赖浏览器。
 
+> 生产环境部署方案（Docker 单容器、Docker Compose 一键编排、Node.js + PM2 进程守护等）详见 **[§10 部署方案](#10-部署方案)**。
+
 ---
 
 ## 2. 这个内核解决什么问题
@@ -303,3 +305,163 @@ scripts/test-core.mjs     # Vite SSR 测试运行器
 | 房间揭示 | 探索出新板块时居中弹出，配入场动画，7s 自动收起 |
 | 作祟过场 | 全屏暗红晕影 + `HAUNT No.xx` + 巨号标题 + 背叛者 + 角色化目标 |
 | 悬停提示 | 光标所指对象与可执行动作（房间/门/卡牌/骰子） |
+
+---
+
+## 10. 部署方案
+
+项目前端与可视化调试器构建后为静态单页应用（SPA + Three.js + Rapier 3D 物理引擎），提供以下三种适合不同场景的生产部署方案。
+
+### 10.1 方案一：Docker 独立容器部署（Nginx 静态加速）
+
+采用多阶段构建（Stage 1: Node.js 22 编译静态资源；Stage 2: Nginx Alpine 托管），镜像体积小（约 20MB），内置 Gzip 压缩、SPA 路由重写、WASM MIME 支持与长效缓存。
+
+#### 1. 构建镜像
+
+```bash
+docker build -t rds-board-core .
+```
+
+#### 2. 运行容器
+
+```bash
+docker run -d \
+  --name rds-board-core \
+  -p 8080:80 \
+  --restart unless-stopped \
+  rds-board-core
+```
+
+容器启动后，访问 `http://localhost:8080/` 即可进入可视化调试界面；健康检查端点为 `http://localhost:8080/healthz`。
+
+> **Node.js 运行时容器（可选）**：如需在容器中直接运行 Node.js / Vite 预览环境，可通过目标构建：  
+> `docker build --target node-runner -t rds-board-core:node .`  
+> `docker run -d --name rds-board-node -p 3000:3000 --restart unless-stopped rds-board-core:node`
+
+---
+
+### 10.2 方案二：Docker Compose 一键容器编排部署
+
+适合快速部署与生产运维管理，配置文件 `docker-compose.yml` 已配置健康检查、重启策略、端口绑定以及日志大小轮转限制。
+
+#### 1. 一键启动
+
+```bash
+# 默认端口 8080 启动生产 Nginx 容器
+docker compose up -d
+```
+
+#### 2. 自定义端口与常用命令
+
+```bash
+# 指定宿主机端口启动（例如 3000）
+PORT=3000 docker compose up -d
+
+# 查看容器运行状态与健康检查结果
+docker compose ps
+
+# 查看实时日志
+docker compose logs -f
+
+# 停止并移除容器
+docker compose down
+```
+
+> **运行 Node.js 运行时服务**：若需启动包含 Node.js 运行时的预览服务，可以使用预置 Profile：  
+> `docker compose --profile node up -d`（默认映射至宿主机 `3000` 端口，可通过 `NODE_PORT=xxxx` 自定义）。
+
+---
+
+### 10.3 方案三：Node.js 运行时与 PM2 进程守护部署（原生服务器部署）
+
+适合拥有 Node.js 环境的 Linux VPS 或独立物理机，无需依赖 Docker 守护进程。
+
+#### 1. 安装依赖并执行生产构建
+
+```bash
+pnpm install
+pnpm run build
+```
+
+#### 2. 使用 PM2 进行守护运行
+
+仓库内已预置 `ecosystem.config.cjs` 配置文件，开箱即用：
+
+```bash
+# 全局安装 PM2（如未安装）
+npm install -g pm2
+
+# 启动服务
+pm2 start ecosystem.config.cjs
+
+# 管理服务
+pm2 status                  # 查看运行状态
+pm2 logs rds-board-core     # 查看输出日志
+pm2 restart rds-board-core  # 重启服务
+pm2 stop rds-board-core     # 停止服务
+
+# 设置开机自启
+pm2 save
+pm2 startup
+```
+
+#### 3. （备选）Systemd 系统服务管理
+
+如果不使用 PM2，也可以使用 Linux Systemd 系统服务守护。新建 `/etc/systemd/system/rds-board-core.service`：
+
+```ini
+[Unit]
+Description=RDS Board Core Visualizer Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/RDS-Board-Core
+ExecStart=/usr/bin/pnpm run preview -- --host 0.0.0.0 --port 3000
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+执行以下命令启用并运行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rds-board-core
+```
+
+---
+
+### 10.4 补充：宿主机原生 Nginx / Caddy 静态托管
+
+如果已有 Web 服务器（如 Nginx 或 Caddy），执行 `pnpm run build` 后直接将 `dist/` 目录指向网站根目录即可。
+
+**Nginx 站点配置参考：**
+
+```nginx
+server {
+    listen 80;
+    server_name board.example.com;
+    root /var/www/RDS-Board-Core/dist;
+    index index.html;
+
+    # Gzip 压缩与静态资源缓存
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript application/wasm;
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+

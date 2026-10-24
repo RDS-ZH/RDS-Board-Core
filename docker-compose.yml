@@ -1,0 +1,47 @@
+services:
+  rds-board-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: rds-board-core:latest
+    container_name: rds-board-core
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # 可选：Node.js 运行时环境（适用于在线预览、开发调试或 Node.js 环境需求）
+  rds-board-node:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node-runner
+    image: rds-board-core:node
+    container_name: rds-board-node
+    restart: unless-stopped
+    ports:
+      - "${NODE_PORT:-3000}:3000"
+    profiles:
+      - node
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
