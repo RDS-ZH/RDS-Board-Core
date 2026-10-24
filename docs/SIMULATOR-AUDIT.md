@@ -188,6 +188,7 @@
 | SA-77 | P2 | 鼠标悬停房间没有任何提示，玩家不知道能不能点 | `onInteractiveHover` 在 main.ts 里被接成空函数 | 新增顶部悬浮芯片 `showHoverHint()`：悬停房间显示"房名 · 点击查看房间档案"，悬停门位/卡牌/骰子各有对应文案 | `scripts/tmp-hover` 实测 `on:true text:舞厅点击查看房间档案` |
 | SA-78 | P1 | **悬停任一房间会让整桌所有房间一起发亮** | 房间按材质合并且共享全局调色板，`applyHoverHighlight` 直接改 `material.emissive`，等于改了所有引用者 | 悬停时对 `userData.shared` 材质做**克隆替换**（记录 original 以便换回，克隆随 hover 结束 dispose）；非共享材质仍走原地 tint | `tsc` + UI 矩阵；悬停不再外溢 |
 | SA-79 | P2 | 探索出新房间时只有一行日志，缺一个"翻开板块"的仪式感 | 房间揭示没有任何表现层反馈 | 新增房间揭示浮层 `maybeRevealRoom()`：HUD 自己 diff 房间 id 集合（首帧只登记不演出），新板块以居中羊皮纸卡呈现——房名/英文名/印刷描述/楼层/已连通门位/符号，配 `room-reveal-in` 入场动画与 7s 自动收起；切夹具时重置已知集合 | `scripts/tmp-reveal` 实测 `rooms 14 → 15, reveal:true, 花园 / 房间·ROOM / N·S / 事件 ✦` |
+| SA-80 | P2 | 作祟触发的瞬间只有音效和一行文字，缺少整局最重要转折的呈现 | 无作祟过场层 | 新增全屏作祟过场 `maybeShowHaunt()`：暗红径向晕影 + 闪烁的 `THE HAUNT BEGINS` + `HAUNT No.xx` + 大字标题 + 分隔菱形 + 背叛者姓名 + 当前视角目标（`mission` 已按角色投影）+ 点击/9s 关闭。剧本直开时首帧只登记不重播 | 过渡触发实测 `木乃伊苏醒 / 背叛者·公牛奥克斯 / 目标文案` |
 
 ---
 
