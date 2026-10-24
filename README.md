@@ -200,7 +200,7 @@ Universal Board Game Kernel — conformance suite
   ✓ presenter: viewer switching reprojects without exposing the raw engine
   ✓ presenter: notices are emitted for kernel visual events
 
-  126 passed, 0 failed · 0 boundary violations
+  131 passed, 0 failed · 0 boundary violations
 ```
 
 ---

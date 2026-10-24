@@ -341,7 +341,7 @@ scenarios: {
 ## 16. 一致性测试
 
 ```bash
-pnpm test          # 126 个内核 + 应用层用例 + 边界检查
+pnpm test          # 131 个内核 + 应用层用例 + 边界检查
 pnpm test:core     # 同上
 ```
 

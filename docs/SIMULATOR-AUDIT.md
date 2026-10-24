@@ -3,7 +3,7 @@
 > 目标：把“手测/黑盒/回放发现的问题”从一次性修复变成**持续收集的模拟器质量清单**。
 > 规则夹具（Catan / Betrayal / …）只是触发器；这里记录的是内核、应用层、渲染层、交互层需要长期优化的问题。
 >
-> 基线：`126 passed / 0 failed / 0 boundary violations`（`node scripts/test-core.mjs`）。
+> 基线：`131 passed / 0 failed / 0 boundary violations`（`node scripts/test-core.mjs`）。
 
 ---
 
@@ -33,7 +33,7 @@
 | SA-02 | P1 | 丢弃物品按钮没有真正落到房间物品堆 | `DROP_ITEM` 被当成“高亮后点 3D 卡牌”的分组；手牌卡片渲染在原点，难以点中 | 每件物品一个独立“丢下”按钮；手牌区增加锚点；房间物品堆可拾取 | `a single highlighted drop executes...`、UI flow |
 | SA-03 | P1 | 新房间只连接探索来源房间；与已有相邻房间的门不连通 | `exploreFromRoom` 只调用一次 `connectRooms` | `connectAdjacentDoors` 扫描同层四邻，双方门相对即建立无向边；反向边去重；写 `ports` | `adjacent doors connect beyond the explored room` |
 | SA-04 | P1 | 旧实现把房间网格限制在 5×5，边缘方向无法继续摆放，和实体规则不符 | 模块内 `GRID_MAX` 边界校验 | 移除固定边界；房间坐标可任意扩展，39 块牌堆限制规模；相机按包围盒取景 | `room placement is not clamped to a 5x5 grid` |
-| SA-05 | P0 | 新房间与来源房间产生正反两条边，invariant `duplicate edge` 拒绝落板块 | `connectRooms` 只按固定方向 id 去重，未检查反向 id | `connectRooms` 同时检查正/反向边；已有单向边升级为无向门 | 全量 126 用例 |
+| SA-05 | P0 | 新房间与来源房间产生正反两条边，invariant `duplicate edge` 拒绝落板块 | `connectRooms` 只按固定方向 id 去重，未检查反向 id | `connectRooms` 同时检查正/反向边；已有单向边升级为无向门 | 全量 131 用例 |
 | SA-06 | P1 | 点击掉落的卡牌会直接拾取，无法查看物品效果 | `pickTarget` 对任何实体点击都匹配第一个 `entityId` 合法动作 | 无“目标模式”时实体点击改为**查看**；先点“拾取物品堆”再点卡牌才拾取 | `clicking a dropped card inspects it instead of picking it up` |
 | SA-07 | P2 | 物品卡面文字被截断，功能说明不完整 | 卡面固定 7 行、20px | 长文本缩小一次并允许 10 行；点击实体弹出含完整 `desc` 的 toast | 渲染截图 + 手测 |
 | SA-08 | P2 | 朝向选择弹窗遮挡桌面，落点不可见 | 用通用 payload modal 处理 `PLACE_ROOM` | 桌面预载半透明房间 + 底部“旋转房间 / 确认放置”；不再打开 modal | `shots/betrayal-room-preview.png` |
