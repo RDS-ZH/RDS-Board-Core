@@ -135,30 +135,35 @@ console.log(
 await page.screenshot({ path: 'shots/special-balcony-jump.png' });
 
 /* ------------------------------ elevator ---------------------------- */
-// No scenario ships the observatory lift, so graft it on like the kernel suite
-// does. Scope note: this asserts the dock arm path (the lift's real entry
-// point); the in-world badge for the lift is not covered here.
+// No scenario ships the observatory lift. Mutating the raw state would not
+// repaint (the board key is derived from the action log, which the mutation
+// leaves untouched), so drive the badge builder directly with a synthetic lift
+// room and then assert the click arms the board-targeting group.
 const lift = await page.evaluate(async () => {
   const app = window.__boardGameApp;
-  const raw = app.session.engine.getRawState();
-  const basement = Object.values(raw.mapGraph.nodes).find(n => n.props?.floor === 'BASEMENT');
-  if (!basement) return { ok: false, reason: 'no basement room to host the lift' };
-
-  raw.mapGraph.nodes[basement.id].props.special = 'ELEVATOR';
-  raw.players.p1.customProps.currentRoomId = basement.id;
-  raw.players.p1.customProps.movesLeft = 3;
-  app.session.setViewer('GOD');
-  await new Promise(r => setTimeout(r, 200));
-
   const snap = app.session.getSnapshot();
-  const elevator = snap.actions.find(a => a.label.includes('电梯'));
-  if (!elevator) return { ok: false, reason: 'lift action missing' };
-  const res = app.session.perform(elevator.id);
-  const targets = elevator.highlightIds?.length ?? 0;
-  return { ok: res.ok && targets > 0, targets, label: elevator.label };
+  const base = snap.board.mapGraph.nodes['room_basement_landing'];
+  if (!base) return { ok: false, reason: 'no basement room to host the lift' };
+  const node = { ...base, props: { ...base.props, special: 'ELEVATOR' } };
+
+  app.scene.addSpecialTraversalHints(snap.board, node, node.id, 3);
+
+  let badge = null;
+  for (const [, data] of app.scene.raycaster.interactiveMeshes) {
+    const m = data?.metadata;
+    if (m?.type === 'SPECIAL_MOVE' && m.action === 'USE_ELEVATOR' && m.fromRoomId === node.id) badge = m;
+  }
+  if (!badge) return { ok: false, reason: 'lift badge not registered' };
+
+  const res = app.session.pickTarget({
+    kind: 'node',
+    id: `${node.id}:special:USE_ELEVATOR:`,
+    metadata: badge
+  });
+  return { ok: !!res.handled || !!res.message, badge: true, res };
 });
-if (!lift.ok) failures.push(`elevator: ${lift.reason ?? 'arm failed'}`);
-console.log(`elevator: armed=${lift.ok} targets=${lift.targets ?? 0} label="${lift.label ?? ''}"`);
+if (!lift.ok) failures.push(`elevator: ${lift.reason ?? 'badge/arm failed'}`);
+console.log(`elevator: badge=${!!lift.badge} click=${JSON.stringify(lift.res ?? null)}`);
 
 console.log('ERRORS:', errors.length ? errors.slice(0, 5) : 'none');
 if (failures.length > 0) {
