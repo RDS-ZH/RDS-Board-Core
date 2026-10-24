@@ -835,7 +835,9 @@ export class BoardGameScene {
     if (!wasPlacing && isPlacing) {
       this.beginPlacementCamera(state, displayPlacement!, layout);
     } else if (wasPlacing && !isPlacing) {
-      this.endPlacementCamera();
+      // The actor may have moved into the newly placed room during this sync;
+      // `state` here is the post-placement projection, so it is what we centre on.
+      this.endPlacementCamera(state);
     }
 
     const placingSignature = displayPlacement
@@ -2040,7 +2042,7 @@ export class BoardGameScene {
     this.startCameraTween(raisedPosition, raisedTarget, 650);
   }
 
-  private endPlacementCamera(): void {
+  private endPlacementCamera(state?: ProjectedGameState): void {
     const previous = this.prePlacementCamera;
     this.prePlacementCamera = undefined;
     this.skipFitUntil = performance.now() + 850;
@@ -2054,6 +2056,41 @@ export class BoardGameScene {
     this.controls.target.copy(previous.target);
     this.controls.enabled = true;
     this.controls.update();
+
+    // The placed tile usually moves the actor into the new room, so follow up
+    // with a pan that re-centres on them while keeping the restored bearing and
+    // distance — the board never appears to teleport, it just drifts over.
+    const focus = state ? this.actorFocusPoint(state) : undefined;
+    if (!focus) return;
+    // Short enough that orbit control comes back quickly after confirming.
+    this.panToKeepBearing(focus, 420);
+  }
+
+  /**
+   * World point to frame after a placement: the room the active actor now
+   * stands in.
+   *
+   * Deliberately reads the projected node rather than the actor's meeple: this
+   * runs before `renderEntities()` has rebuilt the tokens for the new room, so
+   * the mesh still sits on the pre-placement tile.
+   */
+  private actorFocusPoint(state: ProjectedGameState): THREE.Vector3 | undefined {
+    const actorId = state.activeActorId ?? state.activePlayerId;
+    const player = actorId ? state.players[actorId] : undefined;
+    const roomId = String(player?.customProps?.currentRoomId ?? '');
+    const node = roomId ? state.mapGraph.nodes[roomId] : undefined;
+    if (!node) return undefined;
+    return new THREE.Vector3(node.position[0], Math.max(0.12, node.position[1] + 0.16), node.position[2]);
+  }
+
+  /**
+   * Slide the orbit target onto `point` without changing the camera's bearing
+   * or its distance to the board, so only the framing shifts.
+   */
+  private panToKeepBearing(point: THREE.Vector3, duration: number): void {
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    this.skipFitUntil = performance.now() + duration + 300;
+    this.startCameraTween(point.clone().add(offset), point.clone(), duration);
   }
 
   /** Abort any in-flight camera tween and its safety timer. */
