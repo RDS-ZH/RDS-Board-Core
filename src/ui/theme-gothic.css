@@ -1,0 +1,70 @@
+/* ============================================================
+   Gothic theme — applied to the HUD while Betrayal is active.
+   Warms the neutral slate palette into candle-lit parchment/oxblood.
+   ============================================================ */
+[data-theme="gothic"] {
+  --ink: #0b0806;
+  --ink-2: #070504;
+  --surface: #14100c;
+  --panel: rgba(25, 19, 14, 0.84);
+  --panel-solid: #17120e;
+  --panel-raised: rgba(40, 31, 22, 0.74);
+  --line: rgba(214, 178, 108, 0.11);
+  --line-2: rgba(214, 178, 108, 0.22);
+  --text: #efe6d4;
+  --muted: #b1a389;
+  --faint: #7c705d;
+  --red: #d9534a;
+  --green: #8fb87a;
+  --blue: #86a8c4;
+  --violet: #a79bd0;
+}
+
+[data-theme="gothic"] .topbar {
+  background: linear-gradient(180deg, rgba(20, 15, 11, 0.96), rgba(12, 9, 7, 0.9));
+  border-bottom-color: rgba(214, 178, 108, 0.18);
+}
+
+[data-theme="gothic"] .brand-mark {
+  background: radial-gradient(circle at 32% 26%, #f0d79a, #b9893a 62%, #6d4f1d);
+  color: #2a1b08;
+}
+
+[data-theme="gothic"] .game-pill.active {
+  background: linear-gradient(180deg, rgba(214, 178, 108, 0.22), rgba(214, 178, 108, 0.08));
+  border-color: rgba(214, 178, 108, 0.5);
+  color: #f7e7c1;
+}
+
+[data-theme="gothic"] .pc {
+  background:
+    radial-gradient(140% 90% at 12% 0%, rgba(120, 88, 40, 0.14), transparent 60%),
+    linear-gradient(180deg, rgba(27, 21, 15, 0.9), rgba(15, 12, 9, 0.94));
+  border-color: rgba(214, 178, 108, 0.16);
+}
+
+[data-theme="gothic"] .pc.active {
+  border-color: rgba(214, 178, 108, 0.55);
+  box-shadow: 0 0 0 1px rgba(214, 178, 108, 0.18), 0 18px 40px -26px #000;
+}
+
+[data-theme="gothic"] .pc-name {
+  font-family: var(--font-display);
+  letter-spacing: 0.03em;
+  color: #f4e8ce;
+}
+
+[data-theme="gothic"] .act {
+  background: linear-gradient(180deg, rgba(38, 29, 20, 0.86), rgba(22, 17, 12, 0.9));
+  border-color: rgba(214, 178, 108, 0.16);
+}
+
+[data-theme="gothic"] .act.primary {
+  background: linear-gradient(180deg, rgba(214, 178, 108, 0.26), rgba(150, 116, 51, 0.16));
+  border-color: rgba(214, 178, 108, 0.55);
+}
+
+[data-theme="gothic"] .action-dock {
+  background: linear-gradient(180deg, rgba(20, 15, 11, 0.9), rgba(11, 8, 6, 0.94));
+  border-color: rgba(214, 178, 108, 0.16);
+}

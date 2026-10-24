@@ -1051,20 +1051,38 @@ const grandStaircase = (): THREE.Group => {
   return g;
 };
 
+/**
+ * Grand six-arm candelabrum.
+ *
+ * The mansion diorama has no ceiling, so a genuinely hanging chandelier would
+ * float in mid-air. This stands on the floor instead and reads correctly from
+ * the 2.5D camera.
+ */
 const chandelier = (): THREE.Group => {
   const g = new THREE.Group();
-  const y0 = 0.95;
-  g.add(cyl(0.008, 0.008, 0.32, MAT.darkIron, 0, y0 + 0.16, 0, 4, false));
-  g.add(torus(0.16, 0.012, MAT.agedBrass, 0, y0, 0));
-  g.add(torus(0.09, 0.01, MAT.agedBrass, 0, y0 + 0.05, 0));
-  g.add(cyl(0.03, 0.05, 0.1, MAT.agedBrass, 0, y0 - 0.03, 0, 10, false));
+  const hub = 0.58;
+  // Tripod foot
+  for (let i = 0; i < 3; i += 1) {
+    const a = (i * Math.PI * 2) / 3 + Math.PI / 6;
+    const foot = box(0.035, 0.022, 0.2, MAT.agedBrass, Math.cos(a) * 0.09, 0.011, Math.sin(a) * 0.09, -a, false);
+    g.add(foot);
+  }
+  g.add(cyl(0.055, 0.075, 0.03, MAT.agedBrass, 0, 0.024, 0, 12, false));
+  // Turned stem
+  g.add(cyl(0.014, 0.02, hub, MAT.agedBrass, 0, hub / 2 + 0.03, 0, 10));
+  for (const y of [0.18, 0.36]) g.add(sph(0.028, MAT.agedBrass, 0, y, 0, false));
+  // Crown ring + arms
+  g.add(torus(0.17, 0.011, MAT.agedBrass, 0, hub, 0));
+  g.add(cyl(0.03, 0.045, 0.05, MAT.agedBrass, 0, hub + 0.03, 0, 10, false));
   for (let i = 0; i < 6; i += 1) {
     const a = (i * Math.PI) / 3;
-    const x = Math.cos(a) * 0.16;
-    const z = Math.sin(a) * 0.16;
-    g.add(cyl(0.008, 0.008, 0.06, MAT.agedBrass, x, y0 + 0.03, z, 5, false));
-    g.add(cyl(0.01, 0.011, 0.07, MAT.wax, x, y0 + 0.1, z, 6, false));
-    g.add(sph(0.012, MAT.flame, x, y0 + 0.145, z));
+    const x = Math.cos(a) * 0.17;
+    const z = Math.sin(a) * 0.17;
+    // Arm from stem to cup
+    g.add(box(0.012, 0.012, 0.18, MAT.agedBrass, x * 0.55, hub - 0.02, z * 0.55, -a + Math.PI / 2, false));
+    g.add(cyl(0.024, 0.018, 0.022, MAT.agedBrass, x, hub + 0.012, z, 10, false));
+    g.add(cyl(0.011, 0.012, 0.08, MAT.wax, x, hub + 0.062, z, 8, false));
+    g.add(sph(0.013, MAT.flame, x, hub + 0.108, z));
   }
   return g;
 };
@@ -1277,7 +1295,14 @@ export const PROPS: Record<string, PropSpec> = {
     height: 0.5,
     anchor: 'N'
   },
-  chandelier: { id: 'chandelier', build: chandelier, width: 0.34, depth: 0.34, height: 1.1, anchor: 'CENTER', ceiling: true },
+  chandelier: {
+    id: 'chandelier',
+    build: chandelier,
+    width: 0.4,
+    depth: 0.4,
+    height: 0.7,
+    anchor: 'CENTER'
+  },
   vaultDoor: { id: 'vaultDoor', build: vaultDoor, width: 0.76, depth: 0.16, height: 0.66, anchor: 'N', wallMounted: true },
   telescope: { id: 'telescope', build: telescope, width: 0.32, depth: 0.32, height: 0.75, anchor: 'CENTER' },
   gardenBench: { id: 'gardenBench', build: gardenBench, width: 0.8, depth: 0.34, height: 0.42, anchor: 'N' },

@@ -255,12 +255,39 @@ export class UniversalSession implements GamePresenter {
       const entity = this.snapshot.board.entities[pick.id];
       const face = entity?.components?.cardFace;
       if (face) {
+        const custom = (entity?.components?.custom ?? {}) as Record<string, unknown>;
+        const kind = String(face.type ?? custom.cardType ?? 'ITEM');
+        const KIND_LABELS: Record<string, string> = {
+          weapon: '武器',
+          armor: '护甲',
+          relic: '圣物',
+          consumable: '消耗品',
+          tool: '工具'
+        };
+        const facts: { label: string; value: string }[] = [];
+        if (custom.kind) facts.push({ label: '类别', value: KIND_LABELS[String(custom.kind)] ?? String(custom.kind) });
+        if (typeof custom.charges === 'number' && custom.charges > 0) {
+          facts.push({ label: '剩余次数', value: String(custom.charges) });
+        }
+        if (custom.tradeable === false) facts.push({ label: '交易', value: '不可交易' });
+        if (custom.companion) facts.push({ label: '随从', value: '不可丢弃' });
+        if (custom.stealable === false) facts.push({ label: '夺取', value: '不可被抢' });
         this.emit({
           kind: 'event',
           icon: entity.isMasked ? '🂠' : '🃏',
           title: entity.isMasked ? '未揭示的卡牌' : face.title,
           detail: entity.isMasked ? '需要先揭示这张牌。' : face.desc,
-          durationMs: 6500
+          durationMs: 6500,
+          card: entity.isMasked
+            ? undefined
+            : {
+                title: face.title,
+                en: String(custom.en ?? ''),
+                kind,
+                desc: String(face.desc ?? ''),
+                color: String(face.color ?? ''),
+                facts
+              }
         });
         return { handled: true };
       }
