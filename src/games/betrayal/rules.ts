@@ -1992,6 +1992,7 @@ export class BetrayalRules {
       id: hauntId,
       number: def.number,
       title: def.title,
+      intro: def.intro ?? '',
       traitorId: revealerId,
       revealRoomId: roomId,
       monsterIds: [] as string[],

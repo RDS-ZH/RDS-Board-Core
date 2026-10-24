@@ -1,4 +1,5 @@
 import confetti from 'canvas-confetti';
+import { cardArtSvg } from './cardArt';
 import {
   CameraView,
   GAME_TABS,
@@ -437,6 +438,10 @@ export class BoardGameHUD {
         <button class="cs-close" type="button" aria-label="关闭">×</button>
         <div class="cs-ribbon"><span>${theme.label}</span></div>
         <div class="cs-body">
+          <div class="cs-art">${cardArtSvg(card)}</div>
+          ${card.actions?.length ? `<div class="cs-actions">${card.actions
+            .map(action => `<button type="button" class="cs-action" data-card-action="${action.id}"><span>${action.icon}</span>${action.label}</button>`)
+            .join('')}</div>` : ''}
           <div class="cs-seal">${theme.seal}</div>
           <h2 class="cs-title">${card.title}</h2>
           ${card.en ? `<div class="cs-en">${card.en}</div>` : ''}
@@ -454,6 +459,14 @@ export class BoardGameHUD {
       layer!.innerHTML = '';
     };
     layer.querySelector('.cs-close')?.addEventListener('click', close);
+    layer.querySelectorAll<HTMLElement>('[data-card-action]').forEach(button => {
+      button.addEventListener('click', event => {
+        event.stopPropagation();
+        const actionId = button.dataset.cardAction;
+        close();
+        if (actionId) this.presenter.perform(actionId);
+      });
+    });
     layer.addEventListener('click', event => {
       if (event.target === layer) close();
     });
@@ -513,7 +526,7 @@ export class BoardGameHUD {
   private maybeShowHaunt(snapshot: GameSnapshot): void {
     const vars = (snapshot.board.globalVars ?? {}) as Record<string, unknown>;
     const haunt = vars.haunt as
-      | { id?: string; number?: number; title?: string; traitorId?: string }
+      | { id?: string; number?: number; title?: string; intro?: string; traitorId?: string }
       | null
       | undefined;
     if (!vars.hauntTriggered || !haunt?.id) {
@@ -545,6 +558,7 @@ export class BoardGameHUD {
         <div class="hc-number">HAUNT No.${String(haunt.number ?? '?').padStart(2, '0')}</div>
         <h1 class="hc-title">${String(haunt.title ?? '未知作祟')}</h1>
         <div class="hc-rule"></div>
+        ${haunt.intro ? `<p class="hc-story">${haunt.intro}</p>` : ''}
         ${
           traitor
             ? `<div class="hc-traitor">背叛者 · <b>${traitor.name}</b></div>`

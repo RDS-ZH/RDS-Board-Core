@@ -81,6 +81,8 @@ export interface UiAction {
   highlightIds?: string[];
   /** Entity placement mode: arm the action, then click a highlighted slot node. */
   placementEntityId?: string;
+  /** Entity this action directly operates on (card sheet shortcuts). */
+  entityId?: string;
   /** Declarative target picker; the presenter sends the selected ids as `targets`. */
   selection?: UiActionSelection;
   /** When present, the UI must collect these fields and send them as payload. */
@@ -276,6 +278,8 @@ export interface UiCardDetail {
   color?: string;
   /** Extra key/value rows (e.g. "使用方式", "剩余次数"). */
   facts?: { label: string; value: string }[];
+  /** Entity-centric shortcuts rendered on the card sheet. */
+  actions?: { id: string; icon: string; label: string }[];
 }
 
 export interface UiNotice {

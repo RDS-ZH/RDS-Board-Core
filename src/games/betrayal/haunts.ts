@@ -52,11 +52,14 @@ export interface HauntDef {
   hooks: HauntHookSpec[];
   /** Room tag that should host the scenario's ritual / beacon. */
   anchorTag?: string;
+  /** Atmospheric text shown in the haunt overture. */
+  intro?: string;
   notes: string[];
 }
 
 export const HAUNT_DEFS: Record<string, HauntDef> = {
   mummy: {
+    intro: '石棺的封泥在夜里裂开。木乃伊循着女孩的哭声穿过回廊——它要把最后一具祭品带回石棺。',
     id: 'mummy',
     number: 1,
     title: '木乃伊苏醒',
@@ -86,6 +89,7 @@ export const HAUNT_DEFS: Record<string, HauntDef> = {
     ]
   },
   living_dead: {
+    intro: '地窖传来湿土翻动的声音。死灵术士已把宅邸变成坟场，活死人正从每个门缝里挤进来。',
     id: 'living_dead',
     number: 3,
     title: '活死人之夜',
@@ -115,6 +119,7 @@ export const HAUNT_DEFS: Record<string, HauntDef> = {
     ]
   },
   werewolf: {
+    intro: '满月爬上塔楼时，猎枪的铅弹变成了无用的石子。只有银器与星象还能阻止狼人继续撕咬。',
     id: 'werewolf',
     number: 5,
     title: '月圆狂兽',
@@ -144,6 +149,7 @@ export const HAUNT_DEFS: Record<string, HauntDef> = {
     ]
   },
   floating_eye: {
+    intro: '穹顶之外，巨眼睁开。被注视的人开始梦见飞船，而梦见飞船的人会自己走向祭坛。',
     id: 'floating_eye',
     number: 6,
     title: '巨眼降临',
@@ -174,6 +180,7 @@ export const HAUNT_DEFS: Record<string, HauntDef> = {
     ]
   },
   phantom: {
+    intro: '霜从墙纸下渗出。怨灵没有形体，只有被遗忘的遗骨能让她停下脚步。',
     id: 'phantom',
     number: 10,
     title: '幽灵的拥抱',

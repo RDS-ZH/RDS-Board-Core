@@ -303,6 +303,45 @@ for (const game of GAMES) {
   await page.close();
 }
 
+// Entity-centric card sheet: art plate + direct actions.
+{
+  const label = 'betrayal:card-sheet-actions';
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
+  });
+  try {
+    await page.goto(`${BASE}?game=betrayal&scenario=omen_ready`, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(1400);
+    if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
+    await page.waitForTimeout(700);
+    const picked = await page.evaluate(() => {
+      const app = window.__boardGameApp;
+      const board = app.session.getSnapshot().board;
+      const hand = board.zones.zone_hand_p1?.orderedEntities ?? [];
+      const id = hand.find(candidate => board.entities[candidate]?.components?.cardFace);
+      if (!id) return null;
+      app.session.pickTarget({ kind: 'entity', id });
+      return id;
+    });
+    await page.waitForTimeout(300);
+    const sheet = await page.evaluate(() => ({
+      art: !!document.querySelector('.cs-art svg'),
+      actions: document.querySelectorAll('[data-card-action]').length
+    }));
+    if (!picked || !sheet.art) failures.push(`${label}: card art plate missing`);
+    if (sheet.actions === 0) failures.push(`${label}: no entity action shortcuts`);
+    await page.screenshot({ path: 'shots/ui-card-sheet-actions.png' });
+    console.log(`  ${label.padEnd(28)} art=${sheet.art} actions=${sheet.actions}`);
+  } catch (error) {
+    failures.push(`${label}: threw — ${error?.message ?? error}`);
+  }
+  if (errors.length) failures.push(`${label}: ${errors.slice(0, 3).join(' | ')}`);
+  await page.close();
+}
+
 await browser.close();
 dev.stop();
 console.log(`\nUI matrix: ${screens} screens, ${actions} action clicks`);

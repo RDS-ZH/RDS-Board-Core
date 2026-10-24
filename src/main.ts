@@ -23,6 +23,7 @@ class BoardGameSimulatorApp {
   private currentGameId = 'catan';
   private lastRevision = -1;
   private lastPlacementKey = '';
+  private lastRoomId = '';
   private freeDragEntityId?: string;
   private readonly initialScenario?: string;
 
@@ -65,7 +66,14 @@ class BoardGameSimulatorApp {
       const floor = target?.closest<HTMLElement>('[data-floor]')?.dataset.floor;
       if (floor) this.scene.focusFloor(floor);
     });
-    this.scene.onInteractiveClick(data => this.handleBoardPick(data));
+    this.scene.onInteractiveClick(data => {
+      // Clicking a room entity is also the inspection camera gesture: the
+      // dossier and the 2.5D close-up should come from the same click.
+      if (data.type === 'NODE' && data.metadata?.floor && this.currentGameId === 'betrayal') {
+        this.scene.focusNode(data.id);
+      }
+      this.handleBoardPick(data);
+    });
     this.scene.onInteractiveHover(data => {
       if (!data) {
         this.hud.showHoverHint(null);
@@ -138,14 +146,29 @@ class BoardGameSimulatorApp {
           BoardGameAudio.playDoorOpen();
         } else if (ev.type === 'CARD_DRAW') {
           BoardGameAudio.playCardDraw();
+          BoardGameAudio.playEventStinger(ev.title);
         } else if (ev.type === 'CARD_DISCARD') {
           BoardGameAudio.playCardDiscard();
         } else if (ev.type === 'DICE_ROLL') {
           BoardGameAudio.playDiceRoll();
         } else if (ev.type === 'DAMAGE_EFFECT') {
-          BoardGameAudio.playCombat('PHYSICAL', true);
+          const kind = ev.payload?.kind === 'MENTAL' ? 'MENTAL' : 'PHYSICAL';
+          BoardGameAudio.playCombat(kind, true);
+        } else if (ev.type === 'CARD_PLAY') {
+          BoardGameAudio.playCardFlip();
+        } else if (ev.type === 'BUILD_OBJECT') {
+          BoardGameAudio.playBuild();
+        } else if (ev.type === 'TOKEN_TRANSFER') {
+          BoardGameAudio.playChipClink();
+        } else if (ev.type === 'STACK_PUSH' || ev.type === 'STACK_POP' || ev.type === 'STACK_CANCEL') {
+          BoardGameAudio.playCardFlip();
+        } else if (ev.type === 'DECISION_REVEAL' || ev.type === 'STACK_TIMEOUT') {
+          BoardGameAudio.playThunder();
         } else if (ev.type === 'RULE_MUTATE') {
           BoardGameAudio.playHauntAlarm();
+          BoardGameAudio.playEventStinger(ev.title);
+        } else if (ev.type === 'ANNOUNCEMENT') {
+          BoardGameAudio.playEventStinger(ev.title);
         } else if (ev.type === 'MOVE_OBJECT') {
           BoardGameAudio.playFootstep();
         }
@@ -201,6 +224,25 @@ class BoardGameSimulatorApp {
         }
       } else {
         BoardGameAudio.stopSoundscape();
+        this.lastRoomId = '';
+      }
+
+      if (this.currentGameId === 'betrayal') {
+        const focusId = snapshot.focus[0] ?? snapshot.viewer;
+        const player = snapshot.board.players[focusId];
+        const npc = snapshot.board.npcs?.[focusId];
+        const roomId = String(
+          player?.customProps?.currentRoomId ?? npc?.customProps?.roomId ?? ''
+        );
+        if (roomId && roomId !== this.lastRoomId) {
+          this.lastRoomId = roomId;
+          const node = snapshot.board.mapGraph.nodes[roomId];
+          BoardGameAudio.playRoomAccent(
+            roomId,
+            String(node?.props?.name ?? ''),
+            Array.isArray(node?.props?.tags) ? node.props.tags.map(String) : []
+          );
+        }
       }
     });
   }

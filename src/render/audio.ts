@@ -1062,6 +1062,95 @@ export class BoardGameAudio {
     osc.stop(ctx.currentTime + 0.23);
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Room / story reactive accents                                           */
+  /* ---------------------------------------------------------------------- */
+
+  /** A short room-specific motif, played when the active room changes. */
+  public static playRoomAccent(roomId: string, roomName = '', tags: string[] = []): void {
+    const ctx = this.getContext();
+    if (!ctx || !this.sfxGain) return;
+    let hash = 2166136261;
+    for (const char of `${roomId}|${roomName}|${tags.join(',')}`) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    const key = `${roomId} ${roomName} ${tags.join(' ')}`.toLowerCase();
+    const base = 180 + (hash % 160);
+    const notes = /(地下室|地下平台|catacombs|furnace|熔炉)/.test(key)
+      ? [base * 0.5, base * 0.75, base * 1.12]
+      : /(图书|书房|library|study)/.test(key)
+        ? [base * 1.5, base * 1.25, base * 1.0]
+        : /(舞厅|ballroom|音乐|music)/.test(key)
+          ? [base * 2, base * 1.5, base * 1.25]
+          : [base, base * 1.18, base * 1.4];
+
+    notes.forEach((freq, index) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const at = ctx.currentTime + 0.04 + index * 0.16;
+      osc.type = index === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, at);
+      gain.gain.setValueAtTime(0.001, at);
+      gain.gain.exponentialRampToValueAtTime(0.05 / (index + 1), at + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, at + 0.8 + index * 0.2);
+      osc.connect(gain);
+      gain.connect(this.sfxGain!);
+      osc.start(at);
+      osc.stop(at + 1.1 + index * 0.2);
+    });
+
+    // Furnace / kitchen rooms get a dry mechanical tick under the motif.
+    if (/(熔炉|厨房|furnace|kitchen)/.test(key)) {
+      const tick = ctx.createOscillator();
+      const tickGain = ctx.createGain();
+      tick.type = 'square';
+      tick.frequency.setValueAtTime(68, ctx.currentTime + 0.55);
+      tickGain.gain.setValueAtTime(0.03, ctx.currentTime + 0.55);
+      tickGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.7);
+      tick.connect(tickGain);
+      tickGain.connect(this.sfxGain);
+      tick.start(ctx.currentTime + 0.55);
+      tick.stop(ctx.currentTime + 0.72);
+    }
+  }
+
+  /** Story/event stinger driven by the event card or announcement title. */
+  public static playEventStinger(title: string): void {
+    const ctx = this.getContext();
+    if (!ctx || !this.sfxGain) return;
+    const text = title.toLowerCase();
+    const dread = /(血|骨|鬼|魂|眼|尸|诅咒|黑暗|坠落|崩塌|死亡|haunt|blood|skull|ghost|eye|death)/.test(text);
+    const fire = /(火|燃烧|烟|炉|fire|burn|smoke)/.test(text);
+    const wind = /(风|雾|寒|冷|wind|fog|cold|frost)/.test(text);
+    const base = dread ? 52 : fire ? 74 : wind ? 96 : 120;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = dread ? 'sawtooth' : 'sine';
+    osc.frequency.setValueAtTime(base, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(base * 0.6, ctx.currentTime + 0.7);
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.9);
+    osc.connect(gain);
+    gain.connect(this.sfxGain);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.95);
+
+    if (dread || fire) {
+      const high = ctx.createOscillator();
+      const highGain = ctx.createGain();
+      high.type = 'triangle';
+      high.frequency.setValueAtTime(fire ? 740 : 466, ctx.currentTime + 0.08);
+      highGain.gain.setValueAtTime(0.025, ctx.currentTime + 0.08);
+      highGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.75);
+      high.connect(highGain);
+      highGain.connect(this.sfxGain);
+      high.start(ctx.currentTime + 0.08);
+      high.stop(ctx.currentTime + 0.78);
+    }
+  }
+
   private static playFuneralBell(ctx: AudioContext): void {
     if (!this.ambientGain) return;
     [220, 261.6, 330].forEach((freq, idx) => {

@@ -286,7 +286,11 @@ export class UniversalSession implements GamePresenter {
                 kind,
                 desc: String(face.desc ?? ''),
                 color: String(face.color ?? ''),
-                facts
+                facts,
+                actions: this.snapshot.actions
+                  .filter(action => action.entityId === entity.id || action.placementEntityId === entity.id)
+                  .map(action => ({ id: action.id, icon: action.icon, label: action.label }))
+                  .slice(0, 6)
               }
         });
         return { handled: true };
@@ -1072,7 +1076,8 @@ export class UniversalSession implements GamePresenter {
           ...(placementNodeId ? { highlightIds: [placementNodeId] } : {}),
           ...(action.type === 'PLACE_ENTITY' && action.entityId
             ? { placementEntityId: action.entityId }
-            : {})
+            : {}),
+          ...(action.entityId ? { entityId: action.entityId } : {})
         },
         action
       });
