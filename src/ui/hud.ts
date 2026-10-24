@@ -35,6 +35,11 @@ export class BoardGameHUD {
   /** Set of room ids already seen, for the "new room discovered" reveal. */
   private knownRooms?: Set<string>;
   private sheetTimer: number | null = null;
+  /** Haunt id whose overture has already played. */
+  private lastHauntId?: string;
+  /** False until the first snapshot has been observed. */
+  private hauntArmed = false;
+  private hauntTimer: number | null = null;
 
   constructor(
     container: HTMLElement,
@@ -60,6 +65,8 @@ export class BoardGameHUD {
     this.knownRooms = undefined;
     this.pinnedRoomId = undefined;
     this.lastActorRoomId = undefined;
+    this.lastHauntId = undefined;
+    this.hauntArmed = false;
     this.presenter = presenter;
     this.bindPresenter(presenter);
     this.syncSoundButton();
@@ -499,6 +506,66 @@ export class BoardGameHUD {
     );
   }
 
+  /**
+   * Full-screen haunt overture. The rules already flip `hauntTriggered` and
+   * write a role-filtered objective into `mission`; this is pure presentation.
+   */
+  private maybeShowHaunt(snapshot: GameSnapshot): void {
+    const vars = (snapshot.board.globalVars ?? {}) as Record<string, unknown>;
+    const haunt = vars.haunt as
+      | { id?: string; number?: number; title?: string; traitorId?: string }
+      | null
+      | undefined;
+    if (!vars.hauntTriggered || !haunt?.id) {
+      this.hauntArmed = true;
+      return;
+    }
+    if (!this.hauntArmed) {
+      // Scenario jumps can open straight into a haunt; do not replay the
+      // overture for a board the player just loaded.
+      this.hauntArmed = true;
+      this.lastHauntId = haunt.id;
+      return;
+    }
+    if (this.lastHauntId === haunt.id) return;
+    this.lastHauntId = haunt.id;
+
+    const traitor = haunt.traitorId ? snapshot.board.players[haunt.traitorId] : undefined;
+    let layer = this.container.querySelector('#haunt-cine') as HTMLElement | null;
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = 'haunt-cine';
+      layer.className = 'haunt-cine';
+      this.container.appendChild(layer);
+    }
+    layer.innerHTML = `
+      <div class="hc-vignette"></div>
+      <div class="hc-inner">
+        <div class="hc-kicker">作祟开始 · THE HAUNT BEGINS</div>
+        <div class="hc-number">HAUNT No.${String(haunt.number ?? '?').padStart(2, '0')}</div>
+        <h1 class="hc-title">${String(haunt.title ?? '未知作祟')}</h1>
+        <div class="hc-rule"></div>
+        ${
+          traitor
+            ? `<div class="hc-traitor">背叛者 · <b>${traitor.name}</b></div>`
+            : '<div class="hc-traitor">背叛者尚未现身</div>'
+        }
+        <p class="hc-objective">${snapshot.mission ?? ''}</p>
+        <div class="hc-hint">点击任意处继续</div>
+      </div>
+    `;
+    layer.classList.add('open');
+
+    const close = () => {
+      layer!.classList.remove('open');
+      layer!.innerHTML = '';
+      layer!.removeEventListener('click', close);
+    };
+    layer.addEventListener('click', close);
+    if (this.hauntTimer) window.clearTimeout(this.hauntTimer);
+    this.hauntTimer = window.setTimeout(close, 9000);
+  }
+
   private syncSoundButton(): void {
     const button = this.container.querySelector('#btn-audio') as HTMLElement | null;
     if (!button) return;
@@ -607,6 +674,7 @@ export class BoardGameHUD {
     this.renderRoomCard(snapshot);
     this.renderDock(snapshot);
     this.maybeRevealRoom(snapshot);
+    this.maybeShowHaunt(snapshot);
   }
 
   /**
