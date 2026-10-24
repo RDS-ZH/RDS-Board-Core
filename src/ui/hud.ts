@@ -23,6 +23,8 @@ const HUD_TRAIT_SHORT: Record<string, string> = {
 
 export interface HUDOptions {
   onSwitchGame: (gameId: string) => void;
+  /** Restart the current game at a named scenario ('' = plain setup). */
+  onSwitchScenario?: (scenarioId: string) => void;
 }
 
 /**
@@ -681,6 +683,11 @@ export class BoardGameHUD {
         </nav>
 
         <div class="topbar-actions">
+          <div class="scenario-switch" id="scenario-switch" style="display:none" title="切换起始剧本 · 会重开牌局">
+            <span class="vs-label">❖ 剧本</span>
+            <select id="scenario-select"></select>
+          </div>
+
           <div class="viewer-switch" title="认知滤镜 O(s,i)：切换全知视角或受限玩家视角">
             <span class="vs-label">𝒪 滤镜</span>
             <select id="viewer-select"></select>
@@ -715,6 +722,11 @@ export class BoardGameHUD {
 
     this.container.querySelector('#viewer-select')?.addEventListener('change', event => {
       this.presenter.setViewer((event.target as HTMLSelectElement).value);
+    });
+
+    this.container.querySelector('#scenario-select')?.addEventListener('change', event => {
+      const id = (event.target as HTMLSelectElement).value;
+      this.options.onSwitchScenario?.(id);
     });
 
     this.container.querySelectorAll<HTMLElement>('.cam-btn').forEach(button => {
@@ -756,6 +768,7 @@ export class BoardGameHUD {
     });
 
     this.renderViewerSelect(snapshot);
+    this.renderScenarioSelect(snapshot);
     this.renderPlayers(snapshot);
     this.renderRoomCard(snapshot);
     this.renderHistory(snapshot);
@@ -988,6 +1001,35 @@ export class BoardGameHUD {
       select.dataset.signature = signature;
     }
     select.value = snapshot.viewer;
+  }
+
+  /**
+   * Scenario picker: only shown when the current game actually ships
+   * scenarios, so the plain fixtures keep a clean top bar.
+   */
+  private renderScenarioSelect(snapshot: GameSnapshot): void {
+    const host = this.container.querySelector('#scenario-switch') as HTMLElement | null;
+    const select = this.container.querySelector('#scenario-select') as HTMLSelectElement | null;
+    if (!host || !select) return;
+
+    const options = snapshot.scenarios ?? [];
+    if (options.length === 0) {
+      host.style.display = 'none';
+      return;
+    }
+    host.style.display = '';
+
+    const signature = options.map(option => `${option.id}:${option.description}`).join('|');
+    if (select.dataset.signature !== signature) {
+      select.innerHTML = options
+        .map(option => `<option value="${option.id}">${option.description}</option>`)
+        .join('');
+      select.dataset.signature = signature;
+      // The description doubles as the option label, so keep the control compact.
+      select.title = options.find(option => option.selected)?.description ?? '';
+    }
+    const selected = options.find(option => option.selected)?.id;
+    if (selected) select.value = selected;
   }
 
   private renderPlayers(snapshot: GameSnapshot): void {

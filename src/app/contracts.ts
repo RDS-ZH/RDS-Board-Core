@@ -284,6 +284,8 @@ export interface GameSnapshot {
   gameName: string;
   capabilities: UiCapabilities;
   schemaCount: number;  dependencyErrors: string[];
+  /** Selectable starting positions for the current game (empty = default only). */
+  scenarios?: UiScenarioOption[];
 
   phaseLabel: string;
   /** Optional persistent objective line (Betrayal haunts, scenario missions). */
@@ -440,3 +442,10 @@ export const GAME_TABS: GameTab[] = [
   { id: 'betrayal', icon: '🕯️', name: '山屋惊魂' },
   { id: 'dune_mahjong', icon: '🀄', name: '沙丘 & 麻将' }
 ];
+
+/** One selectable starting position of the current game. */
+export interface UiScenarioOption {
+  id: string;
+  description: string;
+  selected: boolean;
+}

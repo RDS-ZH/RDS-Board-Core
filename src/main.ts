@@ -69,7 +69,8 @@ class BoardGameSimulatorApp {
     };
 
     this.hud = new BoardGameHUD(hudContainer, this.session, this.ports, {
-      onSwitchGame: gameId => this.switchGame(gameId)
+      onSwitchGame: gameId => this.switchGame(gameId),
+      onSwitchScenario: scenarioId => this.restartScenario(scenarioId)
     });
 
     this.inspector = new MathematicalInspectorUI(inspectorContainer, this.session, {
@@ -316,6 +317,35 @@ class BoardGameSimulatorApp {
     this.hud.syncCamera('iso');
 
     this.hud.showAnnouncement(`已载入 · ${module.meta.name}`);
+  }
+
+  /**
+   * Restart the current game at another starting position.
+   *
+   * Scenarios are setup functions, so switching one is a fresh session rather
+   * than a state transition: same path as switching games, minus the game id.
+   */
+  private restartScenario(scenarioId: string): void {
+    const module = GAME_REGISTRY[this.currentGameId];
+    if (!module) return;
+    const scenario = scenarioId === '' ? undefined : scenarioId;
+
+    this.session.dispose();
+    this.session = this.createSession(this.currentGameId, scenario);
+
+    this.hud.setPresenter(this.session);
+    this.inspector.setPresenter(this.session);
+    this.bindSession(this.session);
+
+    this.scene.setHighlight(null, false);
+    const snapshot = this.session.getSnapshot();
+    this.scene.syncState(snapshot.board, snapshot.placement, layoutForGame(this.currentGameId));
+    this.lastRevision = snapshot.revision;
+    this.lastPlacementKey = snapshot.placement ? `${snapshot.placement.defId}:${snapshot.placement.rotation}` : '';
+    this.hud.syncCamera('iso');
+
+    const label = scenario ? String(module.scenarios?.[scenario]?.description ?? scenario) : '标准开局';
+    this.hud.showAnnouncement(`剧本已重开 · ${label}`);
   }
 
   private toggleInspector(): void {

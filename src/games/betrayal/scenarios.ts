@@ -301,5 +301,29 @@ export const BETRAYAL_SCENARIOS: Record<string, GameScenario> = {
       state.players.p2.customProps.attacksLeft = 1;
       return state;
     }
+  },
+
+  room_features: {
+    description: '房间特性演示：煤槽、坍塌之室、神秘电梯与未开启的金库同场，用于验证特性交互与危险提示。',
+    setup: seed => {
+      const state = setupBetrayal(seed);
+      addExploredRoom(state, 'coal_chute', 1, 1, 'room_basement_landing');
+      addExploredRoom(state, 'vault', 3, 1, 'room_basement_landing');
+      addExploredRoom(state, 'mystic_elevator', 1, 3, 'room_basement_landing');
+      addExploredRoom(state, 'collapsed_room', 1, 3, 'room_upper_landing');
+
+      setRoom(state, 'p1', 'room_vault');
+      setRoom(state, 'p2', 'room_coal_chute');
+      setRoom(state, 'p3', 'room_collapsed_room');
+
+      // No rope on purpose: the chute should hurt, and the vault must be
+      // cracked by the knowledge check rather than a skeleton key.
+      grantItem(state, 'p1', 'candle');
+
+      state.activePlayerId = 'p1';
+      state.activeActorId = 'p1';
+      state.players.p1.customProps.movesLeft = 4;
+      return state;
+    }
   }
 };
