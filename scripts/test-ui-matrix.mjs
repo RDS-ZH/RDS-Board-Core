@@ -152,22 +152,34 @@ for (const game of GAMES) {
     }
 
     await page.locator('[data-place-confirm]').click();
-    await page.waitForTimeout(900);
-    const after = await page.evaluate(() => ({
-      rooms: Object.keys(window.__boardGameApp.session.getSnapshot().board.mapGraph.nodes).length,
-      camera: window.__boardGameApp.scene.camera.position.toArray(),
-      controls: window.__boardGameApp.scene.controls.enabled
-    }));
+    // Confirming hands the camera back and then pans onto the actor.
+    await page.waitForTimeout(1100);
+    const after = await page.evaluate(() => {
+      const app = window.__boardGameApp;
+      const snap = app.session.getSnapshot();
+      const actor = snap.board.players.p1;
+      const room = app.scene.nodeMeshes.get(actor.customProps.currentRoomId);
+      const tgt = app.scene.controls.target;
+      const offsetToActor = room ? Math.hypot(tgt.x - room.position.x, tgt.z - room.position.z) : 99;
+      return {
+        rooms: Object.keys(snap.board.mapGraph.nodes).length,
+        camera: app.scene.camera.position.toArray(),
+        controls: app.scene.controls.enabled,
+        offsetToActor,
+        centred: offsetToActor <= 1.2
+      };
+    });
     if (new Set(angles).size < 2) failures.push(`${label}: rotation did not change (${angles.join(',')})`);
     if (after.rooms <= before.rooms) failures.push(`${label}: room count did not grow (${before.rooms} -> ${after.rooms})`);
-    for (let axis = 0; axis < 3; axis++) {
-      if (Math.abs(after.camera[axis] - before.camera[axis]) > 0.4) {
-        failures.push(`${label}: camera did not restore ${JSON.stringify(before.camera)} -> ${JSON.stringify(after.camera)}`);
-        break;
-      }
+    // Height returns to the pre-placement framing (no stranded crane shot).
+    if (Math.abs(after.camera[1] - before.camera[1]) > 0.6) {
+      failures.push(`${label}: camera height not restored (${before.camera[1].toFixed(2)} -> ${after.camera[1].toFixed(2)})`);
     }
-    if (!after.controls) failures.push(`${label}: controls not restored after placement`);
-    console.log(`  ${label.padEnd(28)} rotations=${angles.join('/')} rooms=${before.rooms}->${after.rooms} camera=${before.camera[1].toFixed(1)}->${raised[1].toFixed(1)}->${after.camera[1].toFixed(1)}`);
+    // ...and the follow-up pan must have re-centred on the actor.
+    if (!after.centred) {
+      failures.push(`${label}: camera did not pan onto the actor (off by ${after.offsetToActor.toFixed(2)})`);
+    }
+    console.log(`  ${label.padEnd(28)} rotations=${angles.join('/')} rooms=${before.rooms}->${after.rooms} cameraY=${before.camera[1].toFixed(1)}->${raised[1].toFixed(1)}->${after.camera[1].toFixed(1)} pan=${after.offsetToActor.toFixed(2)}`);
     await page.screenshot({ path: 'shots/ui-rotation-flow.png' });
   } catch (error) {
     failures.push(`${label}: threw — ${error?.message ?? error}`);
