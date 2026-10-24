@@ -238,7 +238,7 @@ export class HexTileBuilder {
     const hexMesh = new THREE.Mesh(hexGeom, [sideMat, topMat, sideMat]);
     hexMesh.castShadow = true;
     hexMesh.receiveShadow = true;
-    hexMesh.rotation.y = Math.PI / 6;
+    // CylinderGeometry(..., 6) top vertices naturally align with pointy-topped hex graph vertices at ±30° and ±90°
     group.add(hexMesh);
 
     if (diceNumber && diceNumber > 0 && resource !== 'desert') {

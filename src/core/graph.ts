@@ -394,14 +394,11 @@ export class MapGraphManager {
       };
     });
 
-    // Helper: Vertex key from rounded position to merge shared vertices across hexes
-    const vertexMap = new Map<string, { id: string; pos: [number, number, number]; hexIds: string[] }>();
+    // Helper: Spatial merge to robustly merge shared vertices across hexes without float roundoff errors
+    const vertexList: { id: string; pos: [number, number, number]; hexIds: string[] }[] = [];
     const edgeMap = new Map<string, { id: string; from: string; to: string }>();
 
-    let vCounter = 0;
     let eCounter = 0;
-
-    const roundKey = (x: number, z: number) => `${Math.round(x * 100) / 100}_${Math.round(z * 100) / 100}`;
 
     // For each hex, calculate its 6 vertex positions
     hexCoords.forEach(h => {
@@ -412,13 +409,12 @@ export class MapGraphManager {
         const angle = (Math.PI / 180) * (60 * i - 30);
         const vx = cx + hexRadius * Math.cos(angle);
         const vz = cz + hexRadius * Math.sin(angle);
-        const key = roundKey(vx, vz);
 
-        let vInfo = vertexMap.get(key);
+        let vInfo = vertexList.find(v => Math.hypot(v.pos[0] - vx, v.pos[2] - vz) < 0.05);
         if (!vInfo) {
-          const vId = `vert_${vCounter++}`;
+          const vId = `vert_${vertexList.length}`;
           vInfo = { id: vId, pos: [vx, 0.1, vz], hexIds: [h.id] };
-          vertexMap.set(key, vInfo);
+          vertexList.push(vInfo);
         } else {
           if (!vInfo.hexIds.includes(h.id)) vInfo.hexIds.push(h.id);
         }
@@ -439,7 +435,7 @@ export class MapGraphManager {
     });
 
     // Populate graph with vertices
-    vertexMap.forEach(v => {
+    vertexList.forEach(v => {
       graph.nodes[v.id] = {
         id: v.id,
         type: 'VERTEX',

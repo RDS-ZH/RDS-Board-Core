@@ -80,13 +80,29 @@ class BoardGameSimulatorApp {
         return;
       }
       const meta = (data.metadata ?? {}) as Record<string, unknown>;
-      if (data.type === 'NODE' && typeof meta.name === 'string') {
-        const isDoor = meta.type === 'DOOR';
-        this.hud.showHoverHint({
-          title: isDoor ? `${String(meta.name ?? '房间')} · 门` : String(meta.name),
-          detail: isDoor ? '点击探索这扇门' : '点击查看房间档案'
-        });
-        return;
+      if (data.type === 'NODE') {
+        if (meta?.type === 'ROOM_NAV') {
+          const targetName = String(meta.targetName ?? meta.name ?? '相邻房间');
+          this.hud.showHoverHint({
+            title: `→ 进入【${targetName}】`,
+            detail: '点击地上高亮箭头直接走入该房间（消耗 1 步）'
+          });
+          return;
+        }
+        if (meta?.type === 'DOOR') {
+          this.hud.showHoverHint({
+            title: `${String(meta.name ?? '门位')} · 探索未开启的门`,
+            detail: '点击地上高亮箭头开启并抽取新房间'
+          });
+          return;
+        }
+        if (typeof meta.name === 'string') {
+          this.hud.showHoverHint({
+            title: String(meta.name),
+            detail: '点击查看房间档案与陈设'
+          });
+          return;
+        }
       }
       if (data.type === 'ENTITY') {
         const face = (meta as { title?: string }).title;
