@@ -26,13 +26,15 @@ await page.waitForTimeout(2200);
 await page.screenshot({ path: 'shots/01-catan.png' });
 
 // Top-down inspection
-await page.click('.cam-btn[data-cam="TOP_DOWN"]').catch(() => {});
+await page.click('.cam-btn[data-cam="top"]').catch(() => {});
 await page.waitForTimeout(900);
 await page.screenshot({ path: 'shots/01b-catan-top.png' });
-await page.click('.cam-btn[data-cam="ISOMETRIC"]').catch(() => {});
+await page.click('.cam-btn[data-cam="iso"]').catch(() => {});
 await page.waitForTimeout(700);
 
-// Inspector tab checks
+// Inspector tab checks (the panel now starts collapsed, so open it first)
+await page.click('#btn-inspector').catch(() => {});
+await page.waitForTimeout(400);
 const tabs = ['STACK', 'FACTIONS', 'HOOKS', 'TIME'];
 for (const tab of tabs) {
   await page.click(`.mip-tab[data-tab="${tab}"]`).catch(() => {});
