@@ -172,6 +172,42 @@ export interface UiLogEntry {
   targetId?: string;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Recent activity feed                                                        */
+/* -------------------------------------------------------------------------- */
+
+export type UiHistoryKind =
+  | 'damage'
+  | 'heal'
+  | 'trait'
+  | 'move'
+  | 'explore'
+  | 'card'
+  | 'dice'
+  | 'combat'
+  | 'haunt'
+  | 'system';
+
+/** One line in the "recent events" feed; newest first. */
+export interface UiHistoryEntry {
+  id: string;
+  kind: UiHistoryKind;
+  icon: string;
+  title: string;
+  detail?: string;
+  /** Turn stamp so the player can tell when it happened. */
+  round?: number;
+  turn?: number;
+  actorName?: string;
+  actorColor?: string;
+  /** Signed magnitude for numeric effects (-2 damage / +1 heal). */
+  delta?: number;
+  /** Trait display name when the entry is a trait change. */
+  traitLabel?: string;
+  /** Deaths and haunt turns stay pinned with emphasis. */
+  critical?: boolean;
+}
+
 export interface UiReplay {
   ok: boolean;
   steps: number;
@@ -250,6 +286,8 @@ export interface GameSnapshot {
   gameName: string;
   capabilities: UiCapabilities;
   schemaCount: number;  dependencyErrors: string[];
+  /** Selectable starting positions for the current game (empty = default only). */
+  scenarios?: UiScenarioOption[];
 
   phaseLabel: string;
   /** Optional persistent objective line (Betrayal haunts, scenario missions). */
@@ -276,6 +314,8 @@ export interface GameSnapshot {
 
   hooks: UiHook[];
   log: GameLog;
+  /** Newest-first ring buffer of recent events and actions. */
+  history: UiHistoryEntry[];
   board: BoardState;
   spatial?: UiSpatialInfo;
   /** Drawn room tile awaiting orientation. */
@@ -300,6 +340,21 @@ export interface UiCardDetail {
   actions?: { id: string; icon: string; label: string }[];
 }
 
+/** Structured trait movement attached to notices so the UI can animate it. */
+export interface UiTraitChange {
+  playerId: string;
+  playerName: string;
+  traitKey: string;
+  traitLabel: string;
+  from: number;
+  to: number;
+  /** Signed: negative loses pips. */
+  delta: number;
+  /** Physical/mental only when the change was damage. */
+  damageKind?: 'PHYSICAL' | 'MENTAL';
+  lethal?: boolean;
+}
+
 export interface UiNotice {
   kind: NoticeKind;
   icon: string;
@@ -312,6 +367,8 @@ export interface UiNotice {
   card?: UiCardDetail;
   /** Board inspection target: the HUD pins the room dossier to this node. */
   roomId?: string;
+  /** Trait movement to emphasise with a burst + banner. */
+  trait?: UiTraitChange;
 }
 
 export type BoardPickKind = 'node' | 'edge' | 'entity' | 'dice';
@@ -339,6 +396,8 @@ export interface PresentationPorts {
   focusRoom?(nodeId: string): void;
   /** Return to the wide board framing after a close-up. */
   clearRoomFocus?(): void;
+  /** 3D burst + match SFX for a trait movement (damage flash, heal sparkle). */
+  showTraitChange?(change: UiTraitChange): void;
 }
 
 /** Application boundary used by the UI. */
@@ -385,3 +444,10 @@ export const GAME_TABS: GameTab[] = [
   { id: 'betrayal', icon: '🕯️', name: '山屋惊魂' },
   { id: 'dune_mahjong', icon: '🀄', name: '沙丘 & 麻将' }
 ];
+
+/** One selectable starting position of the current game. */
+export interface UiScenarioOption {
+  id: string;
+  description: string;
+  selected: boolean;
+}

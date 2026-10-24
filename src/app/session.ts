@@ -10,6 +10,8 @@ import {
   GameSnapshot,
   UiAction,
   UiDecision,
+  UiHistoryEntry,
+  UiHistoryKind,
   UiHook,
   UiNotice,
   UiNpc,
@@ -19,8 +21,68 @@ import {
   UiReplay,
   UiSpatialInfo,
   UiStackFrame,
+  UiTraitChange,
   ViewerId
 } from './contracts';
+
+/** Visual event type → activity-feed bucket. */
+const EVENT_KIND: Record<string, UiHistoryKind> = {
+  DAMAGE_EFFECT: 'damage',
+  DICE_ROLL: 'dice',
+  CARD_DRAW: 'card',
+  CARD_DISCARD: 'card',
+  CARD_PLAY: 'card',
+  EXPLORE_ROOM: 'explore',
+  MOVE_OBJECT: 'move',
+  RULE_MUTATE: 'haunt',
+  DECISION_REVEAL: 'system',
+  DECISION_TIMEOUT: 'system',
+  STACK_TIMEOUT: 'system',
+  STACK_PUSH: 'combat',
+  STACK_POP: 'combat',
+  STACK_CANCEL: 'combat',
+  BUILD_OBJECT: 'system',
+  TOKEN_TRANSFER: 'system',
+  ANNOUNCEMENT: 'system'
+};
+
+const EVENT_ICON: Record<string, string> = {
+  DAMAGE_EFFECT: '🩸',
+  DICE_ROLL: '🎲',
+  CARD_DRAW: '🃏',
+  CARD_DISCARD: '🗑',
+  CARD_PLAY: '✨',
+  EXPLORE_ROOM: '🚪',
+  MOVE_OBJECT: '👣',
+  RULE_MUTATE: '☠',
+  DECISION_REVEAL: '💥',
+  DECISION_TIMEOUT: '⏱',
+  STACK_TIMEOUT: '⏱',
+  STACK_PUSH: '⚔',
+  STACK_POP: '⚔',
+  STACK_CANCEL: '⛔',
+  BUILD_OBJECT: '🏗',
+  TOKEN_TRANSFER: '◆',
+  ANNOUNCEMENT: '❖'
+};
+
+/** Betrayal trait key → display label used by the damage banner. */
+const TRAIT_LABEL: Record<string, string> = {
+  speed: '速度',
+  might: '力量',
+  sanity: '神智',
+  knowledge: '知识'
+};
+
+const TRAIT_COLOR: Record<string, string> = {
+  speed: '#6aa6f5',
+  might: '#e0604e',
+  sanity: '#57c08b',
+  knowledge: '#b07bf0'
+};
+
+/** How many feed lines the presenter keeps before dropping the oldest. */
+const HISTORY_LIMIT = 60;
 
 export interface BoundAction {
   ui: UiAction;
@@ -108,6 +170,14 @@ export class UniversalSession implements GamePresenter {
   private noticeListeners = new Set<(notice: UiNotice) => void>();
   private visualListeners = new Set<(events: VisualTraceEvent[]) => void>();
 
+  /** Newest-first activity feed; trimmed to HISTORY_LIMIT. */
+  private history: UiHistoryEntry[] = [];
+  private historySeq = 0;
+  /** Last seen trait indexes per player, used to detect pips moving. */
+  private lastTraitIndex = new Map<string, Record<string, number>>();
+  /** Trait notices collected during rebuild, flushed after publish. */
+  private pendingTraitNotices: UiNotice[] = [];
+
   constructor(module: GameModule, seed = 1, scenario?: string) {
     this.module = module;
     this.scenario = scenario;
@@ -125,7 +195,10 @@ export class UniversalSession implements GamePresenter {
     this.unsubscribers.push(
       this.engine.onVisualEvent(events => {
         for (const listener of this.visualListeners) listener(events);
-        for (const event of events) this.emitEventNotice(event.type, event.title, event.durationMs);
+        for (const event of events) {
+          this.recordHistory(event);
+          this.emitEventNotice(event.type, event.title, event.durationMs);
+        }
       })
     );
 
@@ -219,6 +292,70 @@ export class UniversalSession implements GamePresenter {
       }
     }
 
+    // In-world actionable room feature (currently the vault)
+    if ((pick.metadata as any)?.type === 'ROOM_FEATURE') {
+      const feature = String((pick.metadata as any)?.feature ?? '');
+      const action = legal.find(
+        a => a.type === 'ROOM_FEATURE' && String(a.payload?.feature ?? '') === feature
+      );
+      if (!action) return { handled: false, message: '当前无法触发该房间特性' };
+      const res = this.dispatch(action);
+      return { handled: res.ok, message: res.error };
+    }
+
+    // In-world special traversal badge (stairs / drop / rappel / lift)
+    if ((pick.metadata as any)?.type === 'SPECIAL_MOVE') {
+      const action = String((pick.metadata as any)?.action ?? '');
+      const targetRoomId = (pick.metadata as any)?.targetRoomId;
+      const targetName = (pick.metadata as any)?.targetName ?? '目标房间';
+
+      if (action === 'USE_ELEVATOR') {
+        // The lift reaches every explored room, so arm the board-targeting
+        // group instead of guessing a destination.
+        const elevator = legal.find(a => a.type === 'USE_ELEVATOR');
+        if (!elevator) return { handled: false, message: '电梯本回合已使用' };
+        const bound = this.bound.find(entry => entry.action?.type === 'USE_ELEVATOR');
+        if (bound) {
+          this.activeBoardGroup = {
+            type: 'USE_ELEVATOR',
+            idKey: 'targetNodeId',
+            targets: (bound.highlight ?? []) as string[]
+          };
+          this.emit({
+            kind: 'event',
+            icon: '🛗',
+            title: '电梯已就绪 · 点击任意已探索房间前往',
+            durationMs: 3200
+          });
+          return { handled: true };
+        }
+        return { handled: false, message: '无法启动电梯' };
+      }
+
+      const special = legal.find(a => a.type === action);
+      if (!special) {
+        return { handled: false, message: `当前无法执行该特殊移动` };
+      }
+      // Selection-bound actions must keep their exact binding: adding a
+      // targetNodeId the legal action does not carry makes the engine reject it.
+      const payload =
+        action === 'CLIMB_UP' && targetRoomId
+          ? { ...special, targetNodeId: targetRoomId }
+          : { ...special };
+      const res = this.dispatch(payload);
+      if (res.ok) {
+        this.emit({
+          kind: 'event',
+          icon: action === 'JUMP_DOWN' ? '⬇' : '🪢',
+          title:
+            action === 'JUMP_DOWN' ? `纵身跃下，落入【${targetName}】` : `沿绳索攀上【${targetName}】`,
+          durationMs: 2600,
+          roomId: targetRoomId
+        });
+      }
+      return { handled: res.ok, message: res.error };
+    }
+
     // In-world room navigation arrow hotspot (moving to adjacent room)
     if ((pick.metadata as any)?.type === 'ROOM_NAV') {
       const targetRoomId = (pick.metadata as any)?.targetRoomId;
@@ -273,9 +410,10 @@ export class UniversalSession implements GamePresenter {
               (a.selection?.scope as { neighbors?: string[] } | undefined)?.neighbors?.includes(pick.id))
         );
         if (directMoveAction) {
+          // Selection-bound actions carry their target in `targets`; adding a
+          // targetNodeId would change the canonical binding and be rejected.
           const res = this.dispatch({
             ...directMoveAction,
-            targetNodeId: pick.id,
             targets: [pick.id]
           });
           return { handled: res.ok, message: res.error };
@@ -630,6 +768,91 @@ export class UniversalSession implements GamePresenter {
     return { ok: true };
   }
 
+  /**
+   * Append one kernel visual event to the activity feed.
+   *
+   * The feed is presentation state, not game state: it is rebuilt from the
+   * event stream and never written back into the engine.
+   */
+  private recordHistory(event: VisualTraceEvent): void {
+    const kind = EVENT_KIND[event.type] ?? 'system';
+    const state = this.engine.getProjectedState();
+    const entry: UiHistoryEntry = {
+      id: `h${++this.historySeq}`,
+      kind,
+      icon: EVENT_ICON[event.type] ?? EVENT_ICONS[event.type] ?? '•',
+      title: event.title,
+      round: state.round,
+      turn: state.turn,
+      critical: kind === 'haunt' || /死亡|作祟/.test(event.title)
+    };
+    if (event.sourceId) {
+      const who = state.players[event.sourceId] ?? state.npcs?.[event.sourceId];
+      if (who) {
+        entry.actorName = who.name;
+        entry.actorColor = (who as { color?: string }).color;
+      }
+    }
+    this.history.unshift(entry);
+    if (this.history.length > HISTORY_LIMIT) this.history.length = HISTORY_LIMIT;
+  }
+
+  /**
+   * Compare trait ladders against the previous rebuild and turn any movement
+   * into an emphatic notice. Driven by state, so every path that damages a
+   * character (combat, events, haunts, manual effects) reports consistently.
+   */
+  private collectTraitChanges(raw: ReturnType<UniversalGameEngine['getRawState']>): void {
+    if (raw.gameId !== 'betrayal') return;
+    for (const player of Object.values(raw.players ?? {})) {
+      const indexes = (player.customProps?.traitIndex ?? {}) as Record<string, number>;
+      const previous = this.lastTraitIndex.get(player.id);
+      this.lastTraitIndex.set(player.id, { ...indexes });
+      if (!previous) continue;
+
+      for (const [trait, to] of Object.entries(indexes)) {
+        const from = previous[trait];
+        if (from === undefined || from === to) continue;
+        const delta = to - from;
+        const label = TRAIT_LABEL[trait] ?? trait;
+        const change: UiTraitChange = {
+          playerId: player.id,
+          playerName: player.name,
+          traitKey: trait,
+          traitLabel: label,
+          from,
+          to,
+          delta,
+          damageKind: delta < 0 ? (trait === 'sanity' || trait === 'knowledge' ? 'MENTAL' : 'PHYSICAL') : undefined,
+          lethal: !player.alive || to === 0
+        };
+        const sign = delta > 0 ? '+' : '';
+        this.history.unshift({
+          id: `h${++this.historySeq}`,
+          kind: delta < 0 ? 'damage' : 'heal',
+          icon: delta < 0 ? '🩸' : '✚',
+          title: `${player.name} ${label} ${sign}${delta}`,
+          detail: `${from} → ${to}`,
+          round: this.engine.getProjectedState().round,
+          turn: this.engine.getProjectedState().turn,
+          actorName: player.name,
+          actorColor: player.color,
+          delta,
+          traitLabel: label,
+          critical: change.lethal
+        });
+        this.pendingTraitNotices.push({
+          kind: delta < 0 ? 'error' : 'event',
+          icon: delta < 0 ? '🩸' : '✚',
+          title: `${label} ${sign}${delta}`,
+          detail: `${player.name} · ${from} → ${to}${change.lethal ? ' · 濒死！' : ''}`,
+          durationMs: delta < 0 ? 4200 : 3000,
+          trait: change
+        });
+      }
+    }
+  }
+
   private emit(notice: UiNotice): void {
     this.noticeListeners.forEach(listener => listener(notice));
   }
@@ -656,6 +879,13 @@ export class UniversalSession implements GamePresenter {
 
   private publish(): void {
     this.listeners.forEach(listener => listener(this.snapshot));
+    // Trait banners must land after the snapshot so the HUD animates the
+    // already-updated ladder rather than the previous value.
+    if (this.pendingTraitNotices.length > 0) {
+      const queued = this.pendingTraitNotices;
+      this.pendingTraitNotices = [];
+      for (const notice of queued) this.emit(notice);
+    }
   }
 
   private rebuild(): void {
@@ -691,6 +921,11 @@ export class UniversalSession implements GamePresenter {
       capabilities: { ...module.meta.capabilities },
       schemaCount: Object.keys(module.actionSchemas ?? {}).length,
       dependencyErrors: this.engine.getRules().dependencyErrors(),
+      scenarios: Object.entries(module.scenarios ?? {}).map(([id, scenario]) => ({
+        id,
+        description: scenario.description ?? id,
+        selected: id === this.scenario
+      })),
 
       phaseLabel: phaseLabelOf(state),
       mission: missionLineOf(state),
@@ -718,11 +953,8 @@ export class UniversalSession implements GamePresenter {
         : undefined,
       openDecisions: state.pendingDecisions.filter(w => w.status === 'OPEN').length,
 
-      hooks: buildHooksView(
-        state,
-        hookId => this.engine.getRules().get(hookId),
-        id => this.engine.getActorName(id)
-      ),
+      hooks: this.buildHooks(state),
+      history: this.history,
       spatial: this.buildSpatial(state, actor),
       placement: this.buildPlacement(raw, actor),
       log: {
@@ -749,6 +981,10 @@ export class UniversalSession implements GamePresenter {
           : ''
         : ''
     };
+
+    // Diff trait ladders last: the snapshot above already carries the new
+    // values, so the emitted notice and the rendered ladder never disagree.
+    this.collectTraitChanges(raw);
   }
 
 

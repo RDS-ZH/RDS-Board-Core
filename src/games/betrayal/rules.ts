@@ -318,6 +318,12 @@ export class BetrayalRules {
           actions.push({ type: 'CLIMB_UP', playerId, targetNodeId: edge.from });
         }
       }
+
+      // Optional room features the player can poke at instead of them firing
+      // silently on entry. Only the vault is genuinely re-enterable.
+      if (room.props.special === 'VAULT' && !room.props?.opened) {
+        actions.push({ type: 'ROOM_FEATURE', playerId, payload: { feature: 'VAULT' } });
+      }
     }
 
     /* 5. Items, pickups, trade, dog -------------------------------------- */
@@ -733,6 +739,9 @@ export class BetrayalRules {
       case 'PICK_UP_ITEM':
         this.pickUpItem(s, pid, action.entityId ?? '', ctx);
         break;
+      case 'ROOM_FEATURE':
+        this.useRoomFeature(s, pid, String(action.payload?.feature ?? ''), ctx);
+        break;
       case 'PROPOSE_ITEM_TRADE':
         this.proposeTrade(s, pid, action, ctx);
         break;
@@ -986,6 +995,48 @@ export class BetrayalRules {
     this.finishPlacement(state, pid, placed, pending.cost, pending.discarded, ctx);
   }
 
+  /**
+   * Cracking the vault: the skeleton key opens it outright, otherwise the
+   * player rolls knowledge. Shared by the on-entry trigger and the explicit
+   * ROOM_FEATURE click so both paths stay identical.
+   */
+  private static crackVault(
+    state: GameState,
+    pid: PlayerId,
+    ctx: ReduceContext,
+    player: { name: string }
+  ): void {
+    const room = state.mapGraph.nodes[activeRoom(state, pid)];
+    if (!room || room.props?.opened) return;
+    const auto = ownsDef(state, pid, 'skeleton_key');
+    const check = auto ? null : rollTraitCheck(state, pid, 'knowledge', { threshold: 6, reason: 'vault' });
+    if (!auto && check) {
+      trace(ctx, 'DICE_ROLL', `金库 · 知识检定 ${check.total} vs 6`, 600);
+    }
+    if (auto || check?.success) {
+      room.props.opened = true;
+      this.drawItems(state, pid, 2, ctx);
+      trace(ctx, 'CARD_DRAW', `${player.name} 打开了金库`, 600);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', '锁芯纹丝不动，这次没能撬开金库', 500);
+    }
+  }
+
+  /** Explicit "poke the room" action; currently only the vault opts in. */
+  private static useRoomFeature(
+    state: GameState,
+    pid: PlayerId,
+    feature: string,
+    ctx: ReduceContext
+  ): void {
+    const player = state.players[pid];
+    const room = state.mapGraph.nodes[activeRoom(state, pid)];
+    if (!player || !room) return;
+    if (feature === 'VAULT' && room.props?.special === 'VAULT') {
+      this.crackVault(state, pid, ctx, player);
+    }
+  }
+
   /** Room effects, symbol card draw and forced stop. */
   private static enterRoom(
     state: GameState,
@@ -1037,13 +1088,7 @@ export class BetrayalRules {
 
     // Beneficial room functions are available to the traitor as well.
     if (special === 'VAULT' && !room.props?.opened) {
-      const auto = ownsDef(state, pid, 'skeleton_key');
-      const check = auto ? null : rollTraitCheck(state, pid, 'knowledge', { threshold: 6, reason: 'vault' });
-      if (auto || check?.success) {
-        room.props.opened = true;
-        this.drawItems(state, pid, 2, ctx);
-        trace(ctx, 'CARD_DRAW', `${player.name} 打开了金库`, 600);
-      }
+      this.crackVault(state, pid, ctx, player);
     }
 
     if (!justExplored || room.props?.resolved) return;
