@@ -2,6 +2,7 @@ import { GAME_REGISTRY } from './games/registry';
 import { BoardGameScene, CameraPreset } from './render/scene';
 import { BoardGameAudio } from './render/audio';
 import { ensureCanvasFontsReady } from './render/fonts';
+import { checkWebGLSupport, renderWebGLErrorModal } from './render/webglSupport';
 import { BoardGameHUD } from './ui/hud';
 import { MathematicalInspectorUI } from './ui/mathInspector';
 import { CameraView, GameSnapshot, PresentationPorts } from './app/contracts';
@@ -432,7 +433,24 @@ class BoardGameSimulatorApp {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  new BoardGameSimulatorApp();
+  const check = checkWebGLSupport();
+  if (!check.supported) {
+    console.error('[RDS-Board] WebGL is not available:', check.error, check.detail);
+    renderWebGLErrorModal(check.detail || check.error);
+    return;
+  }
+
+  try {
+    new BoardGameSimulatorApp();
+  } catch (err) {
+    const errorMsg = (err as Error)?.message || String(err);
+    if (errorMsg.includes('WebGL') || errorMsg.includes('THREE.WebGLRenderer')) {
+      console.error('[RDS-Board] Failed to initialize WebGL renderer:', err);
+      renderWebGLErrorModal(errorMsg);
+    } else {
+      throw err;
+    }
+  }
 });
 
 /**
