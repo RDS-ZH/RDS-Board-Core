@@ -494,6 +494,9 @@ export class RoomTileBuilder {
 
   private static wallpaperCache = new Map<string, THREE.MeshStandardMaterial>();
 
+  /** Memoised room templates: cloning beats rebuilding on every board sync. */
+  private static meshCache = new Map<string, THREE.Group>();
+
   /**
    * Pooled wall material with a procedural damask / stone wallpaper.
    * One material per (floor, palette) keeps draw calls and GPU uploads flat.
@@ -802,6 +805,11 @@ export class RoomTileBuilder {
   /**
    * Builds the complete 2.5D room: floor slab, cutaway walls with trim,
    * door openings, a door-aware furniture layout, and merged draw calls.
+   *
+   * Results are memoised per tile signature: a room always looks the same, so
+   * rebuilds clone a template instead of re-running the layout and the ~600
+   * geometry constructions. Clones share geometry, which the renderer must not
+   * dispose (see `userData.sharedGeometry`).
    */
   public static createRoomMesh(
     name: string,
@@ -815,6 +823,12 @@ export class RoomTileBuilder {
     const isPreview = options?.isPreview ?? false;
     const isBasement = floor === 'BASEMENT';
     const scale = size / TILE;
+
+    const cacheKey = `${roomId}|${name}|${size}|${color}|${[...doors].sort().join('')}|${floor}`;
+    if (!isPreview) {
+      const cached = this.meshCache.get(cacheKey);
+      if (cached) return cached.clone(true);
+    }
 
     const shell = new THREE.Group();
 
@@ -914,7 +928,14 @@ export class RoomTileBuilder {
 
     const merged = mergeByMaterial(shell);
     merged.scale.set(scale, scale, scale);
-    return merged;
+    if (isPreview) return merged;
+
+    // Mark every merged geometry as shared so clones survive board rebuilds.
+    merged.traverse(node => {
+      node.userData.sharedGeometry = true;
+    });
+    this.meshCache.set(cacheKey, merged);
+    return merged.clone(true);
   }
 }
 

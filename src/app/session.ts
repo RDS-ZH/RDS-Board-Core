@@ -896,10 +896,38 @@ export class UniversalSession implements GamePresenter {
           ...(player.alive ? [] : [{ label: '状态', value: '💀 已死亡' }])
         ];
         base.pips = [
-          { color: '#6aa6f5', label: `速度（初始 ${Number(start.speed ?? traits.speed ?? 0)}）`, short: '速', value: String(traits.speed ?? '-') },
-          { color: '#e0604e', label: `力量（初始 ${Number(start.might ?? traits.might ?? 0)}）`, short: '力', value: String(traits.might ?? '-') },
-          { color: '#57c08b', label: `神智（初始 ${Number(start.sanity ?? traits.sanity ?? 0)}）`, short: '智', value: String(traits.sanity ?? '-') },
-          { color: '#b07bf0', label: `知识（初始 ${Number(start.knowledge ?? traits.knowledge ?? 0)}）`, short: '识', value: String(traits.knowledge ?? '-') }
+          {
+            color: '#6aa6f5',
+            label: `速度（初始 ${Number(start.speed ?? traits.speed ?? 0)}）`,
+            short: '速',
+            value: String(traits.speed ?? '-'),
+            max: 8,
+            start: Number(start.speed ?? 0)
+          },
+          {
+            color: '#e0604e',
+            label: `力量（初始 ${Number(start.might ?? traits.might ?? 0)}）`,
+            short: '力',
+            value: String(traits.might ?? '-'),
+            max: 8,
+            start: Number(start.might ?? 0)
+          },
+          {
+            color: '#57c08b',
+            label: `神智（初始 ${Number(start.sanity ?? traits.sanity ?? 0)}）`,
+            short: '智',
+            value: String(traits.sanity ?? '-'),
+            max: 8,
+            start: Number(start.sanity ?? 0)
+          },
+          {
+            color: '#b07bf0',
+            label: `知识（初始 ${Number(start.knowledge ?? traits.knowledge ?? 0)}）`,
+            short: '识',
+            value: String(traits.knowledge ?? '-'),
+            max: 8,
+            start: Number(start.knowledge ?? 0)
+          }
         ];
       } else if (state.gameId === 'dune_mahjong') {
         const openWindow = state.pendingDecisions.find(w => w.status === 'OPEN');
