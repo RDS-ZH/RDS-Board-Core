@@ -450,6 +450,14 @@ export class BoardGameScene {
       mesh.position.y = targetY;
       return;
     }
+    // If the frame loop is not ticking (background tab, throttled headless
+    // page) an animated settle would freeze halfway and leave the card sunk
+    // into the tile. Land it immediately in that case.
+    if (performance.now() - this.lastFrameTime > 120) {
+      mesh.position.y = targetY;
+      this.cardSettles.delete(entityId);
+      return;
+    }
     this.cardSettles.set(entityId, {
       startY: mesh.position.y,
       targetY,
@@ -791,16 +799,22 @@ export class BoardGameScene {
       if (node.type === 'ROOM') currentRoomIds.add(node.id);
     });
     if (this.knownRoomIds.size > 0) {
+      const loopStale = performance.now() - this.lastFrameTime > 120;
       for (const id of currentRoomIds) {
         if (!this.knownRoomIds.has(id)) {
           const mesh = this.nodeMeshes.get(id);
           if (mesh) {
-            this.roomSettles.set(id, {
-              startY: mesh.position.y + 1.25,
-              targetY: mesh.position.y,
-              startedAt: performance.now(),
-              duration: 380
-            });
+            if (loopStale) {
+              // Frame loop throttled: land the tile immediately.
+              this.roomSettles.delete(id);
+            } else {
+              this.roomSettles.set(id, {
+                startY: mesh.position.y + 1.25,
+                targetY: mesh.position.y,
+                startedAt: performance.now(),
+                duration: 380
+              });
+            }
             BoardGameAudio.playTilePlacement();
           }
         }

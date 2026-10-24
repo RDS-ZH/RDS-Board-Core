@@ -45,7 +45,11 @@ class BoardGameSimulatorApp {
       },
       isSoundOn: () => BoardGameAudio.isSoundEnabled(),
       toggleInspector: () => this.toggleInspector(),
-      highlightBoard: (ids: string[] | null) => this.scene.setHighlight(ids)
+      highlightBoard: (ids: string[] | null) => this.scene.setHighlight(ids),
+      focusRoom: (nodeId: string) => {
+        this.scene.focusNode(nodeId);
+      },
+      clearRoomFocus: () => this.scene.clearFocus()
     };
 
     this.hud = new BoardGameHUD(hudContainer, this.session, this.ports, {

@@ -803,6 +803,77 @@ export class RoomTileBuilder {
   }
 
   /**
+   * Hang portraits, sconces and tapestries on the solid parts of the walls.
+   *
+   * Deterministic per room, and conservative about occlusion: a wall that
+   * already carries a tall cabinet only gets a high sconce.
+   */
+  private static decorateWalls(
+    target: THREE.Object3D,
+    doors: DoorDir[],
+    roomId: string,
+    windowed: boolean,
+    floor: string,
+    usedWalls: Map<DoorDir, number>
+  ): void {
+    const innerFace = HALF - THICK;
+    const seed = hashString(`walls|${roomId}`);
+    const runs: { dir: DoorDir; from: number; to: number }[] = [];
+    for (const dir of ['N', 'W', 'S', 'E'] as DoorDir[]) {
+      const spans: [number, number][] = doors.includes(dir)
+        ? [
+            [-HALF, -DOOR_HALF],
+            [DOOR_HALF, HALF]
+          ]
+        : [[-HALF, HALF]];
+      for (const [a, b] of spans) {
+        const from = a + 0.14;
+        const to = b - 0.14;
+        if (to - from >= 0.38) runs.push({ dir, from, to });
+      }
+    }
+    if (runs.length === 0) return;
+
+    // Deterministic order so the same room always hangs the same pictures.
+    const ordered = runs
+      .map((run, index) => ({ run, key: hashString(`${seed}|${run.dir}|${index}`) }))
+      .sort((x, y) => x.key - y.key)
+      .map(entry => entry.run);
+
+    const ornate = floor !== 'BASEMENT';
+    const pool = ornate ? ['portrait', 'sconce', 'tapestry', 'portrait'] : ['sconce', 'tapestry', 'portrait'];
+    const count = Math.min(ordered.length, 1 + (seed % 3));
+
+    for (let i = 0; i < count; i += 1) {
+      const run = ordered[i];
+      const isHoriz = run.dir === 'N' || run.dir === 'S';
+      const length = run.to - run.from;
+      let along = (run.from + run.to) / 2;
+
+      // Skip the window opening on windowed back walls.
+      if (windowed && (run.dir === 'N' || run.dir === 'W') && length > 0.8) {
+        const offset = 0.52;
+        along = Math.min(run.to - 0.16, Math.max(run.from + 0.16, along + offset));
+      }
+
+      // A wall carrying a tall cabinet only gets a high sconce.
+      const occupied = usedWalls.get(run.dir) ?? 0;
+      const kind = occupied > 0.34 ? 'sconce' : pool[(seed + i) % pool.length];
+      const spec = PROPS[kind];
+      if (!spec) continue;
+
+      const group = spec.build();
+      const inward = run.dir === 'N' || run.dir === 'W' ? 1 : -1;
+      const wallCoord = (run.dir === 'N' || run.dir === 'W' ? -innerFace : innerFace) + inward * (spec.depth / 2 + 0.005);
+      if (isHoriz) group.position.set(along, 0.12, wallCoord);
+      else group.position.set(wallCoord, 0.12, along);
+      group.rotation.y =
+        run.dir === 'N' ? 0 : run.dir === 'S' ? Math.PI : run.dir === 'E' ? -Math.PI / 2 : Math.PI / 2;
+      target.add(group);
+    }
+  }
+
+  /**
    * Builds the complete 2.5D room: floor slab, cutaway walls with trim,
    * door openings, a door-aware furniture layout, and merged draw calls.
    *
@@ -904,6 +975,16 @@ export class RoomTileBuilder {
       group.rotation.y = placed.yaw;
       shell.add(group);
     }
+
+    /* --------------------------- wall decoration --------------------------- */
+    // Tall furniture hides anything hung at eye level, so record how much each
+    // wall run is already occupied before choosing what to hang.
+    const usedWalls = new Map<DoorDir, number>();
+    for (const placed of layout.placed) {
+      if (!placed.wall) continue;
+      usedWalls.set(placed.wall, Math.max(usedWalls.get(placed.wall) ?? 0, placed.spec.height));
+    }
+    this.decorateWalls(shell, doors, roomId, windowed, floor, usedWalls);
 
     /* --------------------------- corner dressing --------------------------- */
     // Cobwebs belong in the upper corners, tucked against two walls. Placing

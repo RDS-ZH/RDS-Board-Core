@@ -685,6 +685,73 @@ const workbench = (): THREE.Group => {
 };
 
 /* -------------------------------------------------------------------------- */
+/* Wall decoration (no floor footprint)                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Gilded portrait. Hung at canvas centre height ~0.15 above the tile floor so
+ * it sits inside the tall cutaway wall without reaching the crown moulding.
+ */
+const portrait = (): THREE.Group => {
+  const g = new THREE.Group();
+  const cy = 0.16;
+  const W = 0.3;
+  const H = 0.24;
+  // Frame: outer gilt moulding with a dark inner rebate
+  g.add(box(W, H, 0.028, MAT.gold, 0, cy, 0));
+  g.add(box(W - 0.035, H - 0.035, 0.032, MAT.ebony, 0, cy, 0.002, 0, false));
+  // Canvas ground, darker toward the edges
+  g.add(box(W - 0.06, H - 0.06, 0.01, MAT.walnut, 0, cy, 0.016, 0, false));
+  // Sitter: shoulders, head, and a sliver of collar
+  g.add(box(W * 0.42, H * 0.3, 0.008, MAT.plumVelvet, 0, cy - 0.05, 0.023, 0, false));
+  g.add(sph(0.032, MAT.agedLinen, 0, cy + 0.045, 0.023, false));
+  g.add(box(W * 0.2, 0.014, 0.006, MAT.porcelain, 0, cy - 0.018, 0.026, 0, false));
+  // Highlight rim on the frame's top edge
+  g.add(box(W, 0.008, 0.032, MAT.brass, 0, cy + H / 2 - 0.004, 0, 0, false));
+  return g;
+};
+
+/** Brass wall sconce with a live candle. */
+const sconce = (): THREE.Group => {
+  const g = new THREE.Group();
+  const cy = 0.2;
+  // Back plate
+  g.add(box(0.06, 0.1, 0.014, MAT.agedBrass, 0, cy, 0.007, 0, false));
+  // Arm curving out into the room
+  g.add(box(0.012, 0.012, 0.09, MAT.agedBrass, 0, cy - 0.02, 0.05, 0, false));
+  g.add(cyl(0.026, 0.018, 0.02, MAT.agedBrass, 0, cy + 0.005, 0.095, 10, false));
+  // Candle + flame
+  g.add(cyl(0.013, 0.014, 0.08, MAT.wax, 0, cy + 0.055, 0.095, 8, false));
+  g.add(sph(0.014, MAT.flame, 0, cy + 0.105, 0.095));
+  // Warm halo on the wall behind
+  g.add(sph(0.03, MAT.lampGlow, 0, cy + 0.1, 0.02, false));
+  return g;
+};
+
+/** Embroidered tapestry hanging from a rod. */
+const tapestry = (): THREE.Group => {
+  const g = new THREE.Group();
+  const W = 0.26;
+  const H = 0.3;
+  const top = 0.33;
+  // Horizontal hanging rod running along the wall
+  const rod = cyl(0.008, 0.008, W + 0.06, MAT.brass, 0, top, 0.03, 6, false);
+  rod.rotation.z = Math.PI / 2;
+  g.add(rod);
+  g.add(sph(0.014, MAT.brass, -(W + 0.06) / 2, top, 0.03, false));
+  g.add(sph(0.014, MAT.brass, (W + 0.06) / 2, top, 0.03, false));
+  // Cloth
+  g.add(box(W, H, 0.008, MAT.wineVelvet, 0, top - H / 2 - 0.005, 0.026, 0, false));
+  g.add(box(W - 0.04, H - 0.05, 0.01, MAT.crimsonVelvet, 0, top - H / 2 - 0.005, 0.028, 0, false));
+  // Heraldic lozenges
+  for (const dx of [-0.05, 0.05]) {
+    g.add(box(0.05, 0.05, 0.012, MAT.gold, dx, top - 0.11, 0.031, Math.PI / 4, false));
+  }
+  g.add(box(0.04, 0.04, 0.014, MAT.ebony, 0, top - 0.2, 0.032, Math.PI / 4, false));
+  return g;
+};
+
+/* -------------------------------------------------------------------------- */
 /* Occult / crypt                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -1217,7 +1284,10 @@ export const PROPS: Record<string, PropSpec> = {
   planter: { id: 'planter', build: planter, width: 0.22, depth: 0.22, height: 0.3, anchor: 'CENTER' },
   specimenJarsSmall: { id: 'specimenJarsSmall', build: specimenJarsSmall, width: 0.3, depth: 0.12, height: 0.12, anchor: 'CENTER' },
   debrisPile: { id: 'debrisPile', build: debrisPile, width: 0.26, depth: 0.26, height: 0.06, anchor: 'CENTER' },
-  cobweb: { id: 'cobweb', build: cobweb, width: 0.2, depth: 0.2, height: 0.34, anchor: 'N', wallMounted: true }
+  cobweb: { id: 'cobweb', build: cobweb, width: 0.2, depth: 0.2, height: 0.34, anchor: 'N', wallMounted: true },
+  portrait: { id: 'portrait', build: portrait, width: 0.32, depth: 0.06, height: 0.3, anchor: 'N', wallMounted: true },
+  sconce: { id: 'sconce', build: sconce, width: 0.1, depth: 0.12, height: 0.32, anchor: 'N', wallMounted: true },
+  tapestry: { id: 'tapestry', build: tapestry, width: 0.3, depth: 0.08, height: 0.34, anchor: 'N', wallMounted: true }
 };
 
 export type PropId = keyof typeof PROPS;
