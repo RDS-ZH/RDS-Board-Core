@@ -84,6 +84,7 @@ export class BoardGameScene {
     duration: number;
   };
   private skipFitUntil = 0;
+  private cameraTweenTimer?: number;
   private previewObjects: THREE.Object3D[] = [];
   private hasFitted = false;
   private lastSyncMs = 0;
@@ -1039,7 +1040,8 @@ export class BoardGameScene {
   private disposeObject3D(root: THREE.Object3D): void {
     root.traverse(child => {
       const mesh = child as THREE.Mesh;
-      if (mesh.geometry) mesh.geometry.dispose();
+      // Room tiles are cloned from a cached template and share geometry.
+      if (mesh.geometry && !child.userData?.sharedGeometry) mesh.geometry.dispose();
       const material = (mesh as unknown as { material?: THREE.Material | THREE.Material[] }).material;
       if (!material) return;
       const materials = Array.isArray(material) ? material : [material];
@@ -1569,7 +1571,25 @@ export class BoardGameScene {
     const previous = this.prePlacementCamera;
     this.prePlacementCamera = undefined;
     this.skipFitUntil = performance.now() + 850;
-    if (previous) this.startCameraTween(previous.position, previous.target, 650);
+    if (!previous) return;
+    // Restore with a cut, not a tween. This is the last thing between the
+    // player and the finished board, and a stalled frame loop (background tab,
+    // heavy rebuild) would strand the camera up in the air with orbit controls
+    // still disabled.
+    this.cancelCameraTween();
+    this.camera.position.copy(previous.position);
+    this.controls.target.copy(previous.target);
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  /** Abort any in-flight camera tween and its safety timer. */
+  private cancelCameraTween(): void {
+    if (this.cameraTweenTimer !== undefined) {
+      window.clearTimeout(this.cameraTweenTimer);
+      this.cameraTweenTimer = undefined;
+    }
+    this.cameraTween = undefined;
   }
 
   private startCameraTween(
@@ -1586,6 +1606,27 @@ export class BoardGameScene {
       duration
     };
     this.controls.enabled = false;
+    // rAF stalls in background tabs would otherwise freeze the camera mid-tween
+    // with the orbit controls permanently disabled. Force the final pose.
+    if (this.cameraTweenTimer !== undefined) window.clearTimeout(this.cameraTweenTimer);
+    this.cameraTweenTimer = window.setTimeout(() => {
+      this.cameraTweenTimer = undefined;
+      this.finishCameraTween();
+    }, duration + 60);
+  }
+
+  /** Snap the active camera tween to its destination and hand control back. */
+  private finishCameraTween(): void {
+    const tween = this.cameraTween;
+    if (!tween) {
+      this.controls.enabled = true;
+      return;
+    }
+    this.camera.position.copy(tween.toPosition);
+    this.controls.target.copy(tween.toTarget);
+    this.cameraTween = undefined;
+    this.controls.enabled = true;
+    this.controls.update();
   }
 
   private updateCameraTween(now: number): void {
@@ -1596,9 +1637,11 @@ export class BoardGameScene {
     this.camera.position.lerpVectors(tween.fromPosition, tween.toPosition, eased);
     this.controls.target.lerpVectors(tween.fromTarget, tween.toTarget, eased);
     if (t >= 1) {
-      this.cameraTween = undefined;
-      this.controls.enabled = true;
-      this.controls.update();
+      if (this.cameraTweenTimer !== undefined) {
+        window.clearTimeout(this.cameraTweenTimer);
+        this.cameraTweenTimer = undefined;
+      }
+      this.finishCameraTween();
     }
   }
 
@@ -1615,16 +1658,21 @@ export class BoardGameScene {
     );
     group.position.set(placement.position[0], placement.position[1] + 0.12, placement.position[2]);
     group.rotation.y = -placement.rotation * (Math.PI / 2);
+    // Clone the materials before mutating: the palette is shared by every room,
+    // so editing it here would ghost the whole board.
     group.traverse(child => {
       const mesh = child as THREE.Mesh;
       if (!mesh.isMesh) return;
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const material of materials) {
-        if (!material) continue;
-        material.transparent = true;
-        material.opacity = 0.82;
-        material.depthWrite = false;
-      }
+      const source = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const cloned = source.map(material => {
+        if (!material) return material;
+        const copy = material.clone();
+        copy.transparent = true;
+        copy.opacity = 0.8;
+        copy.depthWrite = false;
+        return copy;
+      });
+      mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
     });
     this.boardObjectsGroup.add(group);
     this.previewObjects.push(group);

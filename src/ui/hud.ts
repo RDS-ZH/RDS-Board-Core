@@ -483,9 +483,36 @@ export class BoardGameHUD {
               .join('')}</div>`
           : '';
 
+        // Betrayal traits carry a printed 0..8 track: draw a character-sheet
+        // style ladder with the start value ringed instead of a flat pill.
+        const ladder = player.pips.filter(pip => typeof pip.max === 'number' && pip.max > 0);
+        const plainPips = player.pips.filter(pip => !(typeof pip.max === 'number' && pip.max > 0));
+
+        const traitRows = ladder.length
+          ? `<div class="pc-traits">${ladder
+              .map(pip => {
+                const max = pip.max ?? 8;
+                const value = Number(pip.value);
+                const start = Number(pip.start ?? -1);
+                const segs = Array.from({ length: max })
+                  .map((_, index) => {
+                    const on = Number.isFinite(value) && index < value ? 'on' : '';
+                    const mark = index === start ? 'start' : '';
+                    return `<span class="trait-seg ${on} ${mark}"></span>`;
+                  })
+                  .join('');
+                return `<div class="trait-row ${player.alive ? '' : 'dead'}" style="--trait-color:${pip.color}" title="${pip.label}">
+                  <span class="trait-key">${pip.short ?? ''}</span>
+                  <span class="trait-track">${segs}</span>
+                  <span class="trait-val">${pip.value}</span>
+                </div>`;
+              })
+              .join('')}</div>`
+          : '';
+
         const pips =
-          player.pips.length > 0
-            ? `<div class="pc-pips">${player.pips
+          plainPips.length > 0
+            ? `<div class="pc-pips">${plainPips
                 .map(
                   pip =>
                     `<span class="pip" title="${pip.label}">${
@@ -514,6 +541,7 @@ export class BoardGameHUD {
             </div>
             <div class="pc-body">
               ${hp}
+              ${traitRows}
               ${pips}
               ${stats}
             </div>

@@ -99,7 +99,17 @@ export interface UiPlayer {
   roleClass?: string;
   isFocus: boolean;
   stats: { label: string; value: string }[];
-  pips: { color: string; label: string; value: string; short?: string; icon?: string }[];
+  pips: {
+    color: string;
+    label: string;
+    value: string;
+    short?: string;
+    icon?: string;
+    /** Track length when the game uses a printed 0..max ladder. */
+    max?: number;
+    /** Printed starting position, rendered as a hollow marker. */
+    start?: number;
+  }[];
   hp?: { current: number; max: number };
 }
 
