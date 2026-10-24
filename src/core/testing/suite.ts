@@ -46,6 +46,8 @@ import { addExploredRoom, grantItem, grantOmen } from '../../games/betrayal/scen
 import { projectNodePosition } from '../../render/spatialProjection';
 import { applyFrameTransform, computeAutoLayerOffsets, ProjectionRegistry } from '../../render/projectionPort';
 import { buildCardGroups } from '../../render/cardGroups';
+import { layoutRoom, hashString as layoutHash } from '../../render/procedural/roomLayout';
+import { PROPS } from '../../render/procedural/props';
 import { layoutLabels } from '../../render/labels/labelLayout';
 import { describeActionView } from '../../app/actionText';
 import { setLocale } from '../../app/i18n';
@@ -2391,6 +2393,106 @@ test('presenter: a single highlighted drop executes from the action dock', () =>
   const after = session.getSnapshot();
   assert(after.log.cursor > before, 'drop advanced the action log');
   assert(!after.actions.some(action => action.label.startsWith('丢下「斧头」')), 'item no longer in hand');
+});
+
+test('layout: furniture never blocks a doorway and every door stays reachable', () => {
+  const INNER = 2.84 / 2 - 0.1;
+  const DOOR_HALF = 0.46;
+  const APPROACH = 0.58;
+  const wishLists = new Map<string, (string | { id: string; count: number })[]>();
+  // Mirror of ROOM_PROPS: only the ids matter for this invariant test.
+  const sampleSets: (string | { id: string; count: number })[][] = [
+    ['fourPosterBed', 'wardrobe', { id: 'nightstand', count: 2 }],
+    ['diningTable', { id: 'diningChair', count: 4 }, 'fireplace'],
+    ['ritualCircle', 'altar', 'sarcophagus', 'candelabra'],
+    ['grandStaircase', 'bookshelf', { id: 'bookshelf', count: 2 }],
+    ['labBench', 'operatingTable', 'workbench', 'specimenShelf'],
+    ['furnace', 'coalPile', { id: 'wineRack', count: 2 }, 'barrelStack']
+  ];
+  void wishLists;
+
+  const doorCombos: ('N' | 'S' | 'E' | 'W')[][] = [
+    ['N'],
+    ['S', 'E'],
+    ['N', 'S'],
+    ['N', 'S', 'E'],
+    ['N', 'S', 'E', 'W'],
+    ['N', 'W'],
+    ['E', 'W']
+  ];
+
+  let checked = 0;
+  for (const doors of doorCombos) {
+    for (const wanted of sampleSets) {
+      const result = layoutRoom({
+        inner: INNER,
+        doors,
+        wanted,
+        seed: layoutHash(`${doors.join('')}|${wanted.map(w => (typeof w === 'string' ? w : w.id)).join(',')}`),
+        doorHalf: DOOR_HALF
+      });
+      checked += 1;
+
+      for (const placed of result.placed) {
+        assert(!!PROPS[placed.spec.id], `prop ${placed.spec.id} is registered`);
+        if (placed.spec.decal || placed.spec.ceiling || placed.spec.wallMounted) continue;
+        // Inside the tile footprint.
+        assert(
+          Math.abs(placed.rect.x) + placed.rect.w / 2 <= INNER + 0.001,
+          `${placed.spec.id} stays inside the tile on X`
+        );
+        assert(
+          Math.abs(placed.rect.z) + placed.rect.d / 2 <= INNER + 0.001,
+          `${placed.spec.id} stays inside the tile on Z`
+        );
+        // Clear of every doorway approach corridor.
+        for (const door of doors) {
+          const vx = door === 'E' ? 1 : door === 'W' ? -1 : 0;
+          const vz = door === 'N' ? -1 : door === 'S' ? 1 : 0;
+          const corridor = {
+            x: vx * (INNER - APPROACH / 2),
+            z: vz * (INNER - APPROACH / 2),
+            w: vx !== 0 ? APPROACH : DOOR_HALF * 2,
+            d: vz !== 0 ? APPROACH : DOOR_HALF * 2
+          };
+          const hitX = Math.abs(placed.rect.x - corridor.x) < (placed.rect.w + corridor.w) / 2;
+          const hitZ = Math.abs(placed.rect.z - corridor.z) < (placed.rect.d + corridor.d) / 2;
+          assert(!(hitX && hitZ), `${placed.spec.id} must not block the ${door} doorway`);
+        }
+      }
+
+      // No two solid props may overlap.
+      const solids = result.placed.filter(
+        p => !p.spec.decal && !p.spec.ceiling && !p.spec.wallMounted
+      );
+      for (let i = 0; i < solids.length; i += 1) {
+        for (let j = i + 1; j < solids.length; j += 1) {
+          const a = solids[i].rect;
+          const b = solids[j].rect;
+          const overlapX = Math.abs(a.x - b.x) < (a.w + b.w) / 2 - 0.001;
+          const overlapZ = Math.abs(a.z - b.z) < (a.d + b.d) / 2 - 0.001;
+          assert(
+            !(overlapX && overlapZ),
+            `${solids[i].spec.id} and ${solids[j].spec.id} must not intersect`
+          );
+        }
+      }
+    }
+  }
+  assert(checked >= 40, 'layout matrix exercised enough combinations');
+});
+
+test('layout: deterministic across repeated runs', () => {
+  const args = {
+    inner: 2.84 / 2 - 0.1,
+    doors: ['N', 'S', 'E'] as ('N' | 'S' | 'E' | 'W')[],
+    wanted: ['sofa', 'armchair', 'sideTable', 'fireplace', 'globeStand'],
+    seed: layoutHash('determinism'),
+    doorHalf: 0.46
+  };
+  const a = layoutRoom(args).placed.map(p => `${p.spec.id}@${p.x.toFixed(3)},${p.z.toFixed(3)},${p.yaw}`);
+  const b = layoutRoom(args).placed.map(p => `${p.spec.id}@${p.x.toFixed(3)},${p.z.toFixed(3)},${p.yaw}`);
+  assertEqual(a.join('|'), b.join('|'), 'identical seed yields identical furniture layout');
 });
 
 test('presenter: snapshot exposes actions and performs by id', () => {

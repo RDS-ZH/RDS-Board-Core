@@ -56,6 +56,7 @@ export class BoardGameScene {
   private animQueue: TransactionalAnimationQueue;
   private projection: ProjectionRegistry = createDefaultProjectionRegistry();
   private physics = new PresentationPhysics();
+  private focusLight?: THREE.PointLight;
   private lastFrameTime = performance.now();
   private readonly labels: LabelOverlay;
 
@@ -134,7 +135,7 @@ export class BoardGameScene {
     this.renderer.shadowMap.autoUpdate = false;
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.84;
+    this.renderer.toneMappingExposure = 1.12;
     container.appendChild(this.renderer.domElement);
     this.labels = new LabelOverlay(container);
     this.labels.setOnClick(id => {
@@ -199,14 +200,14 @@ export class BoardGameScene {
 
   private setupLighting(): void {
     // Warm ambient bounce
-    const ambientLight = new THREE.AmbientLight(0xffe9c9, 0.58);
+    const ambientLight = new THREE.AmbientLight(0xffe9c9, 0.82);
     this.scene.add(ambientLight);
 
     const hemisphere = new THREE.HemisphereLight(0x9db4d8, 0x1b1410, 0.38);
     this.scene.add(hemisphere);
 
     // Key lamp above the table (soft, warm)
-    const keyLight = new THREE.DirectionalLight(0xfff2dd, 1.02);
+    const keyLight = new THREE.DirectionalLight(0xfff2dd, 1.28);
     keyLight.position.set(7, 16, 9);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.width = 2048;
@@ -230,6 +231,32 @@ export class BoardGameScene {
     const pendant = new THREE.PointLight(0xffdfae, 46, 46, 2);
     pendant.position.set(0, 8.5, 0);
     this.scene.add(pendant);
+
+    // Inspection lamp: follows the camera target so whichever room you are
+    // looking at stays readable inside the dark diorama.
+    this.focusLight = new THREE.PointLight(0xffe2b6, 0, 11, 2);
+    this.focusLight.position.set(0, 4, 2);
+    this.scene.add(this.focusLight);
+  }
+
+  /** Keep the warm inspection light over the room under the camera target. */
+  private updateFocusLight(): void {
+    if (!this.focusLight) return;
+    const target = this.controls.target;
+    const distance = this.camera.position.distanceTo(target);
+    // Blend from a tight close-up lamp to a broad wash as the camera pulls back,
+    // so both the room-level and the whole-board view stay readable.
+    const t = THREE.MathUtils.clamp((distance - 6) / 26, 0, 1);
+    const height = THREE.MathUtils.lerp(3.4, 12, t);
+    this.focusLight.position.set(
+      target.x + THREE.MathUtils.lerp(0.6, 2.2, t),
+      target.y + height,
+      target.z + THREE.MathUtils.lerp(1.9, 5, t)
+    );
+    // Physical falloff is 1/d², so scale intensity with the square of the lift
+    // to hold a roughly constant floor illuminance.
+    this.focusLight.intensity = 2.6 * height * height;
+    this.focusLight.distance = THREE.MathUtils.lerp(14, 52, t);
   }
 
   public getAnimationQueue(): TransactionalAnimationQueue {
@@ -584,6 +611,30 @@ export class BoardGameScene {
     this.controls.target.copy(center);
     this.camera.position.copy(center.clone().add(direction.multiplyScalar(distance)));
     this.controls.update();
+  }
+
+  /**
+   * Cinematic close-up on one board node. Used by the room inspector and the
+   * modelling review harness; never mutates game state.
+   */
+  public focusNode(nodeId: string, distance = 6.8): boolean {
+    const mesh = this.nodeMeshes.get(nodeId);
+    if (!mesh || this.isDestroyed) return false;
+    const target = mesh.position.clone();
+    target.y = Math.max(0.12, target.y + 0.16);
+    const dir = new THREE.Vector3(0.56, 0.92, 0.8).normalize();
+    const position = target.clone().addScaledVector(dir, distance);
+    this.skipFitUntil = performance.now() + 1400;
+    this.startCameraTween(position, target, 520);
+    return true;
+  }
+
+  /** Recover the wide board framing after a close-up. */
+  public clearFocus(): void {
+    if (!this.lastState) return;
+    this.skipFitUntil = 0;
+    this.hasFitted = false;
+    this.fitCameraToBoard(this.lastState, this.lastPlacement, this.lastLayout);
   }
 
   public setCameraPreset(preset: CameraPreset): void {
@@ -993,6 +1044,8 @@ export class BoardGameScene {
       if (!material) return;
       const materials = Array.isArray(material) ? material : [material];
       for (const entry of materials) {
+        // Pooled palette materials are reused across every room rebuild.
+        if (entry.userData?.shared) continue;
         if (child.userData?.ownedTexture && 'map' in entry) {
           (entry as THREE.MeshBasicMaterial).map?.dispose();
         }
@@ -1085,13 +1138,15 @@ export class BoardGameScene {
           });
         }
       } else if (node.type === 'ROOM') {
-        // Betrayal Room Tile
+        // Betrayal room tile: 2.5D diorama with a door-aware furniture layout.
+        const roomId = node.id.startsWith('room_') ? node.id.slice(5) : node.id;
         const roomMesh = RoomTileBuilder.createRoomMesh(
           node.props.name || 'Room',
           2.84,
           node.props.color,
           node.props.doors,
           {
+            roomId,
             floor: node.props.floor,
             special: node.props.special,
             tags: node.props.tags,
@@ -1346,9 +1401,16 @@ export class BoardGameScene {
         occupantsByRoom.set(roomId, slot + 1);
 
         const angle = (slot % 3) * ((Math.PI * 2) / 3) + Math.PI / 6;
-        const meeple = TokenMeshBuilder.createMeepleMesh(p.role === 'TRAITOR' ? '#d50000' : p.color);
-        meeple.position.set(room.position[0] + Math.cos(angle) * 0.75, 0.1, room.position[2] + 0.42 + Math.sin(angle) * 0.35);
-        meeple.scale.setScalar(0.8);
+        const meeple = TokenMeshBuilder.createCharacterMiniature(
+          p.role === 'TRAITOR' ? '#c62828' : p.color,
+          { variant: p.role === 'TRAITOR' ? 'TRAITOR' : 'EXPLORER' }
+        );
+        // Stand in the room's open hub so the figure never hides behind a bed.
+        meeple.position.set(
+          room.position[0] + Math.cos(angle) * 0.3,
+          room.position[1] + 0.12,
+          room.position[2] + Math.sin(angle) * 0.3
+        );
         this.boardObjectsGroup.add(meeple);
         this.entityMeshes.set(`meeple_${p.id}`, meeple);
       });
@@ -1359,12 +1421,14 @@ export class BoardGameScene {
         if (!entity?.id || entity.type !== 'MEEPLE' || !custom?.monster) return;
         const spatial = entity.components?.spatial ?? { x: 0, y: 0.12, z: 0 };
         const roomNode = state.mapGraph.nodes[String(custom.roomId ?? '')];
-        const x = roomNode ? roomNode.position[0] + 0.7 : spatial.x;
-        const z = roomNode ? roomNode.position[2] + 0.5 : spatial.z;
+        const x = roomNode ? roomNode.position[0] - 0.28 : spatial.x;
+        const z = roomNode ? roomNode.position[2] + 0.3 : spatial.z;
         const stunned = !!custom.stunned;
-        const monster = TokenMeshBuilder.createMeepleMesh(String(custom.color ?? '#b07bf0'));
+        const monster = TokenMeshBuilder.createCharacterMiniature(String(custom.color ?? '#b07bf0'), {
+          variant: 'MONSTER',
+          scale: 1.45
+        });
         monster.position.set(x, 0.12, z);
-        monster.scale.setScalar(stunned ? 1.05 : 1.3);
         if (stunned) monster.rotation.z = Math.PI / 2;
         this.boardObjectsGroup.add(monster);
         this.entityMeshes.set(entity.id, monster);
@@ -1452,9 +1516,23 @@ export class BoardGameScene {
     } else if (direction.lengthSq() < 0.001) {
       direction.set(0.6, 24, 31);
     }
-    const currentDistance = direction.length();
-    const needed = Math.max(layout?.minDistance ?? 18, Math.max(spanX, spanZ) * 1.22 + 6);
-    const distance = Math.min(180, Math.max(currentDistance, needed));
+
+    // Fit from the real field of view instead of a fixed multiplier, so the
+    // board fills the viewport whatever its aspect ratio or footprint.
+    const aspect = this.camera.aspect > 0.1 ? this.camera.aspect : 1.6;
+    const fovV = THREE.MathUtils.degToRad(this.camera.fov);
+    const fovH = 2 * Math.atan(Math.tan(fovV / 2) * aspect);
+    const halfX = spanX / 2;
+    const halfZ = spanZ / 2;
+    // The tilted camera foreshortens Z, so the vertical requirement is relaxed.
+    const fitHorizontal = halfX / Math.tan(fovH / 2);
+    const fitVertical = (halfZ * 0.72) / Math.tan(fovV / 2);
+    const needed = Math.max(
+      layout?.minDistance ?? 14,
+      Math.max(fitHorizontal, fitVertical) * 1.1 + 3
+    );
+    // Never zoom in past what the user already chose.
+    const distance = Math.min(180, Math.max(this.camera.position.distanceTo(this.controls.target), needed));
 
     this.controls.target.copy(target);
     this.camera.position.copy(target).add(direction.normalize().multiplyScalar(distance));
@@ -2241,6 +2319,7 @@ export class BoardGameScene {
     const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
     this.physics.step(dt);
+    this.updateFocusLight();
     this.updateCardSettles(now);
     this.updateRoomSettles(now);
     this.renderer.render(this.scene, this.camera);

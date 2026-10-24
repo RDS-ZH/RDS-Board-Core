@@ -153,4 +153,96 @@ export class TokenMeshBuilder {
 
     return group;
   }
+
+  /**
+   * Painted tabletop miniature for the Betrayal diorama.
+   *
+   * The room tiles are 2.84 units across and their walls are 0.42 high, so a
+   * character must read at roughly 0.3 units — about person height for a 4.5 m
+   * room. Anything larger swallows the furniture.
+   */
+  public static createCharacterMiniature(
+    color: string,
+    options: { variant?: 'EXPLORER' | 'TRAITOR' | 'MONSTER'; scale?: number } = {}
+  ): THREE.Group {
+    const variant = options.variant ?? 'EXPLORER';
+    const group = new THREE.Group();
+    const cloth = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(color),
+      roughness: 0.62,
+      metalness: 0.08
+    });
+    const skin = new THREE.MeshStandardMaterial({ color: 0xd8b08a, roughness: 0.85, metalness: 0 });
+    const base = new THREE.MeshStandardMaterial({ color: 0x14100e, roughness: 0.85, metalness: 0.15 });
+    const accent = new THREE.MeshStandardMaterial({ color: 0xc59a44, roughness: 0.35, metalness: 0.8 });
+
+    // Round display base with a brass rim
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.078, 0.014, 16), base);
+    disc.position.y = 0.007;
+    disc.castShadow = true;
+    disc.receiveShadow = true;
+    group.add(disc);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.071, 0.006, 6, 20), accent);
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = 0.015;
+    group.add(rim);
+
+    // Cloak / torso: a tapered body reads as a robed figure from above
+    const bodyH = variant === 'MONSTER' ? 0.17 : 0.155;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.062, bodyH, 12), cloth);
+    body.position.y = 0.016 + bodyH / 2;
+    body.castShadow = true;
+    group.add(body);
+
+    // Shoulder cape
+    const cape = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.07, 10, 1, true), cloth);
+    cape.position.y = 0.016 + bodyH - 0.028;
+    cape.castShadow = true;
+    group.add(cape);
+
+    // Head
+    const headY = 0.016 + bodyH + 0.026;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.028, 12, 10), skin);
+    head.position.y = headY;
+    head.castShadow = true;
+    group.add(head);
+
+    if (variant === 'EXPLORER') {
+      // Hat brim
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.006, 12), base);
+      brim.position.y = headY + 0.014;
+      group.add(brim);
+      const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.03, 0.024, 12), base);
+      crown.position.y = headY + 0.028;
+      group.add(crown);
+    } else if (variant === 'TRAITOR') {
+      // Hood
+      const hood = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.07, 10), cloth);
+      hood.position.y = headY + 0.02;
+      group.add(hood);
+      // Ember eyes
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff6a2a });
+      for (const dx of [-0.011, 0.011]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.005, 6, 6), eyeMat);
+        eye.position.set(dx, headY + 0.002, 0.026);
+        group.add(eye);
+      }
+    } else {
+      // Monster: hunched mass with a glowing gaze
+      const hump = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), cloth);
+      hump.position.set(0, 0.016 + bodyH * 0.8, -0.018);
+      hump.castShadow = true;
+      group.add(hump);
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff3b2a });
+      for (const dx of [-0.014, 0.014]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.007, 6, 6), eyeMat);
+        eye.position.set(dx, headY + 0.004, 0.026);
+        group.add(eye);
+      }
+    }
+
+    const s = options.scale ?? 1;
+    group.scale.setScalar(s);
+    return group;
+  }
 }
