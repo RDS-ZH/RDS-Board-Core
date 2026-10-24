@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CatanResource } from '../../games/catan/setup';
+import { CANVAS_FONT_STACK } from '../fonts';
 
 /**
  * Procedural Catan hex tile builder.
@@ -197,7 +198,7 @@ export class HexTileBuilder {
 
     const isRed = number === 6 || number === 8;
     ctx.fillStyle = isRed ? '#c62828' : '#2b2b2b';
-    ctx.font = 'bold 84px "Segoe UI", Arial, sans-serif';
+    ctx.font = `700 84px ${CANVAS_FONT_STACK}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`${number}`, 128, 116);
@@ -238,7 +239,7 @@ export class HexTileBuilder {
     const hexMesh = new THREE.Mesh(hexGeom, [sideMat, topMat, sideMat]);
     hexMesh.castShadow = true;
     hexMesh.receiveShadow = true;
-    hexMesh.rotation.y = Math.PI / 6;
+    // CylinderGeometry(..., 6) top vertices naturally align with pointy-topped hex graph vertices at ±30° and ±90°
     group.add(hexMesh);
 
     if (diceNumber && diceNumber > 0 && resource !== 'desert') {

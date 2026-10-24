@@ -2,6 +2,14 @@
    通用桌游模拟器 · Obsidian & Brass Design System
    ============================================================ */
 
+@font-face {
+  font-family: 'AlibabaPuHuiTi';
+  src: url('/fonts/Alibaba-PuHuiTi-Regular.woff') format('woff');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --ink: #05070a;
   --ink-2: #0a0d13;
@@ -18,8 +26,8 @@
   --gold-wash: rgba(217, 180, 91, 0.12);
 
   --text: #edeff3;
-  --muted: #9aa3b2;
-  --faint: #626b7a;
+  --muted: #b6bfcc;
+  --faint: #8b93a1;
 
   --red: #e0604e;
   --red-wash: rgba(224, 96, 78, 0.14);
@@ -35,8 +43,8 @@
   --r-lg: 18px;
   --r-xl: 24px;
 
-  --font-display: "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif SC", Georgia, serif;
-  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+  --font-display: "AlibabaPuHuiTi", "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif SC", Georgia, serif;
+  --font-ui: "AlibabaPuHuiTi", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace;
 
@@ -51,14 +59,23 @@
 }
 
 html,
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+}
+
+html,
 body {
   height: 100%;
   overflow: hidden;
   background: var(--ink);
   color: var(--text);
-  font-family: var(--font-ui);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
 }
 
 body {
@@ -160,8 +177,8 @@ body {
 }
 
 .brand-sub {
-  font-size: 8.5px;
-  letter-spacing: 0.19em;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
   color: var(--faint);
   font-weight: 600;
 }
@@ -240,9 +257,9 @@ body {
 }
 
 .viewer-switch .vs-label {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   color: var(--faint);
 }
 
@@ -406,9 +423,9 @@ body {
 }
 
 .rc-floor {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #d9b45b;
   padding: 2px 7px;
@@ -447,10 +464,10 @@ body {
 }
 
 .rc-en {
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
+  font-size: 10px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(217, 180, 91, 0.62);
+  color: rgba(217, 180, 91, 0.78);
   margin-top: 1px;
 }
 
@@ -472,11 +489,11 @@ body {
 }
 
 .rc-door {
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 800;
-  color: rgba(255, 255, 255, 0.16);
-  width: 14px;
-  height: 11px;
+  color: rgba(255, 255, 255, 0.28);
+  width: 15px;
+  height: 12px;
   display: grid;
   place-items: center;
   border-radius: 2px;
@@ -523,16 +540,16 @@ body {
 .rc-door:nth-child(4) { grid-area: 2 / 1; }
 
 .rc-symbol {
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--muted);
   letter-spacing: 0.02em;
 }
 
 .rc-text {
   margin: 9px 0 0;
-  font-size: 10.5px;
-  line-height: 1.55;
-  color: rgba(228, 222, 209, 0.72);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: rgba(236, 230, 218, 0.86);
 }
 
 .rc-occupants {
@@ -694,9 +711,9 @@ body {
 }
 
 .pc-role {
-  font-size: 8.5px;
+  font-size: 9.5px;
   font-weight: 800;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.07em;
   padding: 2px 6px;
   border-radius: 4px;
   text-transform: uppercase;
@@ -872,10 +889,10 @@ body {
 }
 
 .trait-key {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
   color: var(--faint);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   text-align: center;
 }
 
@@ -1241,7 +1258,7 @@ body {
 }
 
 .act-hint {
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--faint);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1284,9 +1301,9 @@ body {
   top: 4px;
   right: 5px;
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 9px;
   color: var(--faint);
-  opacity: 0.7;
+  opacity: 0.9;
 }
 
 .act.primary .act-key {
@@ -2899,15 +2916,19 @@ select.pf-control {
   padding: 3px 8px;
   border: 1px solid rgba(201, 181, 122, 0.35);
   border-radius: 7px;
-  background: rgba(8, 12, 18, 0.82);
-  color: #e8dfc5;
-  font-family: "Segoe UI", "PingFang SC", sans-serif;
-  font-size: 11px;
-  line-height: 16px;
+  background: rgba(8, 12, 18, 0.86);
+  color: #f1ebd8;
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: geometricPrecision;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 17px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   pointer-events: none;
 }
 

@@ -18,6 +18,16 @@ pnpm run dev        # http://127.0.0.1:5173/
 
 浏览器端是 Three.js + HUD 的可视化调试器；内核本身不依赖浏览器，可以用 Vite SSR 直接在 Node 里跑（见 `scripts/test-core.mjs`）。
 
+### 字体
+
+界面与画布共用一个中文字体：**阿里巴巴普惠体 Regular**（`public/fonts/Alibaba-PuHuiTi-Regular.woff`，免费商用）。
+
+- DOM 侧通过 [styles.css](src/ui/styles.css) 的 `@font-face` 引入，`--font-ui` / `--font-display` 都以它打头；
+- Canvas 侧（房间地板、卡牌、指示牌、数字片）统一走 [src/render/fonts.ts](src/render/fonts.ts) 导出的 `CANVAS_FONT_STACK`，**不要**再写字面量 `"Segoe UI"`，否则贴图与 HUD 会用到不同字形；
+- 画布贴图只画一次并进缓存，所以 `main.ts` 用 `ensureCanvasFontsReady()` 把首次绘制卡在字体解码之后；缺字体时会降级到系统字体而不是白屏。
+
+换字体时改三处：把 woff 放进 `public/fonts/`、改 `@font-face` 与 `--font-ui`、改 `fonts.ts` 里的 `UI_FONT_FAMILY`。
+
 ### 截图与 UI 测试需要无头浏览器
 
 `scripts/shoot*.mjs` 与 `scripts/test-ui-matrix.mjs` 会按下面的顺序找浏览器：

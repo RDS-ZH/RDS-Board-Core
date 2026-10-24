@@ -16,6 +16,7 @@ import { buildCardGroups } from './cardGroups';
 import { cardGroupKey } from './cardGroups';
 import { PresentationPhysics } from './physics';
 import { BoardGameAudio } from './audio';
+import { CANVAS_FONT_STACK, ensureCanvasFontsReady } from './fonts';
 
 export type CameraPreset = 'ISOMETRIC' | 'TOP_DOWN' | 'PLAYER_1' | 'PLAYER_2';
 
@@ -102,6 +103,12 @@ export class BoardGameScene {
   private cameraTweenTimer?: number;
   private lastPreviewRotation?: number;
   private previewObjects: THREE.Object3D[] = [];
+  private navArrowMeshes: {
+    group: THREE.Group;
+    material: THREE.MeshStandardMaterial;
+    baseIntensity: number;
+    baseY: number;
+  }[] = [];
   private hasFitted = false;
   private lastSyncMs = 0;
   private hoveredEntityId?: string;
@@ -1097,6 +1104,7 @@ export class BoardGameScene {
   /** Remove and release GPU-side resources; shared texture caches stay alive. */
   private clearBoardObjects(): void {
     this.physics.clear();
+    this.navArrowMeshes = [];
     while (this.boardObjectsGroup.children.length > 0) {
       const child = this.boardObjectsGroup.children[0];
       this.boardObjectsGroup.remove(child);
@@ -1164,6 +1172,91 @@ export class BoardGameScene {
     });
   }
 
+  /**
+   * 3D Glowing navigation arrow on the floor indicating movement to an adjacent room,
+   * or exploration through an unopened door.
+   */
+  private createFloorNavArrow(
+    dir: 'N' | 'S' | 'E' | 'W',
+    kind: 'NAV' | 'EXPLORE',
+    targetName: string
+  ): { group: THREE.Group; material: THREE.MeshStandardMaterial } {
+    const group = new THREE.Group();
+    const isNav = kind === 'NAV';
+    const mainColor = isNav ? 0x22dd77 : 0xe5a93c;
+    const emissiveColor = isNav ? 0x11bb66 : 0x9e6c1a;
+
+    const arrowMat = new THREE.MeshStandardMaterial({
+      color: mainColor,
+      emissive: emissiveColor,
+      emissiveIntensity: 1.0,
+      roughness: 0.25,
+      metalness: 0.1
+    });
+
+    // 2-part chevron on the floor: angled bars forming a chevron pointing forward (+Z local)
+    const barGeom = new THREE.BoxGeometry(0.08, 0.024, 0.32);
+    const leftBar = new THREE.Mesh(barGeom, arrowMat);
+    leftBar.position.set(-0.11, 0.012, -0.06);
+    leftBar.rotation.y = Math.PI / 4;
+    group.add(leftBar);
+
+    const rightBar = new THREE.Mesh(barGeom, arrowMat);
+    rightBar.position.set(0.11, 0.012, -0.06);
+    rightBar.rotation.y = -Math.PI / 4;
+    group.add(rightBar);
+
+    // Tip marker
+    const tipGeom = new THREE.BoxGeometry(0.07, 0.025, 0.07);
+    const tip = new THREE.Mesh(tipGeom, arrowMat);
+    tip.position.set(0, 0.012, 0.07);
+    tip.rotation.y = Math.PI / 4;
+    group.add(tip);
+
+    // Floor glowing aura disc
+    const auraGeom = new THREE.CircleGeometry(0.36, 16);
+    const auraMat = new THREE.MeshBasicMaterial({
+      color: mainColor,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false
+    });
+    const aura = new THREE.Mesh(auraGeom, auraMat);
+    aura.rotation.x = -Math.PI / 2;
+    aura.position.y = 0.004;
+    group.add(aura);
+
+    // Floating text label
+    const labelText = isNav ? `→ ${targetName}` : '▲ 探索';
+    const label = this.createLabelSprite(
+      labelText,
+      isNav ? '#55ffaa' : '#f5c058',
+      24
+    );
+    label.position.set(0, 0.24, 0);
+    label.scale.set(1.4, 0.26, 1);
+    group.add(label);
+
+    const yAngles: Record<string, number> = {
+      S: 0,
+      N: Math.PI,
+      E: Math.PI / 2,
+      W: -Math.PI / 2
+    };
+    group.rotation.y = yAngles[dir] ?? 0;
+
+    return { group, material: arrowMat };
+  }
+
+  private updateNavArrows(now: number): void {
+    if (this.navArrowMeshes.length === 0) return;
+    const pulse = 0.85 + 0.35 * Math.sin(now * 0.006);
+    for (const item of this.navArrowMeshes) {
+      if (item.material) item.material.emissiveIntensity = item.baseIntensity * pulse;
+      if (item.group) item.group.position.y = item.baseY + 0.012 * Math.sin(now * 0.005);
+    }
+  }
+
   private renderMapGraph(state: ProjectedGameState): void {
     const graph = state.mapGraph;
 
@@ -1226,10 +1319,54 @@ export class BoardGameScene {
         this.boardObjectsGroup.add(roomMesh);
         this.nodeMeshes.set(node.id, roomMesh);
 
-        // Register interactive door exploration hotspots
+        // Active actor movement & door exploration navigation
+        const focusActorId =
+          state.viewerId !== 'GOD'
+            ? state.viewerId
+            : (state.activeActorId ?? state.activePlayerId);
+        const activeActor = state.players[focusActorId] ?? state.npcs?.[focusActorId];
+        const currentActorRoomId = String(
+          activeActor?.customProps?.currentRoomId ?? activeActor?.customProps?.roomId ?? ''
+        );
+        const movesLeft = Number(activeActor?.customProps?.movesLeft ?? 0);
+        const isCurrentActorRoom = node.id === currentActorRoomId;
+
+        // Register interactive door exploration and navigation hotspots
         const doors = (node.props.doors ?? []) as ('N' | 'S' | 'E' | 'W')[];
         const halfSize = 2.84 / 2;
+        const DIR_DELTAS: Record<string, [number, number]> = {
+          N: [0, -1],
+          S: [0, 1],
+          E: [1, 0],
+          W: [-1, 0]
+        };
+        const OPPOSITES: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+
         for (const dir of doors) {
+          const delta = DIR_DELTAS[dir] ?? [0, 0];
+          const nodeCol = Number(node.props?.col);
+          const nodeRow = Number(node.props?.row);
+          const nodeFloor = String(node.props?.floor ?? '');
+
+          const neighborRoom = Object.values(state.mapGraph.nodes).find(other => {
+            const p = other.props;
+            return (
+              other.type === 'ROOM' &&
+              p?.floor === nodeFloor &&
+              Number(p?.col) === nodeCol + delta[0] &&
+              Number(p?.row) === nodeRow + delta[1]
+            );
+          });
+
+          const neighborDoors = Array.isArray(neighborRoom?.props?.doors) ? neighborRoom.props.doors : [];
+          const isConnected = !!(
+            neighborRoom &&
+            neighborDoors.includes(OPPOSITES[dir]) &&
+            (node.neighbors.includes(neighborRoom.id) ||
+              !!state.mapGraph.edges[`edge_${node.id}_${neighborRoom.id}`] ||
+              !!state.mapGraph.edges[`edge_${neighborRoom.id}_${node.id}`])
+          );
+
           const doorGeom = new THREE.BoxGeometry(
             dir === 'N' || dir === 'S' ? 0.96 : 0.24,
             0.45,
@@ -1242,11 +1379,90 @@ export class BoardGameScene {
           doorMesh.position.set(node.position[0] + dx, node.position[1] + 0.22, node.position[2] + dz);
           this.boardObjectsGroup.add(doorMesh);
 
-          this.raycaster.registerInteractive(doorMesh, {
-            type: 'NODE',
-            id: `${node.id}:door:${dir}`,
-            metadata: { type: 'DOOR', roomId: node.id, direction: dir, intent: 'interact' }
-          });
+          if (isConnected && neighborRoom) {
+            const targetName = String(neighborRoom.props?.name ?? '相邻房间');
+            if (isCurrentActorRoom && movesLeft > 0) {
+              const { group: navArrow, material } = this.createFloorNavArrow(dir, 'NAV', targetName);
+              const ax = dir === 'W' ? -1.02 : dir === 'E' ? 1.02 : 0;
+              const az = dir === 'N' ? -1.02 : dir === 'S' ? 1.02 : 0;
+              const arrowY = node.position[1] + 0.125;
+              navArrow.position.set(node.position[0] + ax, arrowY, node.position[2] + az);
+              this.boardObjectsGroup.add(navArrow);
+
+              this.navArrowMeshes.push({
+                group: navArrow,
+                material,
+                baseIntensity: 1.0,
+                baseY: arrowY
+              });
+
+              this.raycaster.registerInteractive(navArrow, {
+                type: 'NODE',
+                id: `${node.id}:nav:${neighborRoom.id}`,
+                metadata: {
+                  type: 'ROOM_NAV',
+                  fromRoomId: node.id,
+                  targetRoomId: neighborRoom.id,
+                  targetName,
+                  direction: dir,
+                  intent: 'interact'
+                }
+              });
+            }
+
+            this.raycaster.registerInteractive(doorMesh, {
+              type: 'NODE',
+              id: `${node.id}:door_nav:${neighborRoom.id}`,
+              metadata: {
+                type: 'ROOM_NAV',
+                fromRoomId: node.id,
+                targetRoomId: neighborRoom.id,
+                targetName,
+                direction: dir,
+                intent: 'interact'
+              }
+            });
+          } else if (!neighborRoom) {
+            if (isCurrentActorRoom && movesLeft > 0) {
+              const { group: exploreArrow, material } = this.createFloorNavArrow(dir, 'EXPLORE', '探索');
+              const ax = dir === 'W' ? -1.02 : dir === 'E' ? 1.02 : 0;
+              const az = dir === 'N' ? -1.02 : dir === 'S' ? 1.02 : 0;
+              const arrowY = node.position[1] + 0.125;
+              exploreArrow.position.set(node.position[0] + ax, arrowY, node.position[2] + az);
+              this.boardObjectsGroup.add(exploreArrow);
+
+              this.navArrowMeshes.push({
+                group: exploreArrow,
+                material,
+                baseIntensity: 0.9,
+                baseY: arrowY
+              });
+
+              this.raycaster.registerInteractive(exploreArrow, {
+                type: 'NODE',
+                id: `${node.id}:explore:${dir}`,
+                metadata: {
+                  type: 'DOOR',
+                  roomId: node.id,
+                  direction: dir,
+                  name: node.props.name ?? '当前房间',
+                  intent: 'interact'
+                }
+              });
+            }
+
+            this.raycaster.registerInteractive(doorMesh, {
+              type: 'NODE',
+              id: `${node.id}:door:${dir}`,
+              metadata: {
+                type: 'DOOR',
+                roomId: node.id,
+                direction: dir,
+                name: node.props.name ?? '当前房间',
+                intent: 'interact'
+              }
+            });
+          }
         }
 
         const symbol = node.props?.symbol as string | undefined;
@@ -2394,7 +2610,7 @@ export class BoardGameScene {
     }
 
     ctx.fillStyle = '#2f6b4f';
-    ctx.font = 'bold 30px "Segoe UI", sans-serif';
+    ctx.font = `700 30px ${CANVAS_FONT_STACK}`;
     ctx.textAlign = 'center';
     ctx.fillText('九条', 128, 318);
 
@@ -2405,33 +2621,39 @@ export class BoardGameScene {
 
   private createLabelSprite(text: string, color = '#ffffff', fontSize = 52): THREE.Sprite {
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 128;
+    canvas.width = 1024;
+    canvas.height = 256;
     const ctx = canvas.getContext('2d')!;
 
-    ctx.clearRect(0, 0, 512, 128);
-    ctx.fillStyle = 'rgba(10,13,19,0.55)';
+    ctx.clearRect(0, 0, 1024, 256);
+    ctx.fillStyle = 'rgba(10,13,19,0.72)';
     ctx.beginPath();
-    ctx.roundRect(6, 18, 500, 92, 20);
+    ctx.roundRect(12, 36, 1000, 184, 40);
     ctx.fill();
 
-    ctx.strokeStyle = 'rgba(217,180,91,0.35)';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(217,180,91,0.45)';
+    ctx.lineWidth = 4;
     ctx.stroke();
 
-    ctx.font = `600 ${fontSize}px "Segoe UI", "PingFang SC", sans-serif`;
-    let fitted = fontSize;
-    while (ctx.measureText(text).width > 462 && fitted > 16) {
-      fitted -= 2;
-      ctx.font = `600 ${fitted}px "Segoe UI", "PingFang SC", sans-serif`;
+    const scale = 2;
+    const scaledFontSize = fontSize * scale;
+    ctx.font = `600 ${scaledFontSize}px ${CANVAS_FONT_STACK}`;
+    let fitted = scaledFontSize;
+    while (ctx.measureText(text).width > 920 && fitted > 28) {
+      fitted -= 4;
+      ctx.font = `600 ${fitted}px ${CANVAS_FONT_STACK}`;
     }
     ctx.fillStyle = color;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, 256, 64);
+    ctx.fillText(text, 512, 128);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
+    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.anisotropy = 4;
     const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
     const sprite = new THREE.Sprite(material);
     sprite.userData.ownedTexture = true;
@@ -2556,6 +2778,7 @@ export class BoardGameScene {
     this.updateFocusLight();
     this.updateCardSettles(now);
     this.updateRoomSettles(now);
+    this.updateNavArrows(now);
     this.renderer.render(this.scene, this.camera);
     this.labels.render(
       this.camera,

@@ -217,6 +217,39 @@ export class UniversalSession implements GamePresenter {
       }
     }
 
+    // In-world room navigation arrow hotspot (moving to adjacent room)
+    if ((pick.metadata as any)?.type === 'ROOM_NAV') {
+      const targetRoomId = (pick.metadata as any)?.targetRoomId;
+      const targetName = (pick.metadata as any)?.targetName ?? '相邻房间';
+      const moveAction = legal.find(
+        a =>
+          a.type === 'MOVE_TO_ROOM' &&
+          (a.targetNodeId === targetRoomId ||
+            (a.selection?.scope as { neighbors?: string[] } | undefined)?.neighbors?.includes(targetRoomId))
+      );
+      if (moveAction) {
+        const res = this.dispatch({
+          ...moveAction,
+          targets: [targetRoomId]
+        });
+        if (res.ok) {
+          this.emit({
+            kind: 'event',
+            icon: '🚪',
+            title: `走入了【${targetName}】`,
+            durationMs: 1800,
+            roomId: targetRoomId
+          });
+        }
+        return { handled: res.ok, message: res.error };
+      }
+      const moveNpcAction = legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === targetRoomId);
+      if (moveNpcAction) {
+        const res = this.dispatch(moveNpcAction);
+        return { handled: res.ok, message: res.error };
+      }
+    }
+
     // In-world door exploration hotspot
     if ((pick.metadata as any)?.type === 'DOOR') {
       const dir = (pick.metadata as any)?.direction;
@@ -231,11 +264,23 @@ export class UniversalSession implements GamePresenter {
     const isDirectInteract = (pick.metadata as any)?.intent === 'interact';
     if (isDirectInteract && !this.activeBoardGroup) {
       if (pick.kind === 'node') {
-        const directNodeAction =
-          legal.find(a => a.type === 'MOVE_TO_ROOM' && a.targetNodeId === pick.id) ??
-          legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === pick.id);
-        if (directNodeAction) {
-          const res = this.dispatch(directNodeAction);
+        const directMoveAction = legal.find(
+          a =>
+            a.type === 'MOVE_TO_ROOM' &&
+            (a.targetNodeId === pick.id ||
+              (a.selection?.scope as { neighbors?: string[] } | undefined)?.neighbors?.includes(pick.id))
+        );
+        if (directMoveAction) {
+          const res = this.dispatch({
+            ...directMoveAction,
+            targetNodeId: pick.id,
+            targets: [pick.id]
+          });
+          return { handled: res.ok, message: res.error };
+        }
+        const directNpcAction = legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === pick.id);
+        if (directNpcAction) {
+          const res = this.dispatch(directNpcAction);
           return { handled: res.ok, message: res.error };
         }
       } else if (pick.kind === 'entity') {

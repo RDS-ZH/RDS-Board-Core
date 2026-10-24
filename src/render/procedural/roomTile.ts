@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MAT } from './materials';
 import { PROPS, PropSpec } from './props';
 import { DoorDir, hashString, layoutRoom, PlacedProp } from './roomLayout';
+import { CANVAS_FONT_STACK } from '../fonts';
 
 export interface RoomTileOptions {
   roomId?: string;
@@ -453,7 +454,7 @@ export class RoomTileBuilder {
       ctx.fillStyle = 'rgba(0,0,0,0.62)';
       ctx.fillRect(px0 + 4, py0 + 4, w - 8, d - 8);
       ctx.fillStyle = style === 'FLAGSTONE' || style === 'DIRT' ? '#9fb4c8' : '#f0dcab';
-      ctx.font = 'bold 17px "Segoe UI", sans-serif';
+      ctx.font = `700 17px ${CANVAS_FONT_STACK}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const chevron = dir === 'N' ? '▲' : dir === 'S' ? '▼' : dir === 'W' ? '◀' : '▶';
@@ -475,7 +476,7 @@ export class RoomTileBuilder {
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.fillStyle = style === 'FLAGSTONE' || style === 'DIRT' ? '#a9c1d8' : '#e8cb81';
-    ctx.font = '600 13px "Segoe UI", sans-serif';
+    ctx.font = `600 13px ${CANVAS_FONT_STACK}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const level = floor === 'BASEMENT' ? 'B' : floor === 'UPPER' ? '2' : '1';

@@ -43,11 +43,27 @@ const PADDING = 4;
 const OFFSET = 12;
 const MIN_HEIGHT = 24;
 
-export function measureLabel(anchor: LabelAnchor): { width: number; height: number } {
+/** Rough advance width per glyph for the fallback estimate. */
+const ESTIMATED_CHAR_WIDTH = 12;
+/** Chip horizontal padding (8px each side) plus 1px border on both sides. */
+const CHIP_CHROME = 18;
+
+/**
+ * Width of one label's text in CSS pixels.
+ *
+ * The overlay injects a canvas-backed measurer so CJK and Latin text get exact
+ * widths; the fallback estimate keeps this module DOM-free for unit tests.
+ */
+export type TextMeasurer = (text: string) => number;
+
+export function measureLabel(
+  anchor: LabelAnchor,
+  measure?: TextMeasurer
+): { width: number; height: number } {
   const text = anchor.count && anchor.count > 1 ? `${anchor.text} ×${anchor.count}` : anchor.text;
-  const charWidth = 11;
+  const textWidth = measure ? measure(text) : [...text].length * ESTIMATED_CHAR_WIDTH;
   return {
-    width: Math.min(300, Math.max(40, [...text].length * charWidth + 20)),
+    width: Math.min(300, Math.max(40, Math.ceil(textWidth) + CHIP_CHROME)),
     height: MIN_HEIGHT
   };
 }
@@ -72,7 +88,8 @@ function clamp(value: number, min: number, max: number): number {
 export function layoutLabels(
   anchors: LabelAnchor[],
   viewport: Viewport,
-  obstacles: ScreenRect[] = []
+  obstacles: ScreenRect[] = [],
+  measure?: TextMeasurer
 ): LabelPlacement[] {
   const placed: LabelPlacement[] = [];
   const occupied: ScreenRect[] = [...obstacles];
@@ -82,7 +99,7 @@ export function layoutLabels(
     if (anchor.x < 0 || anchor.y < 0 || anchor.x > viewport.width || anchor.y > viewport.height) {
       continue;
     }
-    const { width, height } = measureLabel(anchor);
+    const { width, height } = measureLabel(anchor, measure);
     const candidates = [
       { left: anchor.x - width / 2, top: anchor.y - height - OFFSET },
       { left: anchor.x - width / 2, top: anchor.y + OFFSET },
