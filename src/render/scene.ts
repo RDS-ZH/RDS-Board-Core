@@ -91,6 +91,8 @@ export class BoardGameScene {
   private lastFitSignature = '';
   private lastBoardKey = '';
   private prePlacementCamera?: { position: THREE.Vector3; target: THREE.Vector3 };
+  /** Room the active actor occupied on the previous sync, for camera follow. */
+  private lastActorRoomId?: string;
   private cameraTween?: {
     fromPosition: THREE.Vector3;
     fromTarget: THREE.Vector3;
@@ -838,6 +840,8 @@ export class BoardGameScene {
       // The actor may have moved into the newly placed room during this sync;
       // `state` here is the post-placement projection, so it is what we centre on.
       this.endPlacementCamera(state);
+    } else if (!isPlacing) {
+      this.followActorIfMoved(state);
     }
 
     const placingSignature = displayPlacement
@@ -2064,6 +2068,30 @@ export class BoardGameScene {
     if (!focus) return;
     // Short enough that orbit control comes back quickly after confirming.
     this.panToKeepBearing(focus, 420);
+  }
+
+  /**
+   * Keep the actor framed while they walk around the board.
+   *
+   * Movement used to leave the camera where it was, so a character could leave
+   * the viewport entirely. Panning (not orbiting or dollying) keeps the player's
+   * chosen bearing intact while the actor stays centred.
+   */
+  private followActorIfMoved(state: ProjectedGameState): void {
+    const actorId = state.activeActorId ?? state.activePlayerId;
+    const player = actorId ? state.players[actorId] : undefined;
+    const roomId = String(player?.customProps?.currentRoomId ?? '');
+    const previousRoomId = this.lastActorRoomId;
+    this.lastActorRoomId = roomId || undefined;
+
+    // First sync only records the starting room; there is nothing to follow yet.
+    if (!previousRoomId || !roomId || previousRoomId === roomId) return;
+    // Never steal the camera mid-animation (placement raise, inspector tween…).
+    if (this.cameraTween || performance.now() < this.skipFitUntil) return;
+
+    const focus = this.actorFocusPoint(state);
+    if (!focus) return;
+    this.panToKeepBearing(focus, 460);
   }
 
   /**
