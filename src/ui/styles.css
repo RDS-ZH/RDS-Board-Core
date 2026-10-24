@@ -3033,3 +3033,42 @@ select.pf-control {
 .cs-close:hover {
   background: rgba(0, 0, 0, 0.42);
 }
+
+/* Hover chip: names what the cursor is over and what a click will do. */
+.hover-hint {
+  position: absolute;
+  left: 50%;
+  top: 132px;
+  transform: translate(-50%, -6px);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 178, 108, 0.28);
+  background: rgba(16, 12, 9, 0.86);
+  backdrop-filter: blur(6px);
+  color: #f0e2c2;
+  font-size: 11px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  z-index: 40;
+}
+
+.hover-hint.on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.hover-hint b {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.hover-hint span {
+  font-size: 9.5px;
+  color: rgba(217, 180, 91, 0.8);
+  letter-spacing: 0.02em;
+}

@@ -295,6 +295,40 @@ const rockingHorse = (): THREE.Group =>
     box(0.4, 0.02, 0.03, MAT.walnut, 0, 0.02, -0.09)
   );
 
+/** Chest of drawers with a tilting mirror — the bedroom's second focal piece. */
+const chestOfDrawers = (): THREE.Group => {
+  const W = 0.46;
+  const H = 0.34;
+  const D = 0.24;
+  const g = new THREE.Group();
+  // Case
+  g.add(box(W, H, D, MAT.mahogany, 0, H / 2 + 0.04, 0));
+  g.add(box(W + 0.05, 0.026, D + 0.04, MAT.ebony, 0, H + 0.052, 0, 0, false));
+  g.add(box(W + 0.02, 0.04, D + 0.02, MAT.ebony, 0, 0.026, 0));
+  // Four drawers with brass pulls and keyholes
+  for (let i = 0; i < 4; i += 1) {
+    const y = 0.1 + i * 0.075;
+    g.add(box(W - 0.05, 0.058, 0.01, MAT.walnut, 0, y, D / 2 + 0.004, 0, false));
+    g.add(sph(0.008, MAT.brass, -0.06, y, D / 2 + 0.014));
+    g.add(sph(0.008, MAT.brass, 0.06, y, D / 2 + 0.014));
+    g.add(box(0.016, 0.016, 0.006, MAT.agedBrass, 0, y, D / 2 + 0.012, 0, false));
+  }
+  // Tilting mirror on top
+  const frame = box(0.28, 0.2, 0.016, MAT.ebony, -0.02, H + 0.15, -0.02, 0, true);
+  frame.rotation.x = -0.16;
+  g.add(frame);
+  const glass = box(0.23, 0.15, 0.006, MAT.glassDark, -0.02, H + 0.15, -0.008, 0, false);
+  glass.rotation.x = -0.16;
+  g.add(glass);
+  g.add(box(0.024, 0.09, 0.024, MAT.ebony, 0.11, H + 0.075, -0.03, 0, false));
+  g.add(box(0.024, 0.09, 0.024, MAT.ebony, -0.15, H + 0.075, -0.03, 0, false));
+  // Dressing-table clutter: perfume vial + hairbrush
+  g.add(cyl(0.016, 0.02, 0.045, MAT.glass, 0.15, H + 0.09, 0.03, 8, false));
+  g.add(sph(0.012, MAT.brass, 0.15, H + 0.12, 0.03, false));
+  g.add(box(0.1, 0.012, 0.032, MAT.oak, -0.12, H + 0.075, 0.06, 0.2, false));
+  return g;
+};
+
 const toyChest = (): THREE.Group =>
   group(
     box(0.34, 0.2, 0.24, MAT.oak, 0, 0.11, 0),
@@ -310,23 +344,88 @@ const toyChest = (): THREE.Group =>
 /* Study / parlour                                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Bookshelf with an actually lived-in shelf: leaning volumes, horizontal
+ * stacks, bookends, a marble bust and a candle stub. A uniform row of
+ * identical spines reads as a texture, not as books.
+ */
 const bookshelf = (): THREE.Group => {
   const W = 0.84;
   const H = 0.62;
   const D = 0.26;
   const g = new THREE.Group();
+  const spine = [
+    MAT.crimsonVelvet,
+    MAT.emeraldVelvet,
+    MAT.plumVelvet,
+    MAT.leather,
+    MAT.ebony,
+    MAT.oak,
+    MAT.wineVelvet
+  ];
+
   // Carcass
   g.add(box(W, H, 0.02, MAT.mahogany, 0, H / 2 + 0.03, -D / 2 + 0.01));
   g.add(box(0.035, H, D, MAT.mahogany, -W / 2 + 0.017, H / 2 + 0.03, 0));
   g.add(box(0.035, H, D, MAT.mahogany, W / 2 - 0.017, H / 2 + 0.03, 0));
   g.add(box(W, 0.03, D, MAT.ebony, 0, H + 0.045, 0));
   g.add(box(W, 0.04, D + 0.02, MAT.ebony, 0, 0.02, 0));
-  // Shelves + books
+  g.add(box(W + 0.03, 0.02, D + 0.03, MAT.walnut, 0, H + 0.065, 0, 0, false));
+
   const shelfY = [0.14, 0.3, 0.46];
-  for (const y of shelfY) {
+  const innerW = W - 0.12;
+  const x0 = -W / 2 + 0.06;
+
+  shelfY.forEach((y, row) => {
     g.add(box(W - 0.06, 0.018, D - 0.03, MAT.walnut, 0, y, 0, 0, false));
-    g.add(bookRow(W - 0.12, y + 0.01, 0.01, -W / 2 + 0.06));
-  }
+
+    if (row === 0) {
+      // Dense upright run, with one volume left leaning against the rest
+      let cursor = x0;
+      let i = 0;
+      while (cursor < x0 + innerW - 0.16) {
+        const w = 0.024 + ((i * 37) % 9) * 0.006;
+        const h = 0.12 + ((i * 53) % 8) * 0.014;
+        g.add(box(w, h, 0.11, spine[i % spine.length], cursor + w / 2, y + h / 2 + 0.01, 0, 0, false));
+        cursor += w + 0.005;
+        i += 1;
+      }
+      const lean = box(0.026, 0.15, 0.11, MAT.plumVelvet, cursor + 0.05, y + 0.086, 0, 0, false);
+      lean.rotation.z = -0.34;
+      g.add(lean);
+    } else if (row === 1) {
+      // Short run, a horizontal stack, a brass bookend and a marble bust
+      g.add(bookRow(0.32, y + 0.01, 0.01, x0));
+      for (let i = 0; i < 3; i += 1) {
+        g.add(
+          box(
+            0.16 - i * 0.012,
+            0.026,
+            0.1,
+            spine[(i + 2) % spine.length],
+            x0 + 0.25,
+            y + 0.024 + i * 0.028,
+            0,
+            0,
+            false
+          )
+        );
+      }
+      g.add(box(0.014, 0.1, 0.1, MAT.brass, x0 + 0.16, y + 0.06, 0, 0, false));
+      g.add(box(0.06, 0.03, 0.06, MAT.marble, x0 + 0.46, y + 0.025, 0, 0, false));
+      g.add(cyl(0.022, 0.03, 0.06, MAT.marble, x0 + 0.46, y + 0.07, 0, 8, false));
+      g.add(sph(0.024, MAT.marble, x0 + 0.46, y + 0.115, 0, false));
+    } else {
+      // Sparse top shelf: a few books, a candle stub and a rolled scroll
+      g.add(bookRow(0.2, y + 0.01, 0.01, x0 + 0.04));
+      g.add(cyl(0.02, 0.024, 0.032, MAT.agedBrass, x0 + 0.34, y + 0.026, 0, 8, false));
+      g.add(candle(0.05, x0 + 0.34, y + 0.042, 0));
+      const scroll = cyl(0.02, 0.02, 0.13, MAT.paper, x0 + 0.5, y + 0.03, 0.01, 8, false);
+      scroll.rotation.z = Math.PI / 2;
+      g.add(scroll);
+    }
+  });
+
   return g;
 };
 
@@ -1263,6 +1362,14 @@ export const PROPS: Record<string, PropSpec> = {
   cradle: { id: 'cradle', build: cradle, width: 0.38, depth: 0.34, height: 0.4, anchor: 'N' },
   rockingHorse: { id: 'rockingHorse', build: rockingHorse, width: 0.46, depth: 0.24, height: 0.38, anchor: 'CENTER' },
   toyChest: { id: 'toyChest', build: toyChest, width: 0.4, depth: 0.28, height: 0.28, anchor: 'N' },
+  chestOfDrawers: {
+    id: 'chestOfDrawers',
+    build: chestOfDrawers,
+    width: 0.5,
+    depth: 0.3,
+    height: 0.62,
+    anchor: 'N'
+  },
 
   bookshelf: { id: 'bookshelf', build: bookshelf, width: 0.88, depth: 0.28, height: 0.68, anchor: 'N' },
   writingDesk: { id: 'writingDesk', build: writingDesk, width: 0.7, depth: 0.4, height: 0.4, anchor: 'N' },
