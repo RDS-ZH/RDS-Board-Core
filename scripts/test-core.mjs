@@ -26,14 +26,19 @@ function listTs(dir) {
 function boundaryCheck() {
   const rules = [
     {
-      dir: 'src/ui',
+      dir: 'apps/web/src/ui',
       name: 'UI cannot import kernel / games / renderer / net / ai',
-      forbidden: [/(['"])[^'"]*\/core\//, /(['"])[^'"]*\/games\//, /(['"])[^'"]*\/render\//, /(['"])[^'"]*\/net\//, /(['"])[^'"]*\/ai\//]
+      forbidden: [/@rds\/kernel/, /@rds\/games/, /@rds\/net/, /(['"])[^'"]*\/render\//, /(['"])[^'"]*\/net\//, /(['"])[^'"]*\/ai\//, /(['"])[^'"]*\/core\//]
     },
     {
-      dir: 'src/app',
-      name: 'application layer cannot import UI / renderer',
-      forbidden: [/(['"])[^'"]*\/ui\//, /(['"])[^'"]*\/render\//]
+      dir: 'packages/app/src',
+      name: 'application layer cannot import UI / renderer / ai',
+      forbidden: [/@rds\/web/, /(['"])[^'"]*\/ui\//, /(['"])[^'"]*\/render\//, /(['"])[^'"]*\/ai\//]
+    },
+    {
+      dir: 'packages/kernel/src',
+      name: 'kernel cannot import anything outside itself (no @rds/*, no app layers)',
+      forbidden: [/@rds\//, /(['"])[^'"]*\/games\//, /(['"])[^'"]*\/app\//, /(['"])[^'"]*\/net\//, /(['"])[^'"]*\/render\//, /(['"])[^'"]*\/ui\//, /(['"])[^'"]*\/ai\//]
     }
   ];
 
@@ -56,7 +61,7 @@ function boundaryCheck() {
 }
 
 try {
-  const { runCoreSuite } = await server.ssrLoadModule('/src/core/testing/suite.ts');
+  const { runCoreSuite } = await server.ssrLoadModule('/packages/harness/src/suite.ts');
   const result = await runCoreSuite();
 
   console.log('\nUniversal Board Game Kernel — conformance suite\n');

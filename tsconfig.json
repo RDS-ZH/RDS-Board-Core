@@ -12,7 +12,14 @@
     "noEmit": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@rds/kernel/*": ["./packages/kernel/src/*"],
+      "@rds/games/*": ["./packages/games/src/*"],
+      "@rds/app/*": ["./packages/app/src/*"],
+      "@rds/net/*": ["./packages/net/src/*"],
+      "@rds/web/*": ["./apps/web/src/*"]
+    }
   },
-  "include": ["src"]
+  "include": ["apps/web/src", "packages/*/src"]
 }
