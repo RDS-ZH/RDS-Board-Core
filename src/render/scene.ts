@@ -835,7 +835,7 @@ export class BoardGameScene {
     this.lastLayout = layout;
 
     if (!wasPlacing && isPlacing) {
-      this.beginPlacementCamera(state, displayPlacement!, layout);
+      this.beginPlacementCamera(displayPlacement!);
     } else if (wasPlacing && !isPlacing) {
       // The actor may have moved into the newly placed room during this sync;
       // `state` here is the post-placement projection, so it is what we centre on.
@@ -2022,11 +2022,7 @@ export class BoardGameScene {
     this.hasFitted = true;
   }
 
-  private beginPlacementCamera(
-    state: ProjectedGameState,
-    placement: PlacementPreview,
-    layout?: LayoutHints
-  ): void {
+  private beginPlacementCamera(placement: PlacementPreview): void {
     if (this.cameraTween) return;
     const startPosition = this.camera.position.clone();
     const startTarget = this.controls.target.clone();
@@ -2035,15 +2031,30 @@ export class BoardGameScene {
       target: startTarget.clone()
     };
 
-    // Use the normal framing computation, then raise it slightly. Restore the
-    // starting pose and tween to the raised pose so placement never snaps.
-    this.fitCameraToBoard(state, placement, layout);
-    const raisedPosition = this.camera.position.clone();
-    const raisedTarget = this.controls.target.clone();
-    this.camera.position.copy(startPosition);
-    this.controls.target.copy(startTarget);
-    raisedPosition.y += Math.max(4, Math.abs(raisedPosition.y) * 0.12);
-    this.startCameraTween(raisedPosition, raisedTarget, 650);
+    // Frame the room being placed, not the whole board: the player is choosing
+    // an orientation for that tile, so it should be the thing under the lens.
+    const centre = new THREE.Vector3(
+      placement.position[0],
+      Math.max(0.12, placement.position[1] + 0.16),
+      placement.position[2]
+    );
+
+    // Keep the player's chosen bearing, come in closer, and lift the eye above
+    // the wide-board height so the new tile is read from above with its
+    // neighbours still visible around it.
+    const dir = startPosition.clone().sub(startTarget);
+    const len = dir.length() || 1;
+    const arm = Math.min(len, 15);
+    dir.normalize();
+    // Steepen the arm before scaling: looking down on the tile beats skimming
+    // it from the side, which is what a straight copy of the bearing gives.
+    dir.y = Math.max(dir.y, 0.72);
+    dir.normalize().multiplyScalar(arm);
+    const lifted = centre.clone().add(dir);
+    lifted.y = Math.max(lifted.y, startPosition.y + Math.max(3.4, arm * 0.34));
+
+    this.skipFitUntil = performance.now() + 900;
+    this.startCameraTween(lifted, centre, 650);
   }
 
   private endPlacementCamera(state?: ProjectedGameState): void {
