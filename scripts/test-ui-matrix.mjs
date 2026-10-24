@@ -3,10 +3,10 @@
  * action-dock interactions, and checks console/page errors + label overlaps.
  */
 
-import { chromium } from 'playwright';
+import { launchChromium, BASE_URL } from './lib/browser.mjs';
+import { ensureDevServer } from './lib/devserver.mjs';
 
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const BASE = process.env.BASE_URL ?? 'http://127.0.0.1:3000/';
+const BASE = BASE_URL;
 const GAMES = [
   { id: 'catan', scenarios: ['rich_action', 'trade_ready'] },
   { id: 'sanguosha', scenarios: [] },
@@ -18,11 +18,8 @@ const GAMES = [
   { id: 'dune_mahjong', scenarios: [] }
 ];
 
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-gpu-sandbox']
-});
+const dev = await ensureDevServer();
+const browser = await launchChromium();
 
 const failures = [];
 let screens = 0;
@@ -307,6 +304,7 @@ for (const game of GAMES) {
 }
 
 await browser.close();
+dev.stop();
 console.log(`\nUI matrix: ${screens} screens, ${actions} action clicks`);
 if (failures.length > 0) {
   console.log(`\nFAILURES (${failures.length}):`);

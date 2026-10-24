@@ -1,13 +1,8 @@
-import { chromium } from 'playwright';
+import { launchChromium, BASE_URL } from './lib/browser.mjs';
 
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const URL = 'http://127.0.0.1:5173/';
+const URL = BASE_URL;
 
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-gpu-sandbox']
-});
+const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
 

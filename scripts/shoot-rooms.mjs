@@ -1,21 +1,16 @@
-import { chromium } from 'playwright';
+import { launchChromium, BASE_URL } from './lib/browser.mjs';
 
 /**
  * Close-up room captures for modelling review.
  * Usage: node scripts/shoot-rooms.mjs [scenario] [roomId...]
  */
 
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const BASE = 'http://127.0.0.1:5173/';
+const BASE = BASE_URL;
 
 const scenario = process.argv[2] ?? 'exploration';
 const requested = process.argv.slice(3);
 
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-gpu-sandbox']
-});
+const browser = await launchChromium();
 
 const errors = [];
 

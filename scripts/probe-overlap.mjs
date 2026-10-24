@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { launchChromium, BASE_URL } from './lib/browser.mjs';
 
 /**
  * Room bleed / z-fighting probe.
@@ -9,15 +9,10 @@ import { chromium } from 'playwright';
  * the real merged bounds of every room mesh and reports the offenders.
  */
 
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const BASE = 'http://127.0.0.1:5173/';
+const BASE = BASE_URL;
 const HALF = 2.84 / 2;
 
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-gpu-sandbox']
-});
+const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 const errors = [];

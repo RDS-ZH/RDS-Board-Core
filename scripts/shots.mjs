@@ -7,16 +7,14 @@
  *   pnpm shots              # all suites
  *   pnpm shots betrayal     # only suites whose name matches
  *
- * It boots Vite itself when nothing is listening on 5173, and shuts it down on
- * exit, so there is no "start the dev server first" step.
+ * It boots Vite itself when nothing is listening on the configured port and
+ * shuts it down on exit, so there is no "start the dev server first" step.
  */
 import { spawn } from 'node:child_process';
-import { connect } from 'node:net';
 import { existsSync, mkdirSync } from 'node:fs';
 import process from 'node:process';
+import { ensureDevServer } from './lib/devserver.mjs';
 
-const PORT = 5173;
-const HOST = '127.0.0.1';
 const filter = process.argv[2];
 
 const SUITES = [
@@ -32,53 +30,6 @@ if (selected.length === 0) {
   process.exit(1);
 }
 
-/** Resolve once something accepts TCP connections on the dev port. */
-function waitForPort(timeoutMs = 40000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const socket = connect({ port: PORT, host: HOST });
-      socket.setTimeout(1200);
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.once('timeout', () => {
-        socket.destroy();
-        retry();
-      });
-      socket.once('error', () => {
-        socket.destroy();
-        retry();
-      });
-    };
-    const retry = () => {
-      if (Date.now() > deadline) reject(new Error(`dev server did not listen on ${HOST}:${PORT}`));
-      else setTimeout(attempt, 400);
-    };
-    attempt();
-  });
-}
-
-function portInUse() {
-  return new Promise(resolve => {
-    const socket = connect({ port: PORT, host: HOST });
-    socket.setTimeout(800);
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('timeout', () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.once('error', () => {
-      socket.destroy();
-      resolve(false);
-    });
-  });
-}
-
 function run(script) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script], { stdio: 'inherit' });
@@ -89,24 +40,10 @@ function run(script) {
 
 if (!existsSync('shots')) mkdirSync('shots');
 
-let server;
-let startedServer = false;
+let dev;
 
 try {
-  if (await portInUse()) {
-    console.log(`· reusing the dev server already listening on ${HOST}:${PORT}`);
-  } else {
-    console.log('· starting vite …');
-    server = spawn(
-      process.execPath,
-      ['node_modules/vite/bin/vite.js', '--port', String(PORT), '--strictPort', '--host', HOST],
-      { stdio: 'inherit' }
-    );
-    startedServer = true;
-    await waitForPort();
-    // Vite reports ready slightly before the first transform; give it a beat.
-    await new Promise(r => setTimeout(r, 1200));
-  }
+  dev = await ensureDevServer();
 
   for (const suite of selected) {
     console.log(`\n=== ${suite.name} · ${suite.what} ===`);
@@ -117,11 +54,5 @@ try {
   console.error(`\nshots failed: ${error.message}`);
   process.exitCode = 1;
 } finally {
-  if (startedServer && server) {
-    server.kill();
-    // Vite spawns a worker on Windows; make sure the tree goes away.
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(server.pid), '/T', '/F'], { stdio: 'ignore' });
-    }
-  }
+  dev?.stop();
 }

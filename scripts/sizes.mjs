@@ -1,11 +1,6 @@
-import { chromium } from 'playwright';
+import { launchChromium } from './lib/browser.mjs';
 
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader']
-});
+const browser = await launchChromium();
 
 for (const [w, h, name] of [
   [1366, 768, '1366'],

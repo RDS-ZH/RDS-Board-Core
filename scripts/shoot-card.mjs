@@ -1,17 +1,12 @@
-import { chromium } from 'playwright';
+import { launchChromium, BASE_URL } from './lib/browser.mjs';
 
 /**
  * Captures the card detail sheet by driving the real presenter path: pick an
  * entity with a card face, which emits a notice carrying a `card` payload.
  */
-const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-const BASE = 'http://127.0.0.1:5173/';
+const BASE = BASE_URL;
 
-const browser = await chromium.launch({
-  executablePath: CHROME,
-  headless: true,
-  args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--disable-gpu-sandbox']
-});
+const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 const errors = [];
