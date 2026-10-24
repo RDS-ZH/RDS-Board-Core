@@ -54,7 +54,18 @@ class BoardGameSimulatorApp {
       focusRoom: (nodeId: string) => {
         this.scene.focusNode(nodeId);
       },
-      clearRoomFocus: () => this.scene.clearFocus()
+      clearRoomFocus: () => this.scene.clearFocus(),
+      showTraitChange: change => {
+        const tone = change.delta < 0 ? (change.damageKind === 'MENTAL' ? 'mental' : 'physical') : 'heal';
+        const sign = change.delta > 0 ? '+' : '';
+        this.scene.popTraitBurst(
+          change.playerId,
+          `${change.traitLabel} ${sign}${change.delta}`,
+          tone
+        );
+        if (tone === 'heal') BoardGameAudio.playItemPickup();
+        else BoardGameAudio.playCombat(tone === 'mental' ? 'MENTAL' : 'PHYSICAL', true);
+      }
     };
 
     this.hud = new BoardGameHUD(hudContainer, this.session, this.ports, {

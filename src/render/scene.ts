@@ -669,6 +669,27 @@ export class BoardGameScene {
     this.fitCameraToBoard(this.lastState, this.lastPlacement, this.lastLayout);
   }
 
+  /**
+   * Floating `力量 -2` over a character's miniature.
+   *
+   * Anchored to the meeple so the number sits on the figure itself rather than
+   * a fixed screen spot; falls back to their current room when no token exists.
+   */
+  public popTraitBurst(playerId: string, text: string, tone: 'physical' | 'mental' | 'heal'): void {
+    const mesh = this.entityMeshes.get(`meeple_${playerId}`);
+    if (mesh) {
+      this.labels.popBurst([mesh.position.x, mesh.position.y + 0.62, mesh.position.z], text, tone);
+      return;
+    }
+    const player = this.lastState?.players[playerId];
+    const room = player
+      ? this.lastState?.mapGraph.nodes[String(player.customProps?.currentRoomId ?? '')]
+      : undefined;
+    if (room) {
+      this.labels.popBurst([room.position[0], room.position[1] + 0.55, room.position[2]], text, tone);
+    }
+  }
+
   public setCameraPreset(preset: CameraPreset): void {
     const framing = this.framing;
     const scale = this.framingScale();

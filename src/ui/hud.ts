@@ -8,8 +8,18 @@ import {
   PresentationPorts,
   UiAction,
   UiCardDetail,
-  UiNotice
+  UiHistoryEntry,
+  UiNotice,
+  UiTraitChange
 } from '../app/contracts';
+
+/** Short trait key → character-sheet abbreviation used by the pip ladder. */
+const HUD_TRAIT_SHORT: Record<string, string> = {
+  speed: '速',
+  might: '力',
+  sanity: '智',
+  knowledge: '识'
+};
 
 export interface HUDOptions {
   onSwitchGame: (gameId: string) => void;
@@ -41,6 +51,8 @@ export class BoardGameHUD {
   /** False until the first snapshot has been observed. */
   private hauntArmed = false;
   private hauntTimer: number | null = null;
+  /** Activity feed starts open and remembers the player's choice. */
+  private historyCollapsed = false;
 
   constructor(
     container: HTMLElement,
@@ -396,6 +408,9 @@ export class BoardGameHUD {
       // repaint the dossier straight away.
       if (this.latest) this.renderRoomCard(this.latest);
     }
+    // Trait movement gets the loud treatment: banner, card shake, pip flash,
+    // screen tint and a 3D burst over the miniature.
+    if (notice.trait) this.flashTraitChange(notice.trait);
     if (notice.kind === 'announce') {
       this.showAnnouncement(notice.title, notice.durationMs ?? 1800);
       return;
@@ -405,6 +420,62 @@ export class BoardGameHUD {
       return;
     }
     this.pushToast(notice.icon, notice.title, notice.durationMs ?? 3200, notice.detail);
+  }
+
+  /**
+   * Emphasise a trait movement.
+   *
+   * The rail has already been repainted with the new ladder when this runs, so
+   * the effect re-targets the fresh DOM instead of the pre-damage values.
+   */
+  private flashTraitChange(change: UiTraitChange): void {
+    const loss = change.delta < 0;
+    const tone = loss ? (change.damageKind === 'MENTAL' ? 'mental' : 'physical') : 'heal';
+
+    // 1. Full-screen vignette + board shake.
+    this.pulseScreen(tone);
+
+    // 2. Card shake, pip flash and floating delta over the affected sheet.
+    const card = this.container.querySelector<HTMLElement>(
+      `#player-rail .pc[data-player-id="${change.playerId}"]`
+    );
+    if (card) {
+      card.classList.remove('trait-hit', 'trait-heal');
+      // Force a reflow so the animation restarts on repeated hits.
+      void card.offsetWidth;
+      card.classList.add(loss ? 'trait-hit' : 'trait-heal');
+
+      const short = HUD_TRAIT_SHORT[change.traitKey] ?? '';
+      card.querySelectorAll<HTMLElement>('.trait-row').forEach(row => {
+        if ((row.querySelector('.trait-key')?.textContent ?? '').trim() !== short) return;
+        row.classList.remove('flash-down', 'flash-up');
+        void row.offsetWidth;
+        row.classList.add(loss ? 'flash-down' : 'flash-up');
+      });
+
+      const burst = document.createElement('div');
+      burst.className = `trait-burst ${tone}`;
+      burst.textContent = `${change.traitLabel} ${change.delta > 0 ? '+' : ''}${change.delta}`;
+      card.appendChild(burst);
+      window.setTimeout(() => burst.remove(), 1500);
+    }
+
+    // 3. Renderer-side burst + matching SFX.
+    this.ports.showTraitChange?.(change);
+  }
+
+  /** Coloured edge flash; mental damage reads violet, physical reads blood. */
+  private pulseScreen(tone: 'physical' | 'mental' | 'heal'): void {
+    let layer = this.container.querySelector<HTMLElement>('#screen-hit');
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = 'screen-hit';
+      layer.className = 'screen-hit';
+      this.container.appendChild(layer);
+    }
+    layer.classList.remove('physical', 'mental', 'heal');
+    void layer.offsetWidth;
+    layer.classList.add(tone);
   }
 
   /**
@@ -629,6 +700,7 @@ export class BoardGameHUD {
 
       <aside class="player-rail" id="player-rail"></aside>
       <aside class="room-card" id="room-card" style="display:none"></aside>
+      <aside class="activity-feed" id="activity-feed"></aside>
       <div class="action-dock" id="action-dock"></div>
       <div class="announcement-banner" id="announce" style="display:none"></div>
       <div class="payload-layer" id="payload-layer" style="display:none"></div>
@@ -686,9 +758,67 @@ export class BoardGameHUD {
     this.renderViewerSelect(snapshot);
     this.renderPlayers(snapshot);
     this.renderRoomCard(snapshot);
+    this.renderHistory(snapshot);
     this.renderDock(snapshot);
     this.maybeRevealRoom(snapshot);
     this.maybeShowHaunt(snapshot);
+  }
+
+  /**
+   * Recent activity feed: newest event on top, grouped by kind colour so a
+   * glance separates damage from movement, cards and haunt beats.
+   */
+  private renderHistory(snapshot: GameSnapshot): void {
+    const feed = this.container.querySelector('#activity-feed') as HTMLElement | null;
+    if (!feed) return;
+    const entries = snapshot.history ?? [];
+    feed.classList.toggle('empty', entries.length === 0);
+    feed.classList.toggle('collapsed', this.historyCollapsed);
+
+    // Cheap structural signature: only repaint when the head or count moves.
+    const signature = `${entries.length}|${entries[0]?.id ?? ''}|${this.historyCollapsed}|${snapshot.gameId}`;
+    if (feed.dataset.signature === signature) return;
+    feed.dataset.signature = signature;
+
+    const rows = entries
+      .slice(0, this.historyCollapsed ? 3 : 18)
+      .map(entry => this.historyRow(entry))
+      .join('');
+
+    feed.innerHTML = `
+      <button class="af-head" id="af-toggle" type="button" title="展开 / 收起近期记录">
+        <span class="af-title">近期动态</span>
+        <span class="af-count">${entries.length}</span>
+        <span class="af-caret">${this.historyCollapsed ? '▸' : '▾'}</span>
+      </button>
+      <div class="af-body">${rows || '<div class="af-empty">尚无记录，行动后会在这里留下痕迹</div>'}</div>
+    `;
+
+    feed.querySelector('#af-toggle')?.addEventListener('click', () => {
+      this.historyCollapsed = !this.historyCollapsed;
+      feed.dataset.signature = '';
+      if (this.latest) this.renderHistory(this.latest);
+    });
+  }
+
+  private historyRow(entry: UiHistoryEntry): string {
+    const delta =
+      typeof entry.delta === 'number' && entry.delta !== 0
+        ? `<span class="af-delta ${entry.delta > 0 ? 'up' : 'down'}">${entry.delta > 0 ? '+' : ''}${entry.delta}</span>`
+        : '';
+    const stamp = entry.round ? `<span class="af-stamp">R${entry.round}·T${entry.turn ?? 1}</span>` : '';
+    const detail = entry.detail ? `<span class="af-detail">${entry.detail}</span>` : '';
+    return `
+      <div class="af-row kind-${entry.kind} ${entry.critical ? 'critical' : ''}">
+        <span class="af-ico">${entry.icon}</span>
+        <span class="af-main">
+          <span class="af-text">${entry.title}</span>
+          ${detail}
+        </span>
+        ${delta}
+        ${stamp}
+      </div>
+    `;
   }
 
   /**
@@ -916,7 +1046,7 @@ export class BoardGameHUD {
           .join('');
 
         return `
-          <article class="pc ${player.isFocus ? 'active' : ''} ${player.alive ? '' : 'dead'}" style="--pc-color:${player.color}">
+          <article class="pc ${player.isFocus ? 'active' : ''} ${player.alive ? '' : 'dead'}" data-player-id="${player.id}" style="--pc-color:${player.color}">
             <div class="pc-head">
               <div class="pc-avatar">${player.avatar}</div>
               <div class="pc-id">

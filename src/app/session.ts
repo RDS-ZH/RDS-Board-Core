@@ -8,6 +8,8 @@ import {
   GameSnapshot,
   UiAction,
   UiDecision,
+  UiHistoryEntry,
+  UiHistoryKind,
   UiHook,
   UiNotice,
   UiNpc,
@@ -17,8 +19,68 @@ import {
   UiReplay,
   UiSpatialInfo,
   UiStackFrame,
+  UiTraitChange,
   ViewerId
 } from './contracts';
+
+/** Visual event type → activity-feed bucket. */
+const EVENT_KIND: Record<string, UiHistoryKind> = {
+  DAMAGE_EFFECT: 'damage',
+  DICE_ROLL: 'dice',
+  CARD_DRAW: 'card',
+  CARD_DISCARD: 'card',
+  CARD_PLAY: 'card',
+  EXPLORE_ROOM: 'explore',
+  MOVE_OBJECT: 'move',
+  RULE_MUTATE: 'haunt',
+  DECISION_REVEAL: 'system',
+  DECISION_TIMEOUT: 'system',
+  STACK_TIMEOUT: 'system',
+  STACK_PUSH: 'combat',
+  STACK_POP: 'combat',
+  STACK_CANCEL: 'combat',
+  BUILD_OBJECT: 'system',
+  TOKEN_TRANSFER: 'system',
+  ANNOUNCEMENT: 'system'
+};
+
+const EVENT_ICON: Record<string, string> = {
+  DAMAGE_EFFECT: '🩸',
+  DICE_ROLL: '🎲',
+  CARD_DRAW: '🃏',
+  CARD_DISCARD: '🗑',
+  CARD_PLAY: '✨',
+  EXPLORE_ROOM: '🚪',
+  MOVE_OBJECT: '👣',
+  RULE_MUTATE: '☠',
+  DECISION_REVEAL: '💥',
+  DECISION_TIMEOUT: '⏱',
+  STACK_TIMEOUT: '⏱',
+  STACK_PUSH: '⚔',
+  STACK_POP: '⚔',
+  STACK_CANCEL: '⛔',
+  BUILD_OBJECT: '🏗',
+  TOKEN_TRANSFER: '◆',
+  ANNOUNCEMENT: '❖'
+};
+
+/** Betrayal trait key → display label used by the damage banner. */
+const TRAIT_LABEL: Record<string, string> = {
+  speed: '速度',
+  might: '力量',
+  sanity: '神智',
+  knowledge: '知识'
+};
+
+const TRAIT_COLOR: Record<string, string> = {
+  speed: '#6aa6f5',
+  might: '#e0604e',
+  sanity: '#57c08b',
+  knowledge: '#b07bf0'
+};
+
+/** How many feed lines the presenter keeps before dropping the oldest. */
+const HISTORY_LIMIT = 60;
 
 interface BoundAction {
   ui: UiAction;
@@ -106,6 +168,14 @@ export class UniversalSession implements GamePresenter {
   private noticeListeners = new Set<(notice: UiNotice) => void>();
   private visualListeners = new Set<(events: VisualTraceEvent[]) => void>();
 
+  /** Newest-first activity feed; trimmed to HISTORY_LIMIT. */
+  private history: UiHistoryEntry[] = [];
+  private historySeq = 0;
+  /** Last seen trait indexes per player, used to detect pips moving. */
+  private lastTraitIndex = new Map<string, Record<string, number>>();
+  /** Trait notices collected during rebuild, flushed after publish. */
+  private pendingTraitNotices: UiNotice[] = [];
+
   constructor(module: GameModule, seed = 1, scenario?: string) {
     this.module = module;
     this.scenario = scenario;
@@ -123,7 +193,10 @@ export class UniversalSession implements GamePresenter {
     this.unsubscribers.push(
       this.engine.onVisualEvent(events => {
         for (const listener of this.visualListeners) listener(events);
-        for (const event of events) this.emitEventNotice(event.type, event.title, event.durationMs);
+        for (const event of events) {
+          this.recordHistory(event);
+          this.emitEventNotice(event.type, event.title, event.durationMs);
+        }
       })
     );
 
@@ -271,9 +344,10 @@ export class UniversalSession implements GamePresenter {
               (a.selection?.scope as { neighbors?: string[] } | undefined)?.neighbors?.includes(pick.id))
         );
         if (directMoveAction) {
+          // Selection-bound actions carry their target in `targets`; adding a
+          // targetNodeId would change the canonical binding and be rejected.
           const res = this.dispatch({
             ...directMoveAction,
-            targetNodeId: pick.id,
             targets: [pick.id]
           });
           return { handled: res.ok, message: res.error };
@@ -614,6 +688,91 @@ export class UniversalSession implements GamePresenter {
     return { ok: true };
   }
 
+  /**
+   * Append one kernel visual event to the activity feed.
+   *
+   * The feed is presentation state, not game state: it is rebuilt from the
+   * event stream and never written back into the engine.
+   */
+  private recordHistory(event: VisualTraceEvent): void {
+    const kind = EVENT_KIND[event.type] ?? 'system';
+    const state = this.engine.getProjectedState();
+    const entry: UiHistoryEntry = {
+      id: `h${++this.historySeq}`,
+      kind,
+      icon: EVENT_ICON[event.type] ?? EVENT_ICONS[event.type] ?? '•',
+      title: event.title,
+      round: state.round,
+      turn: state.turn,
+      critical: kind === 'haunt' || /死亡|作祟/.test(event.title)
+    };
+    if (event.sourceId) {
+      const who = state.players[event.sourceId] ?? state.npcs?.[event.sourceId];
+      if (who) {
+        entry.actorName = who.name;
+        entry.actorColor = (who as { color?: string }).color;
+      }
+    }
+    this.history.unshift(entry);
+    if (this.history.length > HISTORY_LIMIT) this.history.length = HISTORY_LIMIT;
+  }
+
+  /**
+   * Compare trait ladders against the previous rebuild and turn any movement
+   * into an emphatic notice. Driven by state, so every path that damages a
+   * character (combat, events, haunts, manual effects) reports consistently.
+   */
+  private collectTraitChanges(raw: ReturnType<UniversalGameEngine['getRawState']>): void {
+    if (raw.gameId !== 'betrayal') return;
+    for (const player of Object.values(raw.players ?? {})) {
+      const indexes = (player.customProps?.traitIndex ?? {}) as Record<string, number>;
+      const previous = this.lastTraitIndex.get(player.id);
+      this.lastTraitIndex.set(player.id, { ...indexes });
+      if (!previous) continue;
+
+      for (const [trait, to] of Object.entries(indexes)) {
+        const from = previous[trait];
+        if (from === undefined || from === to) continue;
+        const delta = to - from;
+        const label = TRAIT_LABEL[trait] ?? trait;
+        const change: UiTraitChange = {
+          playerId: player.id,
+          playerName: player.name,
+          traitKey: trait,
+          traitLabel: label,
+          from,
+          to,
+          delta,
+          damageKind: delta < 0 ? (trait === 'sanity' || trait === 'knowledge' ? 'MENTAL' : 'PHYSICAL') : undefined,
+          lethal: !player.alive || to === 0
+        };
+        const sign = delta > 0 ? '+' : '';
+        this.history.unshift({
+          id: `h${++this.historySeq}`,
+          kind: delta < 0 ? 'damage' : 'heal',
+          icon: delta < 0 ? '🩸' : '✚',
+          title: `${player.name} ${label} ${sign}${delta}`,
+          detail: `${from} → ${to}`,
+          round: this.engine.getProjectedState().round,
+          turn: this.engine.getProjectedState().turn,
+          actorName: player.name,
+          actorColor: player.color,
+          delta,
+          traitLabel: label,
+          critical: change.lethal
+        });
+        this.pendingTraitNotices.push({
+          kind: delta < 0 ? 'error' : 'event',
+          icon: delta < 0 ? '🩸' : '✚',
+          title: `${label} ${sign}${delta}`,
+          detail: `${player.name} · ${from} → ${to}${change.lethal ? ' · 濒死！' : ''}`,
+          durationMs: delta < 0 ? 4200 : 3000,
+          trait: change
+        });
+      }
+    }
+  }
+
   private emit(notice: UiNotice): void {
     this.noticeListeners.forEach(listener => listener(notice));
   }
@@ -640,6 +799,13 @@ export class UniversalSession implements GamePresenter {
 
   private publish(): void {
     this.listeners.forEach(listener => listener(this.snapshot));
+    // Trait banners must land after the snapshot so the HUD animates the
+    // already-updated ladder rather than the previous value.
+    if (this.pendingTraitNotices.length > 0) {
+      const queued = this.pendingTraitNotices;
+      this.pendingTraitNotices = [];
+      for (const notice of queued) this.emit(notice);
+    }
   }
 
   private rebuild(): void {
@@ -699,6 +865,7 @@ export class UniversalSession implements GamePresenter {
       openDecisions: state.pendingDecisions.filter(w => w.status === 'OPEN').length,
 
       hooks: this.buildHooks(state),
+      history: this.history,
       spatial: this.buildSpatial(state, actor),
       placement: this.buildPlacement(raw, actor),
       log: {
@@ -725,6 +892,10 @@ export class UniversalSession implements GamePresenter {
           : ''
         : ''
     };
+
+    // Diff trait ladders last: the snapshot above already carries the new
+    // values, so the emitted notice and the rendered ladder never disagree.
+    this.collectTraitChanges(raw);
   }
 
   private phaseLabel(state: ProjectedGameState): string {
