@@ -105,6 +105,32 @@ export class BoardGameHUD {
     });
   }
 
+  /**
+   * Lightweight hover chip for the 3D board: shows what the cursor is over and
+   * what a click will do, without stealing focus from the action dock.
+   */
+  public showHoverHint(hint: { title: string; detail?: string } | null): void {
+    let el = this.container.querySelector('#hover-hint') as HTMLElement | null;
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'hover-hint';
+      el.className = 'hover-hint';
+      this.container.appendChild(el);
+    }
+    if (!hint) {
+      el.classList.remove('on');
+      return;
+    }
+    const signature = `${hint.title}|${hint.detail ?? ''}`;
+    if (el.dataset.signature === signature) {
+      el.classList.add('on');
+      return;
+    }
+    el.dataset.signature = signature;
+    el.innerHTML = `<b>${hint.title}</b>${hint.detail ? `<span>${hint.detail}</span>` : ''}`;
+    el.classList.add('on');
+  }
+
   public pushToast(icon: string, text: string, ttl = 3600, detail?: string): void {
     const stack = document.getElementById('toast-container');
     if (!stack) return;

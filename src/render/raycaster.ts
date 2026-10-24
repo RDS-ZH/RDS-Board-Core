@@ -14,6 +14,10 @@ export class BoardRaycaster {
   private interactiveMeshes = new Map<THREE.Object3D, InteractiveObjectData>();
   private hoveredObject: THREE.Object3D | null = null;
   private originalEmissive = new Map<THREE.Material, THREE.Color>();
+  /** Mesh → its original material(s), so hover copies can be swapped back. */
+  private ownedMaterials = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
+  /** Cloned hover materials that this raycaster owns and must dispose. */
+  private tintedClones = new Set<THREE.Material>();
 
   private onClickCallback?: (data: InteractiveObjectData) => void;
   private onHoverCallback?: (data: InteractiveObjectData | null) => void;
@@ -210,14 +214,33 @@ export class BoardRaycaster {
   }
 
   private applyHoverHighlight(obj: THREE.Object3D): void {
-    if ((obj as THREE.Mesh).isMesh) {
-      const mesh = obj as THREE.Mesh;
-      if (Array.isArray(mesh.material)) {
-        mesh.material.forEach(mat => this.tintMaterial(mat as THREE.MeshStandardMaterial));
-      } else {
-        this.tintMaterial(mesh.material as THREE.MeshStandardMaterial);
-      }
+    if (!(obj as THREE.Mesh).isMesh) return;
+    const mesh = obj as THREE.Mesh;
+    // Room meshes are merged per material and share the global palette. Tinting
+    // those in place would light up every room on the board, so give the hovered
+    // mesh private copies and swap them back on hover-out.
+    if (Array.isArray(mesh.material)) {
+      this.ownedMaterials.set(mesh, mesh.material.slice());
+      mesh.material = mesh.material.map(mat => this.tintCopy(mat as THREE.MeshStandardMaterial));
+    } else {
+      const original = mesh.material as THREE.MeshStandardMaterial;
+      this.ownedMaterials.set(mesh, original);
+      mesh.material = this.tintCopy(original);
     }
+  }
+
+  /** Clone a material, tint its emissive, and remember the clone for disposal. */
+  private tintCopy(mat: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+    if (!mat || !mat.emissive) return mat;
+    if (mat.userData?.shared) {
+      const copy = mat.clone();
+      copy.emissive.setHex(0x445588);
+      this.tintedClones.add(copy);
+      return copy;
+    }
+    if (!this.originalEmissive.has(mat)) this.originalEmissive.set(mat, mat.emissive.clone());
+    mat.emissive.setHex(0x445588);
+    return mat;
   }
 
   private tintMaterial(mat: THREE.MeshStandardMaterial): void {
@@ -232,13 +255,29 @@ export class BoardRaycaster {
   private resetHover(): void {
     if (this.hoveredObject && (this.hoveredObject as THREE.Mesh).isMesh) {
       const mesh = this.hoveredObject as THREE.Mesh;
+      const original = this.ownedMaterials.get(mesh);
       if (Array.isArray(mesh.material)) {
-        mesh.material.forEach(mat => this.restoreMaterial(mat as THREE.MeshStandardMaterial));
+        mesh.material.forEach(mat => this.disposeTint(mat as THREE.Material));
       } else {
-        this.restoreMaterial(mesh.material as THREE.MeshStandardMaterial);
+        this.disposeTint(mesh.material as THREE.Material);
+      }
+      if (original) {
+        mesh.material = original as THREE.Mesh['material'];
+        this.ownedMaterials.delete(mesh);
       }
     }
     this.hoveredObject = null;
+  }
+
+  /** Free a cloned hover material, or restore an in-place tint. */
+  private disposeTint(mat: THREE.Material | undefined): void {
+    if (!mat) return;
+    if (this.tintedClones.has(mat)) {
+      this.tintedClones.delete(mat);
+      mat.dispose();
+      return;
+    }
+    this.restoreMaterial(mat as THREE.MeshStandardMaterial);
   }
 
   private restoreMaterial(mat: THREE.MeshStandardMaterial): void {

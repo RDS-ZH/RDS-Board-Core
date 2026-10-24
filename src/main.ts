@@ -66,7 +66,33 @@ class BoardGameSimulatorApp {
       if (floor) this.scene.focusFloor(floor);
     });
     this.scene.onInteractiveClick(data => this.handleBoardPick(data));
-    this.scene.onInteractiveHover(() => undefined);
+    this.scene.onInteractiveHover(data => {
+      if (!data) {
+        this.hud.showHoverHint(null);
+        return;
+      }
+      const meta = (data.metadata ?? {}) as Record<string, unknown>;
+      if (data.type === 'NODE' && typeof meta.name === 'string') {
+        const isDoor = meta.type === 'DOOR';
+        this.hud.showHoverHint({
+          title: isDoor ? `${String(meta.name ?? '房间')} · 门` : String(meta.name),
+          detail: isDoor ? '点击探索这扇门' : '点击查看房间档案'
+        });
+        return;
+      }
+      if (data.type === 'ENTITY') {
+        const face = (meta as { title?: string }).title;
+        if (face) {
+          this.hud.showHoverHint({ title: face, detail: '点击查看卡牌详情' });
+          return;
+        }
+      }
+      if (data.type === 'DICE') {
+        this.hud.showHoverHint({ title: '骰子', detail: '点击掷骰' });
+        return;
+      }
+      this.hud.showHoverHint(null);
+    });
     this.scene.onEntityDrop((entityId, target, clientX, clientY) => {
       if (target?.type === 'ENTITY' && target.id !== entityId) {
         if (this.scene.canMergeCards(entityId, target.id)) {
