@@ -400,6 +400,7 @@ export class BoardGameHUD {
       </header>
 
       <aside class="player-rail" id="player-rail"></aside>
+      <aside class="room-card" id="room-card" style="display:none"></aside>
       <div class="action-dock" id="action-dock"></div>
       <div class="announcement-banner" id="announce" style="display:none"></div>
       <div class="payload-layer" id="payload-layer" style="display:none"></div>
@@ -454,7 +455,86 @@ export class BoardGameHUD {
 
     this.renderViewerSelect(snapshot);
     this.renderPlayers(snapshot);
+    this.renderRoomCard(snapshot);
     this.renderDock(snapshot);
+  }
+
+  /**
+   * Room dossier for the focused actor's current room: name, floor, door
+   * compass, printed flavour text and who is standing in it.
+   */
+  private renderRoomCard(snapshot: GameSnapshot): void {
+    const card = this.container.querySelector('#room-card') as HTMLElement | null;
+    if (!card) return;
+
+    const board = snapshot.board;
+    const focusId = snapshot.focus[0] ?? snapshot.viewer;
+    const actor = board.players[focusId];
+    const roomId = String(actor?.customProps?.currentRoomId ?? '');
+    const node = roomId ? board.mapGraph.nodes[roomId] : undefined;
+
+    if (!node || node.type !== 'ROOM') {
+      card.style.display = 'none';
+      card.dataset.signature = '';
+      return;
+    }
+
+    const props = (node.props ?? {}) as Record<string, unknown>;
+    const doors = Array.isArray(props.doors) ? (props.doors as string[]) : [];
+    const floorId = String(props.floor ?? '');
+    const floorLabel = floorId === 'BASEMENT' ? '地下室' : floorId === 'UPPER' ? '二楼' : '一楼';
+    const occupants = Object.values(board.players).filter(
+      p => p.alive && !p.customProps?.banished && p.customProps?.currentRoomId === roomId
+    );
+    const monsters = Object.values(board.entities ?? {}).filter(entity => {
+      const custom = entity?.components?.custom as Record<string, unknown> | undefined;
+      return entity.type === 'MEEPLE' && !!custom?.monster && custom?.roomId === roomId && !custom?.destroyed;
+    });
+    const loot = Object.values(board.entities ?? {}).filter(entity => {
+      const custom = entity?.components?.custom as Record<string, unknown> | undefined;
+      return entity.zoneId === `zone_room_${roomId}` && custom?.cardType === 'ITEM';
+    });
+
+    const signature = `${roomId}|${doors.join('')}|${occupants.map(p => p.id).join(',')}|${monsters.length}|${loot.length}`;
+    if (card.dataset.signature === signature) return;
+    card.dataset.signature = signature;
+
+    const compass = ['N', 'E', 'S', 'W']
+      .map(dir => `<span class="rc-door ${doors.includes(dir) ? 'on' : ''}">${dir}</span>`)
+      .join('');
+
+    const ppl = occupants
+      .map(p => {
+        const role = p.role === 'TRAITOR' ? '叛徒' : p.role === 'HERO' ? '英雄' : '探索者';
+        return `<span class="rc-chip" style="--chip:${p.color}"><i></i>${p.name} · ${role}</span>`;
+      })
+      .join('');
+    const mobs = monsters
+      .map(m => `<span class="rc-chip monster"><i></i>${String((m.components?.custom as Record<string, unknown>)?.name ?? '怪物')}</span>`)
+      .join('');
+    const items = loot.length ? `<span class="rc-chip loot"><i></i>遗物 ×${loot.length}</span>` : '';
+
+    card.style.display = '';
+    card.innerHTML = `
+      <div class="rc-head">
+        <span class="rc-floor">${floorLabel}</span>
+        <button class="rc-focus" id="rc-focus" title="镜头聚焦该房间">◎</button>
+      </div>
+      <div class="rc-title">${String(props.name ?? '房间')}</div>
+      <div class="rc-en">${String(props.en ?? '')}</div>
+      <div class="rc-meta">
+        <div class="rc-compass">${compass}</div>
+        <div class="rc-symbol">${props.symbol === 'OMEN' ? '👁 预兆' : props.symbol === 'ITEM' ? '◆ 遗物' : props.symbol === 'EVENT' ? '✦ 事件' : '· 无事'}</div>
+      </div>
+      <p class="rc-text">${String(props.text ?? '')}</p>
+      <div class="rc-occupants">${
+        ppl || mobs || items ? `${ppl}${mobs}${items}` : '<span class="rc-empty">空无一人</span>'
+      }</div>
+    `;
+
+    card.querySelector('#rc-focus')?.addEventListener('click', () => {
+      if (this.ports.focusRoom) this.ports.focusRoom(roomId);
+    });
   }
 
   private renderViewerSelect(snapshot: GameSnapshot): void {

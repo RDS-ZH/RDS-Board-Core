@@ -298,6 +298,10 @@ export interface PresentationPorts {
   toggleInspector(): void;
   /** Highlight board candidates for a targeting action (null clears). */
   highlightBoard(ids: string[] | null): void;
+  /** Cinematic close-up on one board node (room inspection). */
+  focusRoom?(nodeId: string): void;
+  /** Return to the wide board framing after a close-up. */
+  clearRoomFocus?(): void;
 }
 
 /** Application boundary used by the UI. */
