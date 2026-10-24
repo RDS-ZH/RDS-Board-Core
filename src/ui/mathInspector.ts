@@ -39,7 +39,9 @@ export class MathematicalInspectorUI {
   private readonly options: InspectorOptions;
 
   private tab: InspectorTab = 'G';
-  private collapsed = false;
+  // The kernel inspector is a developer tool: start collapsed so the board is
+  // the hero of the screen.
+  private collapsed = true;
   private scrubbing = false;
   private lastDepth = 0;
   private snapshot!: GameSnapshot;
@@ -52,7 +54,7 @@ export class MathematicalInspectorUI {
     this.options = options;
 
     this.panel = document.createElement('section');
-    this.panel.className = 'math-inspector-panel';
+    this.panel.className = 'math-inspector-panel collapsed';
     container.appendChild(this.panel);
 
     this.bind(presenter);

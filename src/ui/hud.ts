@@ -395,7 +395,7 @@ export class BoardGameHUD {
 
           <button class="icon-btn" id="btn-undo" aria-label="撤销上一步">↶<span class="tip">撤销上一步动作</span></button>
           <button class="icon-btn" id="btn-audio" aria-label="音效">♪<span class="tip">音效开关</span></button>
-          <button class="icon-btn active" id="btn-inspector" aria-label="数学模型">𝒢<span class="tip">内核检查器 · I</span></button>
+          <button class="icon-btn" id="btn-inspector" aria-label="数学模型">𝒢<span class="tip">内核检查器 · I</span></button>
         </div>
       </header>
 
