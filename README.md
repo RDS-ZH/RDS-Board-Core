@@ -20,7 +20,7 @@
 pnpm install
 pnpm run dev       # http://127.0.0.1:5173/  （可视化调试器）
 # 场景直达：http://127.0.0.1:5173/?scenario=rich_action
-pnpm test          # 131 项用例 + UI/内核边界检查
+pnpm test          # 内核一致性 131 例（116 个 test 展开参数化）+ 分层边界检查
 pnpm run build     # 生产构建
 pnpm shots         # 按需生成全部验证截图到 shots/（自动起停 dev server）
 ```
@@ -56,7 +56,12 @@ pnpm shots         # 按需生成全部验证截图到 shots/（自动起停 dev
 | 逻辑时钟与超时 | `__TICK__` 控制动作、decision/response deadline、可重放超时 | [engine.ts](src/core/engine.ts) |
 | 检查点持久化 | 种子 + Action Log 导出、重放式恢复 | [room.ts](src/net/room.ts) |
 
-规则手册级的契约见 **[docs/CORE.md](docs/CORE.md)**；当前分层、模块实现与调用链见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**；山屋的规则覆盖与模拟器缺陷评估见 **[docs/BETRAYAL.md](docs/BETRAYAL.md)**；内核表达缺陷的改造 RFC 见 **[docs/KERNEL-EXPRESSION.md](docs/KERNEL-EXPRESSION.md)**；持续维护的模拟器质量清单见 **[docs/SIMULATOR-AUDIT.md](docs/SIMULATOR-AUDIT.md)**；已确认边界与后续可选开发见 **[docs/BACKLOG.md](docs/BACKLOG.md)**。
+规则手册级的契约见 **[docs/CORE.md](docs/CORE.md)**；当前分层、模块实现与调用链见 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**；山屋的规则覆盖与模拟器缺陷评估见 **[docs/BETRAYAL.md](docs/BETRAYAL.md)**；内核表达缺陷的改造 RFC 见 **[docs/KERNEL-EXPRESSION.md](docs/KERNEL-EXPRESSION.md)**；持续维护的模拟器质量清单见 **[docs/SIMULATOR-AUDIT.md](docs/SIMULATOR-AUDIT.md)**。
+
+待办分成两份，**只记还没做的事**（已完成的按时间留在审计账本里，不重复）：
+
+- **[docs/BACKLOG.md](docs/BACKLOG.md)** — 可选开发：性能基线结论、楼层隔离与小地图、效果生命周期、检定窗口、i18n、网络，以及"已明确不做"清单。§10 附**复核手法**：动手前先确认该待办是否仍然成立。
+- **[docs/ARCHITECTURE-ISSUES.md](docs/ARCHITECTURE-ISSUES.md)** — 架构层：已修问题（AI-01~17）、重复特性合并建议、仍未完成的 AI-21/23/24/25/27。
 
 ---
 

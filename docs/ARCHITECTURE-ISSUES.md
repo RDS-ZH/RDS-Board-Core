@@ -38,23 +38,35 @@
 
 ## 3. 尚未完成（非 TBD）
 
+> 与 [BACKLOG.md](BACKLOG.md) 保持一致：这里只留**架构层**的未完成项，
+> 表现层/性能/i18n 的待办在 BACKLOG。最近核对：2026-10-24。
+
 | ID | 问题 | 建议 |
 | --- | --- | --- |
-| AI-20 | `placementRotation` 只在 session 内存 | 写入 pending UI state 或 sessionStorage（仅表现，不进 core） |
-| AI-21 | 楼层选择已有相机聚焦，尚未真正隐藏其他层/小地图 | K14：renderer 按层过滤 + 总览小地图；不改逻辑坐标 |
-| AI-22 | 3D 卡面长描述截断 | DOM 卡牌详情为主，3D 只做摘要 |
-| AI-23 | K3 effects 尚未迁移山屋物品/击晕 | 用 `EffectInstance` 统一生命周期，保留兼容读取 |
-| AI-24 | K4 两阶段检定窗口 | RollWindow：修正声明 → 掷骰 → 掷后响应 |
-| AI-25 | K8/K9/K12/K14 Wave 3 | 按 KERNEL-EXPRESSION 推进，不混入 fixture 特例 |
-| AI-27 | 楼层/总览导航 | `focusFloor` 只切相机；真正的按层渲染仍是 K14 |
-| AI-26 | 全量重建场景仍是 correctness-first | profiling 证明瓶颈后再做 diff/对象池 |
+| AI-21 | 楼层选择已有相机聚焦，尚未真正隐藏其他层/小地图 | 见 BACKLOG §2；renderer 按层过滤 + 总览小地图，不改逻辑坐标 |
+| AI-23 | `EffectInstance` 槽位已在 core 就绪，山屋物品/击晕仍用模块自写的 `customProps` | 见 BACKLOG §3；统一生命周期，保留兼容读取，回放哈希不变 |
+| AI-24 | 无两阶段检定窗口 | 见 BACKLOG §4；引入 `RollWindow`，参考三国杀响应栈，不为山屋写特例 |
+| AI-25 | K8/K9/K12/K14 Wave 3 | 按 KERNEL-EXPRESSION 推进，不混入 fixture 特例，不与表现层同 PR |
+| AI-27 | `focusFloor` 只切相机 | 与 AI-21 合并处理 |
+
+### 已结案（不再跟踪）
+
+| ID | 原待办 | 结论 |
+| --- | --- | --- |
+| AI-20 | `placementRotation` 只在 session 内存 | 已实现：`session.ts` 用 `sessionStorage` 持久化（键含 game/seed/scenario/defId） |
+| AI-22 | 3D 卡面长描述截断 | 观点已定：DOM 卡牌详情为主，3D 只做摘要，不做长文渲染 |
+| AI-26 | 全量重建是 correctness-first | 按 BACKLOG §1 的实测判据未超预算（`lastSyncMs` 8.3ms、geometry/texture 恒定），暂不做 diff/对象池 |
 
 ## 4. 验证入口
 
+统一走 `pnpm` 脚本，口径见 [AGENTS.md](../AGENTS.md)：
+
 ```bash
-node scripts/test-core.mjs
-node scripts/test-matrix.mjs
-node scripts/test-ui-matrix.mjs
+pnpm test           # 内核一致性 + 分层边界
+pnpm test:matrix    # 五夹具 × 多 seed × 全场景黑盒
+pnpm test:ui        # Playwright UI 流程矩阵
+pnpm probe:layout   # 家具布局与门位冲突
+pnpm probe:overlap  # 房间几何 z-fighting 回归
 node node_modules/typescript/bin/tsc --noEmit
-node node_modules/vite/bin/vite.js build
+pnpm build
 ```
