@@ -3072,3 +3072,36 @@ select.pf-control {
   color: rgba(217, 180, 91, 0.8);
   letter-spacing: 0.02em;
 }
+
+/* Room-discovery reveal: same parchment, centred and slightly larger. */
+.card-sheet-layer.is-reveal {
+  justify-content: center;
+  align-items: flex-end;
+  padding: 0 0 176px;
+}
+
+.card-sheet-layer.is-reveal .card-sheet {
+  width: 306px;
+  transform: translateY(22px) scale(0.97);
+  animation: room-reveal-in 420ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  box-shadow:
+    0 34px 80px -30px #000,
+    0 0 0 1px rgba(90, 66, 32, 0.6),
+    0 0 60px -10px rgba(217, 180, 91, 0.35),
+    inset 0 0 0 3px rgba(255, 250, 235, 0.5);
+}
+
+@keyframes room-reveal-in {
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.card-sheet-layer.is-reveal .cs-title {
+  font-size: 25px;
+}
+
+.card-sheet-layer.is-reveal .cs-ribbon {
+  letter-spacing: 0.3em;
+}
