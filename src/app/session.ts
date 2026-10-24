@@ -290,6 +290,59 @@ export class UniversalSession implements GamePresenter {
       }
     }
 
+    // In-world special traversal badge (stairs / drop / rappel / lift)
+    if ((pick.metadata as any)?.type === 'SPECIAL_MOVE') {
+      const action = String((pick.metadata as any)?.action ?? '');
+      const targetRoomId = (pick.metadata as any)?.targetRoomId;
+      const targetName = (pick.metadata as any)?.targetName ?? '目标房间';
+
+      if (action === 'USE_ELEVATOR') {
+        // The lift reaches every explored room, so arm the board-targeting
+        // group instead of guessing a destination.
+        const elevator = legal.find(a => a.type === 'USE_ELEVATOR');
+        if (!elevator) return { handled: false, message: '电梯本回合已使用' };
+        const bound = this.bound.find(entry => entry.action?.type === 'USE_ELEVATOR');
+        if (bound) {
+          this.activeBoardGroup = {
+            type: 'USE_ELEVATOR',
+            idKey: 'targetNodeId',
+            targets: (bound.highlight ?? []) as string[]
+          };
+          this.emit({
+            kind: 'event',
+            icon: '🛗',
+            title: '电梯已就绪 · 点击任意已探索房间前往',
+            durationMs: 3200
+          });
+          return { handled: true };
+        }
+        return { handled: false, message: '无法启动电梯' };
+      }
+
+      const special = legal.find(a => a.type === action);
+      if (!special) {
+        return { handled: false, message: `当前无法执行该特殊移动` };
+      }
+      // Selection-bound actions must keep their exact binding: adding a
+      // targetNodeId the legal action does not carry makes the engine reject it.
+      const payload =
+        action === 'CLIMB_UP' && targetRoomId
+          ? { ...special, targetNodeId: targetRoomId }
+          : { ...special };
+      const res = this.dispatch(payload);
+      if (res.ok) {
+        this.emit({
+          kind: 'event',
+          icon: action === 'JUMP_DOWN' ? '⬇' : '🪢',
+          title:
+            action === 'JUMP_DOWN' ? `纵身跃下，落入【${targetName}】` : `沿绳索攀上【${targetName}】`,
+          durationMs: 2600,
+          roomId: targetRoomId
+        });
+      }
+      return { handled: res.ok, message: res.error };
+    }
+
     // In-world room navigation arrow hotspot (moving to adjacent room)
     if ((pick.metadata as any)?.type === 'ROOM_NAV') {
       const targetRoomId = (pick.metadata as any)?.targetRoomId;

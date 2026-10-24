@@ -104,7 +104,7 @@ export class BoardGameScene {
   private lastPreviewRotation?: number;
   private previewObjects: THREE.Object3D[] = [];
   private navArrowMeshes: {
-    group: THREE.Group;
+    group: THREE.Object3D;
     material: THREE.MeshStandardMaterial;
     baseIntensity: number;
     baseY: number;
@@ -1194,9 +1194,146 @@ export class BoardGameScene {
   }
 
   /**
-   * 3D Glowing navigation arrow on the floor indicating movement to an adjacent room,
-   * or exploration through an unopened door.
+   * Badges for moves the door grid cannot express.
+   *
+   * Stairs join rooms that share a grid cell across floors, the balcony drops
+   * one floor, the rappel edge climbs back up, and the observatory lift reaches
+   * any explored room. Without these the only way to use them was the action
+   * dock, which is exactly the menu digging this pass removes.
+   *
+   * The drop is free, so it stays offered even with no moves left; stairs, the
+   * rappel and the lift all spend a move and disappear at zero.
    */
+  private addSpecialTraversalHints(
+    state: ProjectedGameState,
+    node: ProjectedGameState['mapGraph']['nodes'][string],
+    nodeId: string,
+    movesLeft = 0
+  ): void {
+    const canSpendMove = movesLeft > 0;
+    const edges = Object.values(state.mapGraph.edges ?? {});
+    const badges: {
+      icon: string;
+      label: string;
+      color: string;
+      metadata: Record<string, unknown>;
+    }[] = [];
+
+    for (const edge of edges) {
+      const from = String((edge as { from?: string }).from ?? '');
+      const to = String((edge as { to?: string }).to ?? '');
+      if (from !== nodeId) continue;
+      const type = String((edge as { type?: string }).type ?? '');
+      const other = state.mapGraph.nodes[to];
+      if (!other) continue;
+
+      if (type === 'STAIRS' && canSpendMove) {
+        const up = String(other.props?.floor ?? '') === 'UPPER';
+        badges.push({
+          icon: up ? '⬆' : '⬇',
+          label: up ? '上楼' : '下楼',
+          color: up ? '#86a8c4' : '#d9b45b',
+          metadata: {
+            type: 'ROOM_NAV',
+            fromRoomId: nodeId,
+            targetRoomId: to,
+            targetName: String(other.props?.name ?? '楼梯'),
+            intent: 'interact'
+          }
+        });
+      } else if (type === 'DROP' && canSpendMove) {
+        badges.push({
+          icon: '⬇',
+          label: '跳下',
+          color: '#e0a25c',
+          metadata: {
+            type: 'SPECIAL_MOVE',
+            action: 'JUMP_DOWN',
+            fromRoomId: nodeId,
+            targetRoomId: to,
+            targetName: String(other.props?.name ?? '舞厅'),
+            intent: 'interact'
+          }
+        });
+      }
+    }
+
+    // Rappel back up a drop edge when carrying rope.
+    if (canSpendMove && !badges.some(badge => badge.metadata.action === 'JUMP_DOWN')) {
+      for (const edge of edges) {
+        const to = String((edge as { to?: string }).to ?? '');
+        const type = String((edge as { type?: string }).type ?? '');
+        if (to !== nodeId || type !== 'DROP') continue;
+        const from = String((edge as { from?: string }).from ?? '');
+        const upper = state.mapGraph.nodes[from];
+        if (!upper) continue;
+        badges.push({
+          icon: '🪢',
+          label: '攀绳',
+          color: '#57c08b',
+          metadata: {
+            type: 'SPECIAL_MOVE',
+            action: 'CLIMB_UP',
+            fromRoomId: nodeId,
+            targetRoomId: from,
+            targetName: String(upper.props?.name ?? '上层'),
+            intent: 'interact'
+          }
+        });
+      }
+    }
+
+    if (canSpendMove && String(node.props?.special ?? '') === 'ELEVATOR') {
+      badges.push({
+        icon: '🛗',
+        label: '乘电梯',
+        color: '#b07bf0',
+        metadata: { type: 'SPECIAL_MOVE', action: 'USE_ELEVATOR', fromRoomId: nodeId, intent: 'interact' }
+      });
+    }
+
+    badges.forEach((badge, index) => {
+      const angle = -Math.PI / 2 + (index - (badges.length - 1) / 2) * 0.72;
+      const bx = node.position[0] + Math.cos(angle) * 0.62;
+      const bz = node.position[2] + Math.sin(angle) * 0.62 + 0.42;
+
+      const plate = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.19, 0.19, 0.03, 20),
+        new THREE.MeshStandardMaterial({
+          color: badge.color,
+          emissive: badge.color,
+          emissiveIntensity: 0.65,
+          roughness: 0.35
+        })
+      );
+      plate.position.set(bx, node.position[1] + 0.14, bz);
+      this.boardObjectsGroup.add(plate);
+      const plateMat = plate.material as THREE.MeshStandardMaterial;
+      const pulseTarget = new THREE.Group();
+      pulseTarget.position.copy(plate.position);
+      plate.position.set(0, 0, 0);
+      pulseTarget.add(plate);
+      this.boardObjectsGroup.add(pulseTarget);
+      this.navArrowMeshes.push({
+        group: pulseTarget,
+        material: plateMat,
+        baseIntensity: 0.65,
+        baseY: node.position[1] + 0.14
+      });
+
+      const glyph = this.createLabelSprite(`${badge.icon} ${badge.label}`, badge.color, 26);
+      glyph.position.set(bx, node.position[1] + 0.42, bz);
+      glyph.scale.set(1.35, 0.3, 1);
+      this.boardObjectsGroup.add(glyph);
+
+      this.raycaster.registerInteractive(plate, {
+        type: 'NODE',
+        id: `${nodeId}:special:${badge.metadata.action ?? 'nav'}:${String(badge.metadata.targetRoomId ?? '')}`,
+        metadata: badge.metadata
+      });
+    });
+  }
+
   private createFloorNavArrow(
     dir: 'N' | 'S' | 'E' | 'W',
     kind: 'NAV' | 'EXPLORE',
@@ -1484,6 +1621,13 @@ export class BoardGameScene {
               }
             });
           }
+        }
+
+        // Special traversal: stairs between floors, the observatory lift, the
+        // collapsed floor and the balcony drop are all one-way or cross-floor
+        // links the plain door arrows cannot express.
+        if (isCurrentActorRoom) {
+          this.addSpecialTraversalHints(state, node, node.id, movesLeft);
         }
 
         const symbol = node.props?.symbol as string | undefined;
