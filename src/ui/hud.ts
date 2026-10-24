@@ -29,6 +29,9 @@ export class BoardGameHUD {
   private unsubNotice: (() => void) | null = null;
   private announceTimer: number | null = null;
   private latest: GameSnapshot | null = null;
+  /** Room the player last clicked; the dossier follows it until the turn moves. */
+  private pinnedRoomId?: string;
+  private lastActorRoomId?: string;
 
   constructor(
     container: HTMLElement,
@@ -346,6 +349,12 @@ export class BoardGameHUD {
   }
 
   private renderNotice(notice: UiNotice): void {
+    if (notice.roomId) {
+      this.pinnedRoomId = notice.roomId;
+      // Inspection does not dispatch an action, so no snapshot arrives with it:
+      // repaint the dossier straight away.
+      if (this.latest) this.renderRoomCard(this.latest);
+    }
     if (notice.kind === 'announce') {
       this.showAnnouncement(notice.title, notice.durationMs ?? 1800);
       return;
@@ -530,7 +539,16 @@ export class BoardGameHUD {
     const board = snapshot.board;
     const focusId = snapshot.focus[0] ?? snapshot.viewer;
     const actor = board.players[focusId];
-    const roomId = String(actor?.customProps?.currentRoomId ?? '');
+    const actorRoomId = String(actor?.customProps?.currentRoomId ?? '');
+
+    // Following the active actor is the default; a explicit room click pins the
+    // dossier until the actor moves somewhere else.
+    if (actorRoomId !== this.lastActorRoomId) {
+      this.lastActorRoomId = actorRoomId;
+      this.pinnedRoomId = undefined;
+    }
+    const pinnedNode = this.pinnedRoomId ? board.mapGraph.nodes[this.pinnedRoomId] : undefined;
+    const roomId = pinnedNode && pinnedNode.type === 'ROOM' ? this.pinnedRoomId! : actorRoomId;
     const node = roomId ? board.mapGraph.nodes[roomId] : undefined;
 
     if (!node || node.type !== 'ROOM') {

@@ -288,6 +288,8 @@ export interface UiNotice {
   tabHint?: 'G' | 'STACK' | 'FACTIONS' | 'HOOKS' | 'TIME';
   /** When present the HUD shows a framed card detail sheet. */
   card?: UiCardDetail;
+  /** Board inspection target: the HUD pins the room dossier to this node. */
+  roomId?: string;
 }
 
 export type BoardPickKind = 'node' | 'edge' | 'entity' | 'dice';
