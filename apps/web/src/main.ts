@@ -431,9 +431,12 @@ class BoardGameSimulatorApp {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+// 统一外壳下 main.ts 可能被 shell.ts 动态 import（此时 DOMContentLoaded 已触发）
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', () => new BoardGameSimulatorApp());
+} else {
   new BoardGameSimulatorApp();
-});
+}
 
 /**
  * Lobby URL: ?hub=<origin>&roomId=<roomId>&token=<hubToken>&playerId=<playerId>
