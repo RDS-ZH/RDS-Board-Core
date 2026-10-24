@@ -177,6 +177,9 @@
 | SA-66 | P2 | 墙面完全空置，房间缺少"宅邸"的居住感 | 只有家具，没有任何壁面陈设 | 新增壁挂陈设 `portrait`（鎏金画框+暗色肖像）、`sconce`（黄铜壁烛+火光晕）、`tapestry`（织锦+纹章）；由 `decorateWalls()` 沿无门墙段确定性悬挂，遇高柜只挂高处壁烛，遇窗户自动让位 | 主卧/舞厅特写；`probe-overlap` 仍 0 越界 |
 | SA-67 | P2 | 玩家看不到当前房间的叙事与在场者 | 房间文本 `props.text` 只存在状态里，UI 没有出口 | 新增右上「房间档案」面板：中/英文名、楼层徽章、门位罗盘、印刷描述、在场英雄/怪物/遗物；`◎` 按钮经 `PresentationPorts.focusRoom` 触发镜头特写 | 整桌截图（BALLROOM 卡片）与 UI 矩阵 |
 | SA-68 | P1 | 节流帧下卡牌/房间落定动画停在半空，卡片陷进地板 | `settleCard` / 房间落定完全依赖 rAF 推进补间 | 帧循环超过 120ms 未 tick 时判定为节流，直接落定到目标高度（正常帧率仍保留缓动） | UI 矩阵 `betrayal:discard-settle` cardY=0.330 > surfaceY=0.315 |
+| SA-69 | P2 | 点击卡牌只能看到一个纯文本 toast，卡面信息（类别/次数/可交易）全部丢失 | `pickTarget` 对实体只发 `title + desc` 字符串 | `UiNotice` 增加可选 `card: UiCardDetail`；HUD 渲染**做旧羊皮纸卡牌浮层**：牌型色带（预兆=酒红/遗物=赭金/事件=铅灰）、火漆印章、英文副标题、描述正文、事实表（类别/剩余次数/不可交易/随从） | `scripts/shoot-card.mjs` 三种牌型均 `sheet=open` |
+| SA-70 | P2 | HUD 是冷调深蓝石板色，与山屋的烛光羊皮纸基调冲突 | 全站共用一套 slate 主题 | 新增 `theme-gothic.css`：`[data-theme="gothic"]` 覆盖 `--ink/--panel/--text/--muted` 等变量，并单独调校顶栏、游戏胶囊、角色卡、动作坞；HUD 按 `gameId === 'betrayal'` 自动挂载 | 舞厅/卡牌截图；其他四款游戏不受影响 |
+| SA-71 | P1 | 枝形吊灯悬在半空（洋馆剖面没有天花板），读起来像穿模 | `chandelier` 是 `ceiling` 摆件，固定挂在 y=0.95 | 重构为**落地六臂烛台**：三脚底座、车削灯柱、环形灯盘、六条托臂与烛焰，高 0.7；改为 CENTER 摆件参与布局碰撞 | 舞厅截图；`probe-layout` 166 placed |
 
 ---
 

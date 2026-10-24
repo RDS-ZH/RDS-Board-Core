@@ -267,6 +267,17 @@ export interface GameSnapshot {
 
 export type NoticeKind = 'announce' | 'event' | 'error';
 
+/** Optional card payload so the HUD can render a full framed card, not a toast. */
+export interface UiCardDetail {
+  title: string;
+  en?: string;
+  kind: 'OMEN' | 'ITEM' | 'EVENT' | 'ROOM' | string;
+  desc: string;
+  color?: string;
+  /** Extra key/value rows (e.g. "使用方式", "剩余次数"). */
+  facts?: { label: string; value: string }[];
+}
+
 export interface UiNotice {
   kind: NoticeKind;
   icon: string;
@@ -275,6 +286,8 @@ export interface UiNotice {
   durationMs?: number;
   /** Optional tab to focus when this notice arrives. */
   tabHint?: 'G' | 'STACK' | 'FACTIONS' | 'HOOKS' | 'TIME';
+  /** When present the HUD shows a framed card detail sheet. */
+  card?: UiCardDetail;
 }
 
 export type BoardPickKind = 'node' | 'edge' | 'entity' | 'dice';

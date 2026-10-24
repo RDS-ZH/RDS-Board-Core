@@ -6,6 +6,7 @@ import {
   GameSnapshot,
   PresentationPorts,
   UiAction,
+  UiCardDetail,
   UiNotice
 } from '../app/contracts';
 
@@ -349,7 +350,64 @@ export class BoardGameHUD {
       this.showAnnouncement(notice.title, notice.durationMs ?? 1800);
       return;
     }
+    if (notice.card) {
+      this.showCardSheet(notice.card);
+      return;
+    }
     this.pushToast(notice.icon, notice.title, notice.durationMs ?? 3200, notice.detail);
+  }
+
+  /**
+   * Framed card detail sheet in the mansion's own visual language: aged
+   * parchment, a suit-coloured header ribbon, and a wax seal for omens.
+   */
+  public showCardSheet(card: UiCardDetail): void {
+    let layer = this.container.querySelector('#card-sheet-layer') as HTMLElement | null;
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = 'card-sheet-layer';
+      layer.className = 'card-sheet-layer';
+      this.container.appendChild(layer);
+    }
+
+    const palette: Record<string, { ink: string; ribbon: string; label: string; seal: string }> = {
+      OMEN: { ink: '#5c1424', ribbon: '#7d1b2c', label: '预兆 · OMEN', seal: '👁' },
+      ITEM: { ink: '#3f2a12', ribbon: '#7a5a22', label: '遗物 · ITEM', seal: '◆' },
+      EVENT: { ink: '#1e2730', ribbon: '#33414f', label: '事件 · EVENT', seal: '✦' },
+      ROOM: { ink: '#2d2118', ribbon: '#5a4326', label: '房间 · ROOM', seal: '⌂' }
+    };
+    const theme = palette[card.kind] ?? palette.ITEM;
+
+    const facts = (card.facts ?? [])
+      .map(row => `<li><span>${row.label}</span><b>${row.value}</b></li>`)
+      .join('');
+
+    layer.innerHTML = `
+      <article class="card-sheet" data-kind="${card.kind}" style="--ink:${theme.ink};--ribbon:${theme.ribbon}">
+        <button class="cs-close" type="button" aria-label="关闭">×</button>
+        <div class="cs-ribbon"><span>${theme.label}</span></div>
+        <div class="cs-body">
+          <div class="cs-seal">${theme.seal}</div>
+          <h2 class="cs-title">${card.title}</h2>
+          ${card.en ? `<div class="cs-en">${card.en}</div>` : ''}
+          <div class="cs-rule"></div>
+          <p class="cs-desc">${card.desc}</p>
+          ${facts ? `<ul class="cs-facts">${facts}</ul>` : ''}
+        </div>
+        <div class="cs-foot">点击牌堆或场景实体继续</div>
+      </article>
+    `;
+    layer.classList.add('open');
+
+    const close = () => {
+      layer!.classList.remove('open');
+      layer!.innerHTML = '';
+    };
+    layer.querySelector('.cs-close')?.addEventListener('click', close);
+    layer.addEventListener('click', event => {
+      if (event.target === layer) close();
+    });
+    window.setTimeout(close, 9000);
   }
 
   private syncSoundButton(): void {
@@ -449,6 +507,8 @@ export class BoardGameHUD {
 
   private render(snapshot: GameSnapshot): void {
     this.latest = snapshot;
+    // Betrayal uses a candle-lit parchment palette; other fixtures stay slate.
+    this.container.dataset.theme = snapshot.gameId === 'betrayal' ? 'gothic' : '';
     this.container.querySelectorAll<HTMLElement>('.game-pill').forEach(button => {
       button.classList.toggle('active', button.dataset.game === snapshot.gameId);
     });
