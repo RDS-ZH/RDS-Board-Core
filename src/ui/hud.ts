@@ -700,6 +700,74 @@ export class BoardGameHUD {
     if (!card) return;
 
     const board = snapshot.board;
+    const placement = snapshot.placement;
+
+    // During room placement, the Room Dossier immediately pins to the preview room,
+    // displaying its flavour text, symbol, floor, and dynamic rotating door compass!
+    if (placement) {
+      const floorId = String(placement.floor ?? '');
+      const floorLabel = floorId === 'BASEMENT' ? '地下室' : floorId === 'UPPER' ? '二楼' : '一楼';
+      const symbolBadge =
+        placement.symbol === 'OMEN'
+          ? '👁 预兆'
+          : placement.symbol === 'ITEM'
+          ? '◆ 遗物'
+          : placement.symbol === 'EVENT'
+          ? '✦ 事件'
+          : '· 无符号';
+
+      const connMap = new Map((placement.connections ?? []).map(c => [c.dir, c]));
+      const compass = ['N', 'E', 'S', 'W']
+        .map(dir => {
+          const conn = connMap.get(dir);
+          const cls = conn?.connected
+            ? 'on connected'
+            : conn?.status === 'blocked'
+            ? 'blocked'
+            : conn?.status === 'open'
+            ? 'on open'
+            : '';
+          const glyph = conn?.connected ? '🔗' : conn?.status === 'open' ? '▲' : conn?.status === 'blocked' ? '✕' : dir;
+          const title = conn?.connected
+            ? `${conn.dirZh} ↔ ${conn.neighborRoomName}`
+            : conn?.status === 'blocked'
+            ? `${conn.dirZh}（面墙阻挡）`
+            : conn?.status === 'open'
+            ? `${conn.dirZh}（通向未探索空间）`
+            : `${dir}（实墙）`;
+          return `<span class="rc-door ${cls}" title="${title}">${glyph}</span>`;
+        })
+        .join('');
+
+      const connectedList = (placement.connections ?? []).filter(c => c.connected);
+      const connChips = connectedList.length > 0
+        ? connectedList
+            .map(c => `<span class="rc-chip" style="--chip:#22dd77"><i></i>${c.dirZh} ↔ ${c.neighborRoomName}</span>`)
+            .join('')
+        : '<span class="rc-chip" style="--chip:#e0604e"><i></i>暂未打通相邻门</span>';
+
+      const signature = `placement|${placement.defId}|${placement.rotation}|${connectedList.length}|${placement.col}:${placement.row}`;
+      if (card.dataset.signature === signature) return;
+      card.dataset.signature = signature;
+
+      card.style.display = '';
+      card.innerHTML = `
+        <div class="rc-head">
+          <span class="rc-floor">[待定放置] ${floorLabel}</span>
+          <span class="rc-angle">${placement.rotation * 90}°</span>
+        </div>
+        <div class="rc-title">${placement.name}</div>
+        ${placement.en ? `<div class="rc-en">${placement.en}</div>` : ''}
+        <div class="rc-meta">
+          <div class="rc-compass">${compass}</div>
+          <div class="rc-symbol">${symbolBadge}</div>
+        </div>
+        <p class="rc-text">${placement.text ?? '探索发现的新房间，请选择朝向确认放置。'}</p>
+        <div class="rc-occupants">${connChips}</div>
+      `;
+      return;
+    }
+
     const focusId = snapshot.focus[0] ?? snapshot.viewer;
     const actor = board.players[focusId];
     const actorRoomId = String(actor?.customProps?.currentRoomId ?? '');
@@ -981,26 +1049,67 @@ export class BoardGameHUD {
 
     const placement = snapshot.placement;
     const placementPanel = placement
-      ? `
-        <div class="placement-panel">
-          <div class="placement-preview">
-            <span class="pp-ico">🧭</span>
-            <span class="pp-name">${placement.name}</span>
-            <span class="pp-angle">${placement.rotation * 90}°</span>
-            <span class="pp-hint">合法朝向 ${placement.rotations.length} 个：${placement.rotations
-              .map(rotation => `${rotation * 90}°`)
-              .join(' / ')}；拖动视角确认位置，旋转不会提交回合</span>
-          </div>
-          <button class="act primary placement-btn" data-place-rotate>
-            <span class="act-ico">↻</span>
-            <span class="act-txt"><span class="act-label">旋转房间</span><span class="act-hint">切换下一个合法朝向</span></span>
-          </button>
-          <button class="act primary placement-btn" data-place-confirm>
-            <span class="act-ico">✔</span>
-            <span class="act-txt"><span class="act-label">确认放置</span><span class="act-hint">按当前朝向落板块并进入房间</span></span>
-          </button>
-        </div>
-      `
+      ? (() => {
+          const connectedList = (placement.connections ?? []).filter(c => c.connected);
+          const openDoors = (placement.connections ?? []).filter(c => c.status === 'open');
+          const blockedDoors = (placement.connections ?? []).filter(c => c.status === 'blocked');
+
+          const symbolBadge =
+            placement.symbol === 'OMEN'
+              ? '<span class="pp-sym omen">👁 预兆</span>'
+              : placement.symbol === 'ITEM'
+              ? '<span class="pp-sym item">◆ 遗物</span>'
+              : placement.symbol === 'EVENT'
+              ? '<span class="pp-sym event">✦ 事件</span>'
+              : '';
+
+          const connHtml =
+            connectedList.length > 0
+              ? `<div class="pp-conn ok">🔗 已打通 ${connectedList.length} 门：${connectedList
+                  .map(c => `<b>${c.dirZh}</b> ↔ ${c.neighborRoomName}`)
+                  .join('，')}</div>`
+              : '<div class="pp-conn warn">⚠️ 当前朝向尚未与任何相邻门打通</div>';
+
+          const openHtml =
+            openDoors.length > 0
+              ? `<div class="pp-conn open">🚪 敞开通路：${openDoors.map(c => c.dirZh).join('、')}（通向未探索空间）</div>`
+              : '';
+
+          const blockedHtml =
+            blockedDoors.length > 0
+              ? `<div class="pp-conn blocked">⛔ 贴墙截断：${blockedDoors.map(c => c.dirZh).join('、')}（直对邻室实墙）</div>`
+              : '';
+
+          return `
+            <div class="placement-panel">
+              <div class="placement-preview">
+                <div class="pp-header">
+                  <span class="pp-ico">🧭</span>
+                  <span class="pp-name">${placement.name}</span>
+                  ${placement.en ? `<span class="pp-en">${placement.en}</span>` : ''}
+                  <span class="pp-angle">${placement.rotation * 90}°</span>
+                  ${symbolBadge}
+                </div>
+                <div class="pp-connections">
+                  ${connHtml}
+                  ${openHtml}
+                  ${blockedHtml}
+                </div>
+                <div class="pp-hint">合法朝向 ${placement.rotations.length} 个（${placement.rotations
+                  .map(rotation => `${rotation * 90}°`)
+                  .join(' / ')}）；点击3D铜环或按钮旋转，确认后落板块进入</div>
+              </div>
+              <button class="act primary placement-btn" data-place-rotate>
+                <span class="act-ico">↻</span>
+                <span class="act-txt"><span class="act-label">旋转房间</span><span class="act-hint">切换下一个合法朝向</span></span>
+              </button>
+              <button class="act primary placement-btn" data-place-confirm>
+                <span class="act-ico">✔</span>
+                <span class="act-txt"><span class="act-label">确认放置</span><span class="act-hint">按当前朝向落板块并进入房间</span></span>
+              </button>
+            </div>
+          `;
+        })()
       : '';
 
     dock.innerHTML = `

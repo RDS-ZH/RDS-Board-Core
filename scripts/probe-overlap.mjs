@@ -1,4 +1,5 @@
 import { launchChromium, BASE_URL } from './lib/browser.mjs';
+import { ensureDevServer } from './lib/devserver.mjs';
 
 /**
  * Room bleed / z-fighting probe.
@@ -12,6 +13,7 @@ import { launchChromium, BASE_URL } from './lib/browser.mjs';
 const BASE = BASE_URL;
 const HALF = 2.84 / 2;
 
+const dev = await ensureDevServer();
 const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
@@ -130,4 +132,5 @@ try {
 } finally {
   console.log('ERRORS:', errors.length ? errors.slice(0, 8) : 'none');
   await browser.close();
+  dev.stop();
 }

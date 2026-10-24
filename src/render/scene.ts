@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { Entity, GameState, NodeId, ProjectedGameState } from '../core/types';
+import { Entity, GameState, MapGraphNode, NodeId, ProjectedGameState } from '../core/types';
 import { TransactionalAnimationQueue } from './animationQueue';
 import { BoardRaycaster, InteractiveObjectData } from './raycaster';
 import { CardMeshBuilder } from './procedural/cardMesh';
@@ -25,10 +25,25 @@ export interface PlacementPreview {
   rotation: number;
   doors: string[];
   color: string;
-  /** Logical floor/column/row, used to apply dynamic floor offsets. */
+  defId?: string;
+  en?: string;
   floor?: string;
   col?: number;
   row?: number;
+  symbol?: string;
+  text?: string;
+  special?: string;
+  tags?: string[];
+  fromRoomId?: string;
+  entryDir?: string;
+  connections?: {
+    dir: 'N' | 'S' | 'E' | 'W' | string;
+    dirZh: string;
+    neighborRoomId?: string;
+    neighborRoomName?: string;
+    connected: boolean;
+    status: 'connected' | 'blocked' | 'open';
+  }[];
 }
 
 /** Presentation-only hints; the app layer supplies these, never core state. */
@@ -85,6 +100,7 @@ export class BoardGameScene {
   };
   private skipFitUntil = 0;
   private cameraTweenTimer?: number;
+  private lastPreviewRotation?: number;
   private previewObjects: THREE.Object3D[] = [];
   private hasFitted = false;
   private lastSyncMs = 0;
@@ -611,7 +627,7 @@ export class BoardGameScene {
       this.fitCameraToBoard(this.lastState, this.lastPlacement, this.lastLayout);
       return;
     }
-    const anchors = this.floorAnchorsFor(this.lastState);
+    const anchors = this.floorAnchorsFor(this.lastState, this.lastPlacement);
     const anchor = anchors[floorId];
     if (!anchor) return;
     const center = new THREE.Vector3(anchor.x, 0, anchor.z);
@@ -687,13 +703,50 @@ export class BoardGameScene {
   /**
    * Map high-dimensional logical coordinates to renderer-world positions once
    * per sync; every renderer subsystem then works in ordinary XYZ.
+   * If a room placement is currently previewed, a virtual node is injected so that
+   * auto-layer offsets, floor mats, and neighbouring rooms dynamically
+   * reflow to accommodate the prospective room before it is placed.
    */
-  private projectForDisplay(state: ProjectedGameState): ProjectedGameState {
-    const projected = this.projection.projectAll(state.mapGraph.nodes, {
+  private projectForDisplay(
+    state: ProjectedGameState,
+    placement?: PlacementPreview
+  ): { state: ProjectedGameState; placementPosition?: [number, number, number] } {
+    const nodesToProject: Record<string, MapGraphNode> = { ...state.mapGraph.nodes };
+    const previewId = '__placement_preview__';
+    const isPlacing = !!(
+      placement &&
+      placement.floor &&
+      placement.col !== undefined &&
+      placement.row !== undefined
+    );
+
+    if (isPlacing) {
+      const layerIndex =
+        state.mapGraph.topology?.layers?.find(entry => entry.id === placement!.floor)?.index ?? 1;
+      nodesToProject[previewId] = {
+        id: previewId,
+        type: 'ROOM',
+        position: [placement!.col!, placement!.row!, layerIndex],
+        positionSpace: 'grid',
+        neighbors: [],
+        layer: placement!.floor,
+        props: {
+          name: placement!.name,
+          floor: placement!.floor,
+          col: placement!.col,
+          row: placement!.row,
+          doors: placement!.doors,
+          symbol: placement!.symbol
+        }
+      };
+    }
+
+    const projected = this.projection.projectAll(nodesToProject, {
       gameId: state.gameId,
       topology: state.mapGraph.topology,
       frames: state.mapGraph.frames
     });
+
     const nodes: ProjectedGameState['mapGraph']['nodes'] = {};
     for (const [id, node] of Object.entries(state.mapGraph.nodes)) {
       nodes[id] = {
@@ -701,30 +754,22 @@ export class BoardGameScene {
         position: projected[id]?.position ?? node.position
       };
     }
-    return {
-      ...state,
-      mapGraph: {
-        ...state.mapGraph,
-        nodes
-      }
-    };
-  }
 
-  /** Keep the ghost room on the same dynamic floor band as real rooms. */
-  private adjustPlacement(state: ProjectedGameState, placement: PlacementPreview): PlacementPreview {
-    if (!placement.floor) return placement;
-    const spec = state.mapGraph.topology?.geometrySpec;
-    const layer = state.mapGraph.topology?.layers?.find(entry => entry.id === placement.floor)?.index;
-    if (!spec || spec.layerMode !== 'auto' || layer === undefined) return placement;
-    const offsets = computeAutoLayerOffsets(state.mapGraph.nodes, {
-      gameId: state.gameId,
-      topology: state.mapGraph.topology,
-      frames: state.mapGraph.frames
-    });
-    if (!offsets) return placement;
-    const staticOffset = (layer - 1) * (spec.layerSpacing ?? 9.6);
-    const delta = (offsets[layer] ?? staticOffset) - staticOffset;
-    return { ...placement, position: [placement.position[0] + delta, placement.position[1], placement.position[2]] };
+    const placementPosition =
+      isPlacing && previewId in projected
+        ? (projected[previewId].position as [number, number, number])
+        : undefined;
+
+    return {
+      state: {
+        ...state,
+        mapGraph: {
+          ...state.mapGraph,
+          nodes
+        }
+      },
+      placementPosition
+    };
   }
 
   /** Install a game/presentation-specific projection registry. */
@@ -746,8 +791,13 @@ export class BoardGameScene {
   ): void {
     const syncStarted = performance.now();
     this.lastRawState = rawState;
-    const state = this.projectForDisplay(rawState);
-    const displayPlacement = placement ? this.adjustPlacement(state, placement) : undefined;
+    const { state, placementPosition } = this.projectForDisplay(rawState, placement);
+    const displayPlacement: PlacementPreview | undefined = placement
+      ? {
+          ...placement,
+          position: placementPosition ?? placement.position
+        }
+      : undefined;
     const wasPlacing = !!this.lastPlacement;
     const isPlacing = !!displayPlacement;
     this.lastState = state;
@@ -760,14 +810,17 @@ export class BoardGameScene {
       this.endPlacementCamera();
     }
 
-    const boardKey = `${state.viewerId}:${state.actionLog.length}:${state.clock}:${[...this.highlightIds]
+    const placingSignature = displayPlacement
+      ? `${displayPlacement.defId ?? displayPlacement.name}:${displayPlacement.floor}:${displayPlacement.col}:${displayPlacement.row}`
+      : 'none';
+    const boardKey = `${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}:${[...this.highlightIds]
       .sort()
       .join(',')}`;
     const boardChanged = boardKey !== this.lastBoardKey;
     if (!boardChanged) {
-      // Placement rotation only changes the preview mesh, not the board.
+      // Placement rotation only changes the preview mesh and connection links, not the board.
       this.clearPreviewObjects();
-      if (displayPlacement) this.renderPlacementPreview(displayPlacement);
+      if (displayPlacement) this.renderPlacementPreview(displayPlacement, state);
       const fitSignature = `${Object.keys(state.mapGraph.nodes).length}:${displayPlacement ? 'placing' : ''}`;
       if (fitSignature !== this.lastFitSignature) {
         this.lastFitSignature = fitSignature;
@@ -1659,7 +1712,16 @@ export class BoardGameScene {
     }
   }
 
-  private renderPlacementPreview(placement: PlacementPreview): void {
+  /**
+   * Builds the 3D room placement preview: semi-transparent ghost tile, in-world
+   * rotate & confirm widgets, and dynamic portal link arches / door beacons.
+   */
+  private renderPlacementPreview(placement: PlacementPreview, state?: ProjectedGameState): void {
+    if (this.lastPreviewRotation !== undefined && this.lastPreviewRotation !== placement.rotation) {
+      BoardGameAudio.playCardFlip();
+    }
+    this.lastPreviewRotation = placement.rotation;
+
     const group = RoomTileBuilder.createRoomMesh(
       placement.name,
       2.84,
@@ -1703,7 +1765,7 @@ export class BoardGameScene {
     const rotateGizmoMat = new THREE.MeshBasicMaterial({ color: 0xd9b45b });
     const rotateGizmo = new THREE.Mesh(rotateGizmoGeom, rotateGizmoMat);
     rotateGizmo.rotation.x = Math.PI / 2;
-    rotateGizmo.position.set(placement.position[0] - 0.7, placement.position[1] + 0.65, placement.position[2]);
+    rotateGizmo.position.set(placement.position[0] - 0.75, placement.position[1] + 0.65, placement.position[2]);
     this.boardObjectsGroup.add(rotateGizmo);
     this.previewObjects.push(rotateGizmo);
     this.raycaster.registerInteractive(rotateGizmo, {
@@ -1716,7 +1778,7 @@ export class BoardGameScene {
     const confirmGizmoGeom = new THREE.CylinderGeometry(0.32, 0.32, 0.08, 16);
     const confirmGizmoMat = new THREE.MeshBasicMaterial({ color: 0x2e9b4e });
     const confirmGizmo = new THREE.Mesh(confirmGizmoGeom, confirmGizmoMat);
-    confirmGizmo.position.set(placement.position[0] + 0.7, placement.position[1] + 0.65, placement.position[2]);
+    confirmGizmo.position.set(placement.position[0] + 0.75, placement.position[1] + 0.65, placement.position[2]);
     this.boardObjectsGroup.add(confirmGizmo);
     this.previewObjects.push(confirmGizmo);
     this.raycaster.registerInteractive(confirmGizmo, {
@@ -1725,13 +1787,105 @@ export class BoardGameScene {
       metadata: { intent: 'confirm' }
     });
 
+    // 3D Door Connection Visuals: luminous bridges, portal rings and exploration chevrons
+    const half = 2.84 / 2;
+    const DIR_DELTAS: Record<string, [number, number]> = {
+      N: [0, -half],
+      S: [0, half],
+      E: [half, 0],
+      W: [-half, 0]
+    };
+
+    for (const conn of placement.connections ?? []) {
+      const dir = conn.dir;
+      const delta = DIR_DELTAS[dir];
+      if (!delta) continue;
+      const dx = delta[0];
+      const dz = delta[1];
+      const doorX = placement.position[0] + dx;
+      const doorY = placement.position[1];
+      const doorZ = placement.position[2] + dz;
+
+      if (conn.status === 'connected') {
+        // Luminous emerald connection bridge between the two doors
+        const bridgeGeom = new THREE.BoxGeometry(
+          dir === 'N' || dir === 'S' ? 0.96 : 0.2,
+          0.04,
+          dir === 'N' || dir === 'S' ? 0.2 : 0.96
+        );
+        const bridgeMat = new THREE.MeshStandardMaterial({
+          color: 0x22dd77,
+          emissive: 0x11bb66,
+          emissiveIntensity: 1.2,
+          roughness: 0.3
+        });
+        const bridge = new THREE.Mesh(bridgeGeom, bridgeMat);
+        bridge.position.set(doorX, doorY + 0.128, doorZ);
+        this.boardObjectsGroup.add(bridge);
+        this.previewObjects.push(bridge);
+
+        // Glowing portal energy ring standing upright in the doorway
+        const archGeom = new THREE.TorusGeometry(0.36, 0.024, 8, 24);
+        const archMat = new THREE.MeshBasicMaterial({ color: 0x44ffaa });
+        const arch = new THREE.Mesh(archGeom, archMat);
+        arch.position.set(doorX, doorY + 0.38, doorZ);
+        if (dir === 'E' || dir === 'W') arch.rotation.y = Math.PI / 2;
+        this.boardObjectsGroup.add(arch);
+        this.previewObjects.push(arch);
+
+        // Floating tag
+        const tag = this.createLabelSprite(
+          `🔗 ${conn.dirZh} ↔ ${conn.neighborRoomName ?? '相邻房间'}`,
+          '#55ffaa',
+          24
+        );
+        tag.position.set(doorX + (dx ? Math.sign(dx) * 0.15 : 0), doorY + 0.72, doorZ + (dz ? Math.sign(dz) * 0.15 : 0));
+        tag.scale.set(2.0, 0.34, 1);
+        this.boardObjectsGroup.add(tag);
+        this.previewObjects.push(tag);
+      } else if (conn.status === 'blocked') {
+        // Warning red barrier
+        const blockGeom = new THREE.BoxGeometry(
+          dir === 'N' || dir === 'S' ? 0.76 : 0.08,
+          0.16,
+          dir === 'N' || dir === 'S' ? 0.08 : 0.76
+        );
+        const blockMat = new THREE.MeshStandardMaterial({
+          color: 0x5a1818,
+          emissive: 0x2a0808,
+          roughness: 0.8
+        });
+        const block = new THREE.Mesh(blockGeom, blockMat);
+        block.position.set(doorX, doorY + 0.24, doorZ);
+        this.boardObjectsGroup.add(block);
+        this.previewObjects.push(block);
+
+        const tag = this.createLabelSprite(`✕ ${conn.dirZh}面墙`, '#ff7777', 22);
+        tag.position.set(doorX + (dx ? Math.sign(dx) * 0.1 : 0), doorY + 0.58, doorZ + (dz ? Math.sign(dz) * 0.1 : 0));
+        tag.scale.set(1.6, 0.28, 1);
+        this.boardObjectsGroup.add(tag);
+        this.previewObjects.push(tag);
+      } else if (conn.status === 'open') {
+        // Open exploration tag
+        const tag = this.createLabelSprite(`▲ ${conn.dirZh}未知`, '#d9b45b', 22);
+        tag.position.set(doorX + (dx ? Math.sign(dx) * 0.1 : 0), doorY + 0.52, doorZ + (dz ? Math.sign(dz) * 0.1 : 0));
+        tag.scale.set(1.4, 0.26, 1);
+        this.boardObjectsGroup.add(tag);
+        this.previewObjects.push(tag);
+      }
+    }
+
+    const connectedList = (placement.connections ?? []).filter(c => c.connected);
+    const connectedDetails = connectedList.length > 0
+      ? ` · 🔗 打通 ${connectedList.length} 门 (${connectedList.map(c => `${c.dirZh}↔${c.neighborRoomName}`).join('，')})`
+      : ' · ⚠️ 未与相邻房间门位接通';
     const label = this.createLabelSprite(
-      `↻ 点击旋转 (${placement.rotation * 90}°) · ✓ 确认放置`,
-      '#e3c77b',
-      32
+      `↻ 点击旋转 (${placement.rotation * 90}°)${connectedDetails} · ✓ 确认放置`,
+      connectedList.length > 0 ? '#66ffbb' : '#e3c77b',
+      30
     );
     label.position.set(placement.position[0], placement.position[1] + 1.25, placement.position[2]);
-    label.scale.set(3.0, 0.45, 1);
+    label.scale.set(connectedList.length > 0 ? 3.4 : 3.0, 0.45, 1);
     this.boardObjectsGroup.add(label);
     this.previewObjects.push(label);
   }
@@ -1931,7 +2085,7 @@ export class BoardGameScene {
     }
 
     if (state.gameId === 'betrayal') {
-      const anchors = this.floorAnchorsFor(state);
+      const anchors = this.floorAnchorsFor(state, this.lastPlacement);
       const labels: [string, string][] = [
         ['BASEMENT', '地下室 · BASEMENT'],
         ['GROUND', '一楼 · GROUND'],
@@ -1972,7 +2126,11 @@ export class BoardGameScene {
     }
   }
 
-  private floorAnchorsFor(state: ProjectedGameState): Record<string, { x: number; z: number; width: number; depth: number }> {
+  private floorAnchorsFor(
+    state: ProjectedGameState,
+    placement?: PlacementPreview
+  ): Record<string, { x: number; z: number; width: number; depth: number }> {
+    const activePlacement = placement ?? this.lastPlacement;
     const groups = new Map<string, { minX: number; maxX: number; minZ: number; maxZ: number }>();
     for (const node of Object.values(state.mapGraph.nodes)) {
       if (node.type !== 'ROOM') continue;
@@ -1983,6 +2141,20 @@ export class BoardGameScene {
       range.maxX = Math.max(range.maxX, node.position[0]);
       range.minZ = Math.min(range.minZ, node.position[2]);
       range.maxZ = Math.max(range.maxZ, node.position[2]);
+      groups.set(floor, range);
+    }
+    if (activePlacement && activePlacement.floor && activePlacement.position) {
+      const floor = activePlacement.floor;
+      const range = groups.get(floor) ?? {
+        minX: activePlacement.position[0],
+        maxX: activePlacement.position[0],
+        minZ: activePlacement.position[2],
+        maxZ: activePlacement.position[2]
+      };
+      range.minX = Math.min(range.minX, activePlacement.position[0]);
+      range.maxX = Math.max(range.maxX, activePlacement.position[0]);
+      range.minZ = Math.min(range.minZ, activePlacement.position[2]);
+      range.maxZ = Math.max(range.maxZ, activePlacement.position[2]);
       groups.set(floor, range);
     }
     const anchors: Record<string, { x: number; z: number; width: number; depth: number }> = {};

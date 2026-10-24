@@ -894,7 +894,11 @@ export class BetrayalRules {
       floor: candidate.def.floor,
       position: gridToWorld(candidate.def.floor, candidate.col, candidate.row),
       localDoors: candidate.def.doors,
-      color: FLOOR_META[candidate.def.floor].color
+      color: FLOOR_META[candidate.def.floor].color,
+      symbol: candidate.def.symbol,
+      text: candidate.def.text,
+      special: candidate.def.special,
+      tags: candidate.def.tags
     };
     trace(
       ctx,

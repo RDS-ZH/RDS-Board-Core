@@ -211,6 +211,15 @@ export interface UiSpatialInfo {
   activeFloor?: string;
 }
 
+export interface UiPlacementDoorConnection {
+  dir: 'N' | 'S' | 'E' | 'W' | string;
+  dirZh: string;
+  neighborRoomId?: string;
+  neighborRoomName?: string;
+  connected: boolean;
+  status: 'connected' | 'blocked' | 'open';
+}
+
 export interface UiPlacement {
   defId: string;
   name: string;
@@ -224,6 +233,13 @@ export interface UiPlacement {
   doors: string[];
   color: string;
   cost?: number;
+  symbol?: string;
+  text?: string;
+  special?: string;
+  tags?: string[];
+  fromRoomId?: string;
+  entryDir?: string;
+  connections?: UiPlacementDoorConnection[];
 }
 
 export interface GameSnapshot {

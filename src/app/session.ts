@@ -12,6 +12,7 @@ import {
   UiNotice,
   UiNpc,
   UiPlacement,
+  UiPlacementDoorConnection,
   UiPlayer,
   UiReplay,
   UiSpatialInfo,
@@ -750,6 +751,8 @@ export class UniversalSession implements GamePresenter {
     const pending = raw.globalVars.pendingRoomPlacement as
       | {
           playerId?: string;
+          fromRoomId?: string;
+          dir?: string;
           defId: string;
           name?: string;
           en?: string;
@@ -761,6 +764,10 @@ export class UniversalSession implements GamePresenter {
           localDoors?: string[];
           color?: string;
           cost?: number;
+          symbol?: string;
+          text?: string;
+          special?: string;
+          tags?: string[];
         }
       | undefined;
     if (!pending) {
@@ -777,6 +784,71 @@ export class UniversalSession implements GamePresenter {
       this.placementRotation =
         stored !== undefined && rotations.includes(stored) ? stored : rotations[0];
     }
+
+    const currentRotation = this.placementRotation;
+    const DIR_ORDER = ['N', 'E', 'S', 'W'];
+    const rotateDir = (dir: string, turns: number) => {
+      const idx = DIR_ORDER.indexOf(dir);
+      if (idx < 0) return dir;
+      return DIR_ORDER[(idx + turns) % 4];
+    };
+    const OPPOSITES: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+    const DELTAS: Record<string, [number, number]> = {
+      N: [0, -1],
+      S: [0, 1],
+      E: [1, 0],
+      W: [-1, 0]
+    };
+    const DIR_ZH: Record<string, string> = { N: '北门', E: '东门', S: '南门', W: '西门' };
+
+    const rawDoors = (pending.localDoors ?? []) as string[];
+    const rotatedDoors = rawDoors.map(d => rotateDir(d, currentRotation));
+    const connections: UiPlacementDoorConnection[] = ['N', 'E', 'S', 'W'].map(dir => {
+      const hasDoor = rotatedDoors.includes(dir);
+      const [dc, dr] = DELTAS[dir] ?? [0, 0];
+      const targetCol = Number(pending.col ?? 0) + dc;
+      const targetRow = Number(pending.row ?? 0) + dr;
+
+      const neighbor = Object.values(raw.mapGraph.nodes).find(node => {
+        const p = node.props;
+        return (
+          node.type === 'ROOM' &&
+          p?.floor === pending.floor &&
+          Number(p?.col) === targetCol &&
+          Number(p?.row) === targetRow
+        );
+      });
+
+      if (!hasDoor) {
+        return {
+          dir,
+          dirZh: DIR_ZH[dir],
+          connected: false,
+          status: 'open'
+        };
+      }
+
+      if (!neighbor) {
+        return {
+          dir,
+          dirZh: DIR_ZH[dir],
+          connected: false,
+          status: 'open'
+        };
+      }
+
+      const neighborDoors = Array.isArray(neighbor.props?.doors) ? neighbor.props.doors : [];
+      const connects = neighborDoors.includes(OPPOSITES[dir]);
+      return {
+        dir,
+        dirZh: DIR_ZH[dir],
+        neighborRoomId: neighbor.id,
+        neighborRoomName: String(neighbor.props?.name ?? ''),
+        connected: connects,
+        status: connects ? 'connected' : 'blocked'
+      };
+    });
+
     return {
       defId: pending.defId,
       name: pending.name ?? pending.defId,
@@ -789,7 +861,14 @@ export class UniversalSession implements GamePresenter {
       rotation: this.placementRotation,
       doors: pending.localDoors ?? [],
       color: pending.color ?? '#3e2723',
-      cost: pending.cost
+      cost: pending.cost,
+      symbol: pending.symbol,
+      text: pending.text,
+      special: pending.special,
+      tags: pending.tags,
+      fromRoomId: pending.fromRoomId,
+      entryDir: pending.dir,
+      connections
     };
   }
 
