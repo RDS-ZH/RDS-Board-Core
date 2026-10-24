@@ -30,6 +30,13 @@ export class LabelOverlay {
   private readonly root: HTMLDivElement;
   private readonly svg: SVGSVGElement;
   private readonly chipHost: HTMLDivElement;
+  private readonly burstHost: HTMLDivElement;
+  private bursts: {
+    world: [number, number, number];
+    el: HTMLDivElement;
+    born: number;
+    ttl: number;
+  }[] = [];
   private labels: WorldLabel[] = [];
   private chips = new Map<string, HTMLDivElement>();
   private leaders = new Map<string, SVGLineElement>();
@@ -49,11 +56,51 @@ export class LabelOverlay {
     this.chipHost = document.createElement('div');
     this.chipHost.className = 'label-chips';
     this.root.appendChild(this.chipHost);
+    this.burstHost = document.createElement('div');
+    this.burstHost.className = 'label-bursts';
+    this.root.appendChild(this.burstHost);
     container.appendChild(this.root);
   }
 
   public setLabels(labels: WorldLabel[]): void {
     this.labels = labels.filter(label => label.visible !== false);
+  }
+
+  /**
+   * Floating world-anchored text (damage numbers, heals).
+   *
+   * Kept in world space and re-projected every frame so camera moves do not
+   * leave the number stranded; the CSS animation owns the rise and fade.
+   */
+  public popBurst(
+    world: [number, number, number],
+    text: string,
+    tone: 'physical' | 'mental' | 'heal' = 'physical',
+    ttl = 1500
+  ): void {
+    const el = document.createElement('div');
+    el.className = `label-burst ${tone}`;
+    el.textContent = text;
+    this.burstHost.appendChild(el);
+    this.bursts.push({ world, el, born: performance.now(), ttl });
+  }
+
+  private updateBursts(camera: THREE.Camera, viewport: { width: number; height: number }, now: number): void {
+    if (this.bursts.length === 0) return;
+    this.bursts = this.bursts.filter(burst => {
+      const age = now - burst.born;
+      if (age > burst.ttl) {
+        burst.el.remove();
+        return false;
+      }
+      const vector = new THREE.Vector3(...burst.world).project(camera);
+      const x = (vector.x * 0.5 + 0.5) * viewport.width;
+      const y = (-vector.y * 0.5 + 0.5) * viewport.height;
+      // Rise ~46px over the lifetime, independent of the CSS keyframes.
+      burst.el.style.transform = `translate(${x}px, ${y - age * 0.032}px) translate(-50%, -50%)`;
+      burst.el.style.opacity = String(Math.max(0, 1 - age / burst.ttl));
+      return true;
+    });
   }
 
   public setOnClick(callback: (id: string) => void): void {
@@ -109,6 +156,7 @@ export class LabelOverlay {
     }
 
     const placements = layoutLabels(anchors, viewport, obstacles, this.measureText);
+    this.updateBursts(camera, viewport, performance.now());
     const visible = new Set(placements.map(place => place.id));
 
     for (const placement of placements) {
