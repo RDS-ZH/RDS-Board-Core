@@ -9,7 +9,8 @@
 
 内核把任意桌面博弈编译为：**纯 JSON 状态 + 纯函数转移 + 可热插拔规则 + 信息投影 + 事件溯源**。浏览器端（Three.js + HUD）是这套内核的可视化调试器。
 
-![内核检查器](shots/01-catan.png)
+> 截图不入库。所有验证图由 `pnpm shots` 现场生成到 `shots/`（该目录已在 `.gitignore` 中），
+> 需要时自己跑一次即可，避免二进制历史不断膨胀。
 
 ---
 
@@ -19,8 +20,9 @@
 pnpm install
 pnpm run dev       # http://127.0.0.1:5173/  （可视化调试器）
 # 场景直达：http://127.0.0.1:5173/?scenario=rich_action
-pnpm test          # 126 项用例 + UI/内核边界检查
+pnpm test          # 131 项用例 + UI/内核边界检查
 pnpm run build     # 生产构建
+pnpm shots         # 按需生成全部验证截图到 shots/（自动起停 dev server）
 ```
 
 内核本身可在 Node 中通过 Vite SSR 直接加载（见 `scripts/test-core.mjs`），不依赖浏览器。
@@ -93,15 +95,13 @@ activeHooks: [{ instanceId, hookId: 'haunt_crimson_beast', ownerId, params: { bo
 
 | 三国杀响应栈 | 山屋三剧本 | 沙丘秘密决策 |
 | --- | --- | --- |
-| ![sgs](shots/05b-sanguosha-stack-panel.png) | ![haunt](shots/betrayal-mummy-01.png) | ![dune](shots/11b-dune-secret.png) |
+| `05b-sanguosha-stack-panel.png` | `betrayal-mummy-01.png` | `11b-dune-secret.png` |
 
-| Catan 初始布局 | Catan 建造与最长道路 | Catan 发展卡 |
-| --- | --- | --- |
-| ![setup](shots/20-catan-setup.png) | ![built](shots/22-catan-built.png) | ![dev](shots/23-catan-dev.png) |
+| Catan 初始布局 | Catan 建造与最长道路 | Catan 发展卡 | 参数表单 |
+| --- | --- | --- | --- |
+| `20-catan-setup.png` | `22-catan-built.png` | `23-catan-dev.png` | `24-catan-payload-form.png` |
 
-| 参数表单（银行交易） |
-| --- |
-| ![payload](shots/24-catan-payload-form.png) |
+> 上表是 `pnpm shots` 生成的文件名，不是已入库的图片；跑一次脚本就能在 `shots/` 里看到。
 
 > 夹具只实现 `setup / legalActions / reduce / outcome`。调度、隐藏、中断、热注入、回放全部由内核负责。
 

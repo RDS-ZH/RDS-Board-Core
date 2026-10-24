@@ -8,7 +8,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node scripts/test-core.mjs",
-    "test:core": "node scripts/test-core.mjs"
+    "test:core": "node scripts/test-core.mjs",
+    "test:matrix": "node scripts/test-matrix.mjs",
+    "test:ui": "node scripts/test-ui-matrix.mjs",
+    "test:all": "node scripts/test-all.mjs",
+    "probe:layout": "node scripts/probe-layout.mjs",
+    "probe:overlap": "node scripts/probe-overlap.mjs",
+    "shots": "node scripts/shots.mjs"
   },
   "keywords": [],
   "author": "",

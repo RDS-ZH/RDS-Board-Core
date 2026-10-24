@@ -207,11 +207,20 @@
 ## 6. 持续验证方式
 
 ```bash
-node scripts/test-core.mjs
+pnpm test              # 内核一致性 + 边界检查（131 例）
+pnpm test:matrix       # 五夹具 × 多 seed × 全场景黑盒
+pnpm test:ui           # Playwright UI 流程矩阵（含拖拽/旋转/落定）
+pnpm probe:layout      # 47 房间家具布局与门位冲突
+pnpm probe:overlap     # 房间几何是否越过板块 footprint（z-fighting 回归）
 node node_modules/typescript/bin/tsc --noEmit
-node node_modules/vite/bin/vite.js build
-node scripts/flow-betrayal.mjs
-node scripts/shoot-betrayal.mjs
+pnpm build
+```
+
+截图**不入库**，`shots/` 已在 `.gitignore` 中：
+
+```bash
+pnpm shots             # 自动起停 dev server，生成全部验证截图
+pnpm shots betrayal    # 只跑名称匹配的套件
 ```
 
 渲染 profiling：在浏览器 console 执行 `__boardGameApp.scene.getRenderStats()`；判据与后续可选开发见 [BACKLOG.md](BACKLOG.md)。
