@@ -395,18 +395,19 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 /**
- * Lobby URL: ?hub=<origin>&room=<roomId>&token=<hubToken>&player=<playerId>
- * plus role=host, or role=guest&host=<hostHubUserId>. All four base params
+ * Lobby URL: ?hub=<origin>&roomId=<roomId>&token=<hubToken>&playerId=<playerId>
+ * plus role=host, or role=guest&hostId=<hostHubUserId> (契约名见 docs/LOBBY-INTEGRATION.md；
+ * 旧别名 room/player/host 仍兼容). All four base params
  * are required; anything less falls back to the local single-player session.
  */
 function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | undefined {
   const hub = params.get('hub');
-  const room = params.get('room');
+  const room = params.get('roomId') ?? params.get('room');
   const token = params.get('token');
-  const player = params.get('player');
+  const player = params.get('playerId') ?? params.get('player');
   if (!hub || !room || !token || !player) return undefined;
   const role = params.get('role') === 'host' ? 'host' : 'guest';
-  const hostId = params.get('host') ?? undefined;
+  const hostId = params.get('hostId') ?? params.get('host') ?? undefined;
   if (role === 'guest' && !hostId) {
     console.warn('[net-session] guest role requires &host=<hostHubUserId>; falling back to local session');
     return undefined;
