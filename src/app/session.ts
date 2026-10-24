@@ -290,6 +290,17 @@ export class UniversalSession implements GamePresenter {
       }
     }
 
+    // In-world actionable room feature (currently the vault)
+    if ((pick.metadata as any)?.type === 'ROOM_FEATURE') {
+      const feature = String((pick.metadata as any)?.feature ?? '');
+      const action = legal.find(
+        a => a.type === 'ROOM_FEATURE' && String(a.payload?.feature ?? '') === feature
+      );
+      if (!action) return { handled: false, message: '当前无法触发该房间特性' };
+      const res = this.dispatch(action);
+      return { handled: res.ok, message: res.error };
+    }
+
     // In-world special traversal badge (stairs / drop / rappel / lift)
     if ((pick.metadata as any)?.type === 'SPECIAL_MOVE') {
       const action = String((pick.metadata as any)?.action ?? '');

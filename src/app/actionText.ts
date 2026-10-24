@@ -63,6 +63,10 @@ function describeActionZh(
         };
       case 'MOVE_TO_ROOM':
         return { icon: '🚶', label: '移动至相邻房间', hint: '在弹窗中选择目标房间', tone: 'normal' };
+      case 'ROOM_FEATURE':
+        return action.payload?.feature === 'VAULT'
+          ? { icon: '🗄', label: '撬开金库', hint: '知识检定 6 或使用骷髅钥匙 · 获得 2 件物品', tone: 'primary' }
+          : { icon: '✦', label: '使用房间特性', hint: '触发当前房间的特殊效果', tone: 'normal' };
       case 'MOVE_NPC':
         return { icon: '👹', label: '怪物移动', hint: '在弹窗中选择目标房间', tone: 'danger' };
       case 'ROLL_HAUNT_CHECK':

@@ -165,6 +165,55 @@ const lift = await page.evaluate(async () => {
 if (!lift.ok) failures.push(`elevator: ${lift.reason ?? 'badge/arm failed'}`);
 console.log(`elevator: badge=${!!lift.badge} click=${JSON.stringify(lift.res ?? null)}`);
 
+/* --------------------------- room features -------------------------- */
+// The room_features fixture stages the vault, chute and collapsed floor so the
+// badge and the hazard marker both have something real to attach to.
+const features = await (async () => {
+  await page.goto(`${BASE_URL}?game=betrayal&scenario=room_features`, {
+    waitUntil: 'networkidle',
+    timeout: 60000
+  });
+  await page.waitForTimeout(2600);
+  if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
+  await page.waitForTimeout(900);
+  return page.evaluate(() => {
+    const app = window.__boardGameApp;
+    const snap = app.session.getSnapshot();
+    const here = snap.board.players.p1.customProps.currentRoomId;
+    const badges = [];
+    for (const [, d] of app.scene.raycaster.interactiveMeshes) {
+      const m = d?.metadata;
+      if (m && m.fromRoomId === here) badges.push(`${m.type}/${m.action ?? m.feature ?? 'nav'}`);
+    }
+    const label = snap.actions.find(a => a.label.includes('金库'))?.label ?? null;
+    return { here, badges: [...new Set(badges)], label };
+  });
+})();
+if (!features.badges.includes('ROOM_FEATURE/VAULT')) {
+  failures.push(`features: vault badge missing (${features.badges.join(', ')})`);
+}
+if (!features.label) failures.push('features: vault action has no friendly label');
+
+const vaultClick = await page.evaluate(() =>
+  window.__boardGameApp.session.pickTarget({
+    kind: 'node',
+    id: 'room_vault:feature:VAULT',
+    metadata: { type: 'ROOM_FEATURE', feature: 'VAULT', fromRoomId: 'room_vault', intent: 'interact' }
+  })
+);
+await page.waitForTimeout(700);
+const vaultState = await page.evaluate(() => {
+  const snap = window.__boardGameApp.session.getSnapshot();
+  return {
+    opened: !!snap.board.mapGraph.nodes['room_vault']?.props?.opened,
+    feed: snap.history.slice(0, 3).map(h => `${h.kind}:${h.title}`)
+  };
+});
+if (!vaultClick.handled) failures.push(`features: vault click rejected (${vaultClick.message})`);
+if (vaultState.feed.length === 0) failures.push('features: vault interaction left no feed entry');
+console.log(`features: badge=${features.badges.includes('ROOM_FEATURE/VAULT')} label="${features.label}" click=${vaultClick.handled} opened=${vaultState.opened} feed=${vaultState.feed.length}`);
+await page.screenshot({ path: 'shots/room-features.png' });
+
 console.log('ERRORS:', errors.length ? errors.slice(0, 5) : 'none');
 if (failures.length > 0) {
   console.log(`\nFAILURES (${failures.length}):`);

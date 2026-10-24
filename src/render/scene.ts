@@ -1292,6 +1292,31 @@ export class BoardGameScene {
       });
     }
 
+    // Actionable room feature: the vault stays closed until someone cracks it.
+    if (String(node.props?.special ?? '') === 'VAULT' && !node.props?.opened) {
+      badges.push({
+        icon: '🗄',
+        label: '撬开金库',
+        color: '#d9b45b',
+        metadata: { type: 'ROOM_FEATURE', feature: 'VAULT', fromRoomId: nodeId, intent: 'interact' }
+      });
+    }
+
+    // Passive hazard marker: the chute and the collapsed floor hurt on entry,
+    // so flag them before the player steps in. Not clickable — nothing to choose.
+    const HAZARD: Record<string, { icon: string; label: string; color: string }> = {
+      COAL_CHUTE: { icon: '⚠', label: '煤槽 · 入内擦伤', color: '#c9a24a' },
+      COLLAPSED: { icon: '⚠', label: '坍塌 · 速度检定', color: '#c9a24a' },
+      FURNACE: { icon: '⚠', label: '熔炉 · 灼伤', color: '#c9a24a' }
+    };
+    const hazard = HAZARD[String(node.props?.special ?? '')];
+    if (hazard) {
+      const plate = this.createLabelSprite(`${hazard.icon} ${hazard.label}`, hazard.color, 24);
+      plate.position.set(node.position[0], node.position[1] + 0.72, node.position[2] + 1.02);
+      plate.scale.set(1.7, 0.32, 1);
+      this.boardObjectsGroup.add(plate);
+    }
+
     badges.forEach((badge, index) => {
       const angle = -Math.PI / 2 + (index - (badges.length - 1) / 2) * 0.72;
       const bx = node.position[0] + Math.cos(angle) * 0.62;
