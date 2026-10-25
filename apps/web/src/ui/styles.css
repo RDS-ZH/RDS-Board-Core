@@ -2621,6 +2621,197 @@ body {
 }
 
 /* ============================================================
+   WEBGL FALLBACK OVERLAY
+   ============================================================ */
+
+.webgl-error-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 6, 10, 0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: fadeInModal 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeInModal {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.webgl-error-card {
+  max-width: 580px;
+  width: 100%;
+  background: linear-gradient(165deg, rgba(26, 32, 44, 0.96), rgba(13, 17, 23, 0.98));
+  border: 1px solid rgba(217, 180, 91, 0.3);
+  border-radius: var(--r-lg, 16px);
+  padding: 32px 28px;
+  box-shadow: 0 24px 64px -12px rgba(0, 0, 0, 0.8), 0 0 32px -4px rgba(224, 96, 78, 0.15);
+  color: var(--text, #e6edf3);
+  text-align: left;
+}
+
+.webgl-error-icon {
+  font-size: 38px;
+  line-height: 1;
+  margin-bottom: 16px;
+  filter: drop-shadow(0 0 16px rgba(224, 96, 78, 0.4));
+}
+
+.webgl-error-title {
+  font-family: var(--font-display, inherit);
+  font-size: 21px;
+  font-weight: 600;
+  color: #f6f2e6;
+  margin: 0 0 10px 0;
+  letter-spacing: 0.04em;
+}
+
+.webgl-error-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted, #94a3b8);
+  margin-bottom: 22px;
+}
+
+.webgl-error-desc strong {
+  color: var(--gold-bright, #f8e2a8);
+}
+
+.webgl-error-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.webgl-error-steps .step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--r-sm, 8px);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.webgl-error-steps .step-badge {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(217, 180, 91, 0.18);
+  color: var(--gold-bright, #f8e2a8);
+  border: 1px solid rgba(217, 180, 91, 0.4);
+}
+
+.webgl-error-steps .step-text strong {
+  display: block;
+  font-size: 13px;
+  color: #e2e8f0;
+  margin-bottom: 3px;
+}
+
+.webgl-error-steps .step-text p {
+  font-size: 11.5px;
+  color: var(--muted, #94a3b8);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.webgl-error-steps .step-text code {
+  font-family: monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--gold, #d9b45b);
+}
+
+.webgl-error-technical {
+  margin-bottom: 24px;
+  font-size: 11.5px;
+  color: var(--muted, #94a3b8);
+}
+
+.webgl-error-technical summary {
+  cursor: pointer;
+  color: var(--faint, #64748b);
+  user-select: none;
+  margin-bottom: 6px;
+}
+
+.webgl-error-technical summary:hover {
+  color: var(--text, #e2e8f0);
+}
+
+.webgl-error-technical pre {
+  margin: 6px 0 0 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #090c10;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #e06c75;
+  font-family: monospace;
+  font-size: 11px;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.webgl-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.webgl-retry-btn {
+  padding: 10px 24px;
+  border-radius: var(--r-sm, 8px);
+  border: 1px solid rgba(217, 180, 91, 0.5);
+  background: linear-gradient(160deg, rgba(217, 180, 91, 0.2), rgba(217, 180, 91, 0.08));
+  color: var(--gold-bright, #f8e2a8);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.webgl-retry-btn:hover {
+  background: linear-gradient(160deg, #f8e2a8, #d9b45b);
+  color: #17130a;
+  box-shadow: 0 4px 18px rgba(217, 180, 91, 0.4);
+}
+
+.webgl-link-btn {
+  font-size: 12px;
+  color: var(--muted, #94a3b8);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color 0.2s ease;
+}
+
+.webgl-link-btn:hover {
+  color: var(--text, #f1f5f9);
+}
+
+/* ============================================================
    RESPONSIVE
    ============================================================ */
 
@@ -3937,4 +4128,205 @@ select.pf-control {
 
 [data-theme="gothic"] .scenario-switch .vs-label {
   color: #d6b26c;
+}
+
+/* ============================================================
+   Mansion Minimap (洋馆小地图)
+   ============================================================ */
+.mansion-minimap {
+  position: absolute;
+  top: 320px;
+  right: 20px;
+  width: 254px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 162, 74, 0.28);
+  background:
+    radial-gradient(120% 90% at 15% 0%, rgba(120, 88, 40, 0.14), transparent 62%),
+    linear-gradient(180deg, rgba(22, 17, 13, 0.94), rgba(12, 10, 8, 0.97));
+  box-shadow: 0 16px 36px -18px #000, inset 0 1px 0 rgba(255, 226, 170, 0.06);
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 20;
+  transition: top 0.2s ease, opacity 0.2s ease;
+}
+
+#room-card[style*="none"] ~ .mansion-minimap {
+  top: 88px;
+}
+
+.mm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(201, 162, 74, 0.16);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mm-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+.mm-ico {
+  font-size: 13px;
+}
+
+.mm-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mm-btn-all {
+  border: 1px solid rgba(217, 180, 91, 0.3);
+  background: rgba(217, 180, 91, 0.08);
+  color: #d9b45b;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mm-btn-all:hover,
+.mm-btn-all.active {
+  background: #d9b45b;
+  color: #17120e;
+  font-weight: 700;
+  box-shadow: 0 0 10px rgba(217, 180, 91, 0.5);
+}
+
+.mm-btn-toggle {
+  background: transparent;
+  border: none;
+  color: rgba(217, 180, 91, 0.7);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.mm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+}
+
+.mansion-minimap.collapsed .mm-body {
+  display: none;
+}
+
+.mm-floor-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.mm-floor-card:hover {
+  border-color: rgba(217, 180, 91, 0.4);
+  background: rgba(217, 180, 91, 0.06);
+}
+
+.mm-floor-card.active {
+  border-color: #d9b45b;
+  background: rgba(217, 180, 91, 0.14);
+  box-shadow: 0 0 12px -2px rgba(217, 180, 91, 0.35), inset 0 0 0 1px rgba(217, 180, 91, 0.3);
+}
+
+.mm-floor-card.in-view {
+  border-color: rgba(217, 180, 91, 0.22);
+}
+
+.mm-card-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 82px;
+}
+
+.mm-level-tag {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #c9bda1;
+}
+
+.mm-level-tag.has-actor {
+  background: rgba(87, 192, 139, 0.25);
+  color: #57ffa8;
+  border: 1px solid rgba(87, 192, 139, 0.5);
+}
+
+.mm-card-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.mm-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #eeddbb;
+}
+
+.mm-count {
+  font-size: 9px;
+  color: var(--faint);
+}
+
+.mm-actor-pin {
+  font-size: 11px;
+  animation: pin-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pin-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.mm-card-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 auto;
+}
+
+.mm-floor-svg {
+  overflow: visible;
+}
+
+.mm-room-node {
+  cursor: pointer;
+}
+
+.mm-room-node:hover rect {
+  fill: rgba(217, 180, 91, 0.7);
+}
+
+.mm-empty-floor {
+  font-size: 9.5px;
+  color: var(--faint);
+  font-style: italic;
+  padding: 4px 10px;
+}
+
+[data-theme="gothic"] .mansion-minimap {
+  border-color: rgba(214, 178, 108, 0.28);
 }

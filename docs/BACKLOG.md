@@ -1,93 +1,136 @@
 # 可选开发与后续待办
 
-> 用户已确认的边界（2026-10）：
+> **本文件只记录「还没做」的事。** 已完成的问题按时间记在
+> [SIMULATOR-AUDIT.md](SIMULATOR-AUDIT.md)（SA-xx）与
+> [ARCHITECTURE-ISSUES.md](ARCHITECTURE-ISSUES.md)（AI-xx）里，不要在这里重复。
 >
-> 1. **全量重建保留**：当前实体规模下作为 correctness-first 兜底；只做已完成的生命周期/阴影/预览优化。
-> 2. **不构建真实 WebSocket/HTTP 服务器**：保留 `RoomTransport` / `RoomHttpAdapter` seam。
-> 3. **i18n 不追求全量**：动作文案已 locale 化；静态 UI/chrome 留 TODO。
-> 4. **游戏夹具只需功能完备**：保证 UI/应用层兼容性；官方版图、完整规则细节属于可选项。
+> 最近一次核对：2026-10-24。核对手法见 §5，**任何一条待办在动手前都应先按 §5 复核一次**——
+> 本文件历史上出现过把已修问题挂成待办的情况。
 
-## 1. 渲染 profiling（A-16）
+---
 
-已提供：
+## 0. 用户已确认的边界（2026-10）
+
+1. **全量重建保留**：当前实体规模下作为 correctness-first 兜底，只做已完成的生命周期/阴影/预览优化。
+2. **不构建真实 WebSocket/HTTP 服务器**：保留 `RoomTransport` / `RoomHttpAdapter` seam。
+   后续 `src/net/webrtc-transport.ts` 由另一位贡献者引入，属于浏览器 P2P，不属于服务端。
+3. **i18n 不追求全量**：动作文案已 locale 化；静态 UI/chrome 留待办。
+4. **游戏夹具只需功能完备**：保证 UI/应用层兼容性；官方版图、完整规则细节属于可选项。
+5. **山屋滑梯/坍塌/熔炉保持"进入即触发"**：不新增"从上层主动滑下去"的主动动作
+   （原版规则里煤槽没有该选项，避免自行发明规则）。已由 SA-89 提供前置 `⚠` 危险标记与触发反馈。
+
+---
+
+## 1. 渲染性能：已有基线，暂不优化
+
+`BACKLOG` 曾把"实现通用 diff"列为待办并给出判据。**2026-10-24 已按该判据实测结案**：
 
 ```js
 __boardGameApp.scene.getRenderStats()
 // { calls, triangles, geometries, textures, lastSyncMs }
 ```
 
-建议流程：
+实测（`haunt_mummy` 开局，连续 20 次移动）：
 
-1. 打开山屋 `haunt_mummy` / `haunt_eye`，记录初始值；
-2. 连续执行探索/移动/怪物回合 20+ 次；
-3. 记录 `lastSyncMs`、`geometries`、`textures` 是否持续增长；
-4. 如果 `lastSyncMs` 稳定 < 16ms 且资源不增长，**不实现通用 diff**；
-5. 若超预算，优先做静态棋盘层缓存（按 `mapGraph` 签名），而不是全对象 diff。
+| 指标 | 开局 | 20 次移动后 | 判据 | 结论 |
+| --- | --- | --- | --- | --- |
+| `geometries` | 252 | **252** | 不应单调增长 | ✅ 恒定 |
+| `textures` | 37 | **37** | 不应持续增长 | ✅ 恒定 |
+| `objects` | 69 | **69** | — | ✅ 恒定 |
+| `lastSyncMs` | 偏大（首帧含建板，实测 168~306ms 波动） | **7.2 ~ 8.3ms** | < 16ms 可接受 | ✅ |
+| `calls` | 373 | 689 | 记录基线 | 两个楼层场景各绘制一遍的固定开销，非泄漏 |
 
-判据：
+逐步采样显示 `calls` 在 373 / 689 之间摆动而非单调上升。**结论：不实现通用 diff / 对象池。**
 
-| 指标 | 阈值/观察 |
-| --- | --- |
-| `lastSyncMs` | 单次同步 < 16ms 视为可接受 |
-| `geometries` | 多轮操作后不应单调增长 |
-| `textures` | 牌局中不应持续增长 |
-| `calls` | 记录基线，避免无界增长 |
+若将来房间数或实体数显著增长导致 `lastSyncMs` 越过 16ms，优先做**静态棋盘层缓存（按 `mapGraph` 签名）**，而不是全对象 diff。
 
-## 2. i18n TODO
+---
+
+## 2. 山屋效果生命周期（AI-23）
+
+`GameState.effects: EffectInstance[]` 槽位与投影已存在（`types.ts:331/606`、`observer.ts:238`、`engine.ts:764`），但**山屋的物品增益与击晕状态仍是模块自己手写的 `customProps`**。
+
+要做：把山屋的临时修正（护甲减伤、面具控制、怪物击晕等）迁到 `EffectInstance`，保留对旧字段的兼容读取。
+
+判据：山屋不再新增 `customProps` 里的散装效果字段；回放哈希保持一致。
+
+## 3. 两阶段检定窗口（AI-24）
+
+目前掷骰是一次性决定，无法表达"掷前声明修正 / 掷后响应"。
+
+要做：引入 `RollWindow`——修正声明 → 掷骰 → 掷后响应。参考三国杀响应栈的既有实现，不要为山屋写特例。
+
+## 4. 内核表达力 Wave 3（AI-25 / K8·K9·K12·K14）
+
+按 [KERNEL-EXPRESSION.md](KERNEL-EXPRESSION.md) 推进。**不要和表现层改造混在一个 PR 里。**
+
+---
+
+## 5. i18n TODO
 
 - `actionText` + `app/i18n` 已覆盖动作标签；
 - 静态 HUD/chrome 文案仍为中文硬编码；
-- 后续若做多语言：
-  - 将 `HUD` 固定文案抽为 key；
-  - `phaseLabel`、任务目标、物品/房间名需要内容字典；
-  - 不要把翻译表放进 core/game state。
+- 后续若做多语言：把 HUD 固定文案抽 key、为 `phaseLabel`/任务目标/物品与房间名准备内容字典；
+- **不要把翻译表放进 core / game state。**
 
-## 3. 网络/服务端 TODO
+## 6. 网络 TODO
 
 - `RoomTransport` 接口与 `RoomHttpAdapter` 已就绪；
 - 真实 WebSocket/HTTP server、连接管理、重连、背压不在当前范围；
-- 部署时需补：
-  - 鉴权 token 生命周期；
-  - 多客户端广播；
-  - 断线重连的 `revision/delta` 恢复。
+- 部署时需补：鉴权 token 生命周期、多客户端广播、断线重连的 `revision/delta` 恢复；
+- 浏览器侧 P2P 见 [LOBBY-INTEGRATION.md](LOBBY-INTEGRATION.md)（另一位贡献者的 `src/net/webrtc-transport.ts`）。
 
-## 4. 游戏夹具可选项
-
-以下不影响内核/UI 兼容性，暂不完整实现：
+## 7. 游戏夹具可选项（不影响内核/UI 兼容性）
 
 - Catan 官方版图与全部规则细节；
-- 更多山屋剧本、完整 50 个 haunt；
+- 更多山屋剧本、完整 50 个 haunt（当前 5 个：HAUNT #1/#3/#5/#6/#10）；
 - 三国杀/沙丘/璀璨宝石的完整卡表与规则；
 - 房间/卡牌官方美术。
 
-## 5. 优先修复的框架性问题
+## 8. 已明确不做（won't fix / 已结案）
 
-来自 [SIMULATOR-AUDIT.md](SIMULATOR-AUDIT.md)：
+| 项 | 结论 |
+| --- | --- |
+| AI-21 / AI-27 楼层隔离与小地图 | 已实现（SA-93）：3D 楼层过滤（draw call -56%~-74%）、raycaster 排除隐藏层、HUD 建筑切片小地图全联动 |
+| AI-20 `placementRotation` 持久化 | 已实现：`session.ts` 用 `sessionStorage`（键含 game/seed/scenario/defId），无需再做 |
+| AI-22 3D 卡面长描述截断 | 观点已定：DOM 卡牌详情为主，3D 只做摘要，不做长文渲染 |
+| AI-26 全量重建改 diff | §1 实测未超预算，暂不做 |
+| `BACKLOG` 旧 §5 的 4 个 P0 | 全部已修（见 §5 复核记录），从待办移除 |
 
-- P0：`PLACE_ROOM` 非法旋转仍可能被 dispatch 接受；
-- P0：隐藏节点 ID 可能从 `customProps/globalVars` 泄露；
-- P0：NPC `controllerId` 没有权限校验；
-- P0：模块 `topologySpec` 与实际 `mapGraph.topology` 未交叉校验；
-- P1：selection 候选仍直接读 raw state；
-- P1：棋盘目标模式是 session 隐式状态；
-- P1：动作栏 24 条上限会隐藏非 END 动作；
-- P1：手牌 >7 张 3D 卡牌重叠；
-- P1：无目标模式点击 node/edge 仍可能直接执行；
-- P2：超长布局没有小地图/视口框。
+---
 
-## 6. 投影 / 图模型后续
+## 9. 如何复核一条待办是否仍然成立
 
-已完成：
+文档会漂移，**动手前先复核**。典型手法：
 
-- `ProjectionPort` + `ProjectionRegistry`（world / grid / ring / stack）；
-- `GameMapGraph.frames` + `SpatialFrame` + `frameId`；
-- frame 链 translation/rotation/scale 组合与 `validateFrames`；
-- 投影重合检测：同 XZ 节点加确定性径向 offset + 微小 Y 偏移。
+```bash
+# 1) 待办声称"某处缺少 X" -> 先在源码里搜是否已存在
+Select-String -Path src/**/*.ts -Pattern "<符号名>"
 
-仍未做：
+# 2) 待办号称"未校验/未拒绝" -> 先看有没有对应的回归测试
+Select-String -Path src/core/testing/suite.ts -Pattern "<关键词>"
 
-- 3D 堆叠的专用 mesh/遮挡/拾取策略（坐标与 offset 已有，玩法表现可选项）；
-- polyomino / 多格占用 / 任意 port 图；
-- frame 动画与动态旋转整块棋盘；
-- screen-space 标签避让（当前是 world-space 投影避让）；
-- 小地图/楼层隔离。
+# 3) 性能类待办 -> 按 §1 跑一次 getRenderStats 再判断
+
+# 4) 全量自检（口径见 AGENTS.md）
+pnpm test && pnpm test:matrix && pnpm test:ui
+pnpm probe:layout && pnpm probe:overlap
+node node_modules/typescript/bin/tsc --noEmit && pnpm build
+```
+
+### 2026-10-24 的复核记录
+
+旧 §5 曾列出这些"待修复的框架性问题"，逐条核对结果：
+
+| 旧待办 | 实际状态 | 证据 |
+| --- | --- | --- |
+| P0 `PLACE_ROOM` 非法旋转仍被接受 | 已修 | `registry.ts` `validatePayload`；`suite.ts` `invalid PLACE_ROOM rotation is rejected before reducer` |
+| P0 隐藏节点 ID 从 `customProps/globalVars` 泄露 | 已修 | `suite.ts` `projections never leak hidden card faces` + `fixtures do not leak hidden ids after random play` |
+| P0 NPC `controllerId` 无权限校验 | 已修 | `engine.ts` 校验 `controllerId`；`suite.ts` `non-controller denied` |
+| P0 模块 `topologySpec` 与 `mapGraph.topology` 未交叉校验 | 已修 | `graph.ts` `validateTopology`；`suite.ts` `graph: directed/weighted topology queries and validation` |
+| P1 selection 候选直接读 raw state | 已修 | 候选统一走 viewer projection |
+| P1 棋盘目标模式是 session 隐式状态 | 已修 | `setViewer` / `rebuild` 清理 |
+| P1 动作栏 24 条上限截断 | 已修 | 取消截断，`END_TURN` 固定最后 |
+| P1 手牌 >7 张 3D 重叠 | 已修 | 手牌自适应 `cardScale` + step |
+| P1 无目标模式点击 node/edge 直接执行 | 已修 | 改 inspect-first |
+| P2 超长布局没有小地图/视口框 | **仍缺** | 见 §2 |

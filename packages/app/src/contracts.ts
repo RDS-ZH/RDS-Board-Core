@@ -398,6 +398,8 @@ export interface PresentationPorts {
   clearRoomFocus?(): void;
   /** 3D burst + match SFX for a trait movement (damage flash, heal sparkle). */
   showTraitChange?(change: UiTraitChange): void;
+  /** Focus and isolate a specific floor ('ALL' frames the whole house). */
+  setFloor?(floorId: string): void;
 }
 
 /** Application boundary used by the UI. */

@@ -2,6 +2,7 @@ import { GAME_REGISTRY } from '@rds/games/registry';
 import { BoardGameScene, CameraPreset } from './render/scene';
 import { BoardGameAudio } from './render/audio';
 import { ensureCanvasFontsReady } from './render/fonts';
+import { checkWebGLSupport, renderWebGLErrorModal } from './render/webglSupport';
 import { BoardGameHUD } from './ui/hud';
 import { MathematicalInspectorUI } from './ui/mathInspector';
 import { CameraView, GameSnapshot, PresentationPorts } from '@rds/app/contracts';
@@ -59,6 +60,10 @@ class BoardGameSimulatorApp {
         this.scene.focusNode(nodeId);
       },
       clearRoomFocus: () => this.scene.clearFocus(),
+      setFloor: (floorId: string) => {
+        this.scene.focusFloor(floorId);
+        this.hud.setSelectedFloor(floorId);
+      },
       showTraitChange: change => {
         const tone = change.delta < 0 ? (change.damageKind === 'MENTAL' ? 'mental' : 'physical') : 'heal';
         const sign = change.delta > 0 ? '+' : '';
@@ -84,7 +89,16 @@ class BoardGameSimulatorApp {
     document.addEventListener('click', event => {
       const target = event.target as HTMLElement | null;
       const floor = target?.closest<HTMLElement>('[data-floor]')?.dataset.floor;
-      if (floor) this.scene.focusFloor(floor);
+      if (floor) {
+        this.scene.focusFloor(floor);
+        this.hud.setSelectedFloor(floor);
+      }
+      const roomEl = target?.closest<HTMLElement>('[data-room-id]');
+      const roomId = roomEl?.dataset.roomId;
+      if (roomId && this.currentGameId === 'betrayal') {
+        this.scene.focusNode(roomId);
+        this.session.pickTarget({ kind: 'node', id: roomId });
+      }
     });
     this.scene.onInteractiveClick(data => {
       // Clicking a room entity is also the inspection camera gesture: the
@@ -318,6 +332,10 @@ class BoardGameSimulatorApp {
     this.currentGameId = gameId;
     this.session = this.createSession(gameId);
 
+    this.scene.resetForNewGame();
+    this.lastRevision = -1;
+    this.lastPlacementKey = '';
+
     this.hud.setPresenter(this.session);
     this.inspector.setPresenter(this.session);
     this.bindSession(this.session);
@@ -328,6 +346,14 @@ class BoardGameSimulatorApp {
     this.lastRevision = snapshot.revision;
     this.lastPlacementKey = snapshot.placement ? `${snapshot.placement.defId}:${snapshot.placement.rotation}` : '';
     this.hud.syncCamera('iso');
+
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('game', gameId);
+      url.searchParams.delete('scenario');
+      window.history.replaceState({}, '', url.toString());
+      document.title = `${module.meta.name} · Universal Board Game Engine`;
+    } catch {}
 
     this.hud.showAnnouncement(`已载入 · ${module.meta.name}`);
   }
@@ -346,6 +372,10 @@ class BoardGameSimulatorApp {
     this.session.dispose();
     this.session = this.createSession(this.currentGameId, scenario);
 
+    this.scene.resetForNewGame();
+    this.lastRevision = -1;
+    this.lastPlacementKey = '';
+
     this.hud.setPresenter(this.session);
     this.inspector.setPresenter(this.session);
     this.bindSession(this.session);
@@ -356,6 +386,16 @@ class BoardGameSimulatorApp {
     this.lastRevision = snapshot.revision;
     this.lastPlacementKey = snapshot.placement ? `${snapshot.placement.defId}:${snapshot.placement.rotation}` : '';
     this.hud.syncCamera('iso');
+
+    try {
+      const url = new URL(window.location.href);
+      if (scenario) {
+        url.searchParams.set('scenario', scenario);
+      } else {
+        url.searchParams.delete('scenario');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
 
     const label = scenario ? String(module.scenarios?.[scenario]?.description ?? scenario) : '标准开局';
     this.hud.showAnnouncement(`剧本已重开 · ${label}`);
@@ -432,10 +472,31 @@ class BoardGameSimulatorApp {
 }
 
 // 统一外壳下 main.ts 可能被 shell.ts 动态 import（此时 DOMContentLoaded 已触发）
+function bootApp(): void {
+  const check = checkWebGLSupport();
+  if (!check.supported) {
+    console.error('[RDS-Board] WebGL is not available:', check.error, check.detail);
+    renderWebGLErrorModal(check.detail || check.error);
+    return;
+  }
+
+  try {
+    new BoardGameSimulatorApp();
+  } catch (err) {
+    const errorMsg = (err as Error)?.message || String(err);
+    if (errorMsg.includes('WebGL') || errorMsg.includes('THREE.WebGLRenderer')) {
+      console.error('[RDS-Board] Failed to initialize WebGL renderer:', err);
+      renderWebGLErrorModal(errorMsg);
+    } else {
+      throw err;
+    }
+  }
+}
+
 if (document.readyState === 'loading') {
-  window.addEventListener('DOMContentLoaded', () => new BoardGameSimulatorApp());
+  window.addEventListener('DOMContentLoaded', bootApp);
 } else {
-  new BoardGameSimulatorApp();
+  bootApp();
 }
 
 /**

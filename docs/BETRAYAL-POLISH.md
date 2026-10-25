@@ -5,7 +5,9 @@
 
 ## 1. 视觉方向
 
-- **镜头**：默认 2.5D 等轴俯视；点击房间可进入近景，点击“全部”回到全宅。放置房间时镜头短暂抬高，确认后回到原视角。
+- **镜头**：默认 2.5D 等轴俯视；点击房间可进入近景，点击“全部”回到全宅。
+  放置房间时镜头短暂抬高；确认后瞬时回位，再平滑平移到人物走进的新房间（保持 bearing 与相机→目标距离，是平移不是推拉）。
+  角色在房间之间走动时同样会跟随平移（SA-90 / SA-91）。
 - **房间**：无顶 2.5D 房间盒体，木地板、门洞、墙纸、家具按房间 ID 确定性布置；门洞走廊保持可通行，家具不得堵门。
 - **卡牌**：3D 卡面负责远景可读性（类型/名称/数值）；点击实体打开羊皮纸详情页，使用线刻 SVG 图版（骷髅、眼、鸦、手、武器、绳、钥匙、书、烛、心、幽灵、事件、房间）。
 - **氛围**：暗角、暖色吊灯 + 冷色环境光；房间发现时卡牌/板块从上方落入，镜头不强制跳切。
@@ -36,6 +38,9 @@
 - HAUNT #6 巨眼降临
 - HAUNT #10 怨灵的拥抱
 
+外加演示用剧本（顶栏 `❖ 剧本` 下拉可选）：`exploration` 半探索洋馆、`omen_ready` 作祟检定、
+`trade_ready` 交易、`room_features` 煤槽/金库/电梯/坍塌之室同场。
+
 每个剧本已有目标、怪物、特殊规则与作祟序章文本。后续新增剧本时：
 - 规则写在 `games/betrayal/haunts.ts` + `rules.ts`；
 - 叙事写在 `HauntDef.intro` / objective；
@@ -55,12 +60,23 @@
 
 ## 6. 验证
 
+统一走 `pnpm` 脚本，口径见 [AGENTS.md](../AGENTS.md)：
+
 ```bash
-node scripts/test-core.mjs
-node scripts/test-matrix.mjs
-node scripts/test-ui-matrix.mjs
-node node_modules/typescript/bin/tsc --noEmit
-node node_modules/vite/bin/vite.js build
+pnpm test && pnpm test:matrix && pnpm test:ui
+pnpm probe:layout && pnpm probe:overlap
+node node_modules/typescript/bin/tsc --noEmit && pnpm build
 ```
 
-截图：`shots/card-sheet-*.png`、`shots/current-exploration.png`。
+山屋专用的端到端脚本（按需手动跑，均已入库）：
+
+| 脚本 | 覆盖 |
+| --- | --- |
+| `scripts/verify-nav-arrows.mjs` | 地面导航箭头走入相邻房间 |
+| `scripts/verify-special-moves.mjs` | 楼梯跨层 / 露台跳下 / 攀绳 / 电梯 / 金库特性 |
+| `scripts/verify-placement-live.mjs` | 摆放期间的实时布局预演与门位连通 |
+| `scripts/verify-placement-camera.mjs` | 放置结束后镜头回位并平移到人物 |
+| `scripts/verify-actor-follow.mjs` | 角色移动时镜头跟随平移 |
+| `scripts/verify-feedback.mjs` | 近期动态面板与受伤/属性变化反馈 |
+
+截图：`pnpm shots`（`shots/` 不入库，见 `.gitignore`）。

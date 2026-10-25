@@ -55,6 +55,23 @@ export class BoardGameHUD {
   private hauntTimer: number | null = null;
   /** Activity feed starts open and remembers the player's choice. */
   private historyCollapsed = false;
+  /** Active isolated floor in the 3D scene ('ALL' displays all floors). */
+  private selectedFloor = 'ALL';
+  /** Minimap can be collapsed to conserve screen space. */
+  private minimapCollapsed = false;
+
+  public setSelectedFloor(floorId: string): void {
+    if (this.selectedFloor === floorId) return;
+    this.selectedFloor = floorId;
+    if (this.latest) {
+      this.renderMinimap(this.latest);
+      this.renderDock(this.latest);
+    }
+  }
+
+  public getSelectedFloor(): string {
+    return this.selectedFloor;
+  }
 
   constructor(
     container: HTMLElement,
@@ -76,12 +93,16 @@ export class BoardGameHUD {
     this.unsubSnapshot?.();
     this.unsubNotice?.();
     this.closePayload();
+    this.container.querySelector('#card-sheet-layer')?.remove();
     // Switching fixtures must not treat the new board as "rooms discovered".
     this.knownRooms = undefined;
     this.pinnedRoomId = undefined;
+    const roomCard = this.container.querySelector('#room-card') as HTMLElement | null;
+    if (roomCard) roomCard.style.display = 'none';
     this.lastActorRoomId = undefined;
     this.lastHauntId = undefined;
     this.hauntArmed = false;
+    this.selectedFloor = 'ALL';
     this.presenter = presenter;
     this.bindPresenter(presenter);
     this.syncSoundButton();
@@ -707,6 +728,7 @@ export class BoardGameHUD {
 
       <aside class="player-rail" id="player-rail"></aside>
       <aside class="room-card" id="room-card" style="display:none"></aside>
+      <aside class="mansion-minimap" id="mansion-minimap" style="display:none"></aside>
       <aside class="activity-feed" id="activity-feed"></aside>
       <div class="action-dock" id="action-dock"></div>
       <div class="announcement-banner" id="announce" style="display:none"></div>
@@ -771,10 +793,155 @@ export class BoardGameHUD {
     this.renderScenarioSelect(snapshot);
     this.renderPlayers(snapshot);
     this.renderRoomCard(snapshot);
+    this.renderMinimap(snapshot);
     this.renderHistory(snapshot);
     this.renderDock(snapshot);
     this.maybeRevealRoom(snapshot);
     this.maybeShowHaunt(snapshot);
+  }
+
+  /**
+   * Architectural vector minimap for Betrayal: shows all three floors
+   * (2F Upper, 1F Ground, B Basement) as a vertical cutaway slice with real room
+   * layout, player position dots, and viewport isolation indicator.
+   */
+  private renderMinimap(snapshot: GameSnapshot): void {
+    const el = this.container.querySelector('#mansion-minimap') as HTMLElement | null;
+    if (!el) return;
+    if (snapshot.gameId !== 'betrayal') {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = '';
+    el.classList.toggle('collapsed', this.minimapCollapsed);
+
+    const floors = [
+      { id: 'UPPER', level: '2F', name: '二楼' },
+      { id: 'GROUND', level: '1F', name: '一楼' },
+      { id: 'BASEMENT', level: 'B', name: '地下室' }
+    ];
+
+    const isAll = this.selectedFloor === 'ALL';
+    const activeActorId = snapshot.focus[0] ?? snapshot.viewer;
+    const actorPlayer = snapshot.board.players[activeActorId];
+    const actorRoomId = String(actorPlayer?.customProps?.currentRoomId ?? '');
+    const actorRoom = snapshot.board.mapGraph.nodes[actorRoomId];
+    const actorFloor = String(actorRoom?.props?.floor ?? '');
+
+    const floorItems = floors.map(floor => {
+      const rooms = Object.values(snapshot.board.mapGraph.nodes).filter(
+        n => n.type === 'ROOM' && String(n.props?.floor ?? '') === floor.id
+      );
+
+      // Find players on this floor
+      const playersOnFloor = Object.values(snapshot.board.players).filter(p => {
+        if (!p.alive || p.customProps?.banished) return false;
+        const r = snapshot.board.mapGraph.nodes[String(p.customProps?.currentRoomId ?? '')];
+        return String(r?.props?.floor ?? '') === floor.id;
+      });
+
+      // Find monsters on this floor
+      const monstersOnFloor = Object.values(snapshot.board.entities ?? {}).filter(e => {
+        const custom = e?.components?.custom as Record<string, unknown> | undefined;
+        if (e.type !== 'MEEPLE' || !custom?.monster || custom?.destroyed) return false;
+        const r = snapshot.board.mapGraph.nodes[String(custom.roomId ?? '')];
+        return String(r?.props?.floor ?? '') === floor.id;
+      });
+
+      let svgHtml = '';
+      if (rooms.length === 0) {
+        svgHtml = `<div class="mm-empty-floor">未探索</div>`;
+      } else {
+        const cols = rooms.map(r => Number(r.props?.col ?? 2));
+        const rows = rooms.map(r => Number(r.props?.row ?? 2));
+        const minCol = Math.min(...cols);
+        const maxCol = Math.max(...cols);
+        const minRow = Math.min(...rows);
+        const maxRow = Math.max(...rows);
+
+        const cellSize = 16;
+        const roomSize = 13;
+        const padding = 3;
+        const svgW = (maxCol - minCol + 1) * cellSize + padding * 2;
+        const svgH = (maxRow - minRow + 1) * cellSize + padding * 2;
+
+        const roomRects = rooms.map(r => {
+          const c = Number(r.props?.col ?? 2);
+          const rw = Number(r.props?.row ?? 2);
+          const rx = (c - minCol) * cellSize + padding;
+          const ry = (rw - minRow) * cellSize + padding;
+          const isActorHere = actorRoomId === r.id;
+          const isPinned = this.pinnedRoomId === r.id;
+
+          const herePlayers = playersOnFloor.filter(p => p.customProps?.currentRoomId === r.id);
+          const hereMonsters = monstersOnFloor.filter(m => (m.components?.custom as any)?.roomId === r.id);
+
+          const dots = [
+            ...herePlayers.map((p, idx) => `<circle cx="${rx + 3.5 + idx * 5}" cy="${ry + roomSize / 2}" r="2.8" fill="${p.color}" stroke="#000" stroke-width="0.8"/>`),
+            ...hereMonsters.map((_, idx) => `<circle cx="${rx + roomSize - 3.5 - idx * 5}" cy="${ry + roomSize / 2}" r="2.8" fill="#b07bf0" stroke="#ff4d4d" stroke-width="0.8"/>`)
+          ].join('');
+
+          const fill = isActorHere ? 'rgba(217, 180, 91, 0.45)' : isPinned ? 'rgba(87, 192, 139, 0.4)' : 'rgba(217, 180, 91, 0.14)';
+          const stroke = isActorHere ? '#f6dc9c' : isPinned ? '#57c08b' : 'rgba(217, 180, 91, 0.38)';
+
+          return `
+            <g class="mm-room-node" data-room-id="${r.id}" data-floor="${floor.id}">
+              <rect x="${rx}" y="${ry}" width="${roomSize}" height="${roomSize}" rx="2" fill="${fill}" stroke="${stroke}" stroke-width="${isActorHere || isPinned ? 1.5 : 1}">
+                <title>${r.props?.name ?? ''} (${floor.name})</title>
+              </rect>
+              ${dots}
+            </g>
+          `;
+        }).join('');
+
+        svgHtml = `
+          <svg class="mm-floor-svg" viewBox="0 0 ${svgW} ${svgH}" style="width:${Math.min(130, svgW)}px; height:${Math.min(50, svgH)}px;">
+            ${roomRects}
+          </svg>
+        `;
+      }
+
+      const isCurrentFloor = this.selectedFloor === floor.id;
+      const isActorFloor = actorFloor === floor.id;
+
+      return `
+        <div class="mm-floor-card ${isCurrentFloor ? 'active' : ''} ${isAll ? 'in-view' : ''}" data-floor="${floor.id}">
+          <div class="mm-card-left">
+            <span class="mm-level-tag ${isActorFloor ? 'has-actor' : ''}">${floor.level}</span>
+            <div class="mm-card-text">
+              <span class="mm-name">${floor.name}</span>
+              <span class="mm-count">${rooms.length}间</span>
+            </div>
+            ${isActorFloor ? `<span class="mm-actor-pin" title="当前行动者在此层">👤</span>` : ''}
+          </div>
+          <div class="mm-card-right">
+            ${svgHtml}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    el.innerHTML = `
+      <div class="mm-head">
+        <div class="mm-title">
+          <span class="mm-ico">🧭</span>
+          <span class="mm-label">洋馆总览</span>
+        </div>
+        <div class="mm-controls">
+          <button class="mm-btn-all ${isAll ? 'active' : ''}" data-floor="ALL" type="button" title="查看全宅三层">全部</button>
+          <button class="mm-btn-toggle" id="mm-toggle" type="button" title="折叠/展开小地图">${this.minimapCollapsed ? '▸' : '▾'}</button>
+        </div>
+      </div>
+      <div class="mm-body">
+        ${floorItems}
+      </div>
+    `;
+
+    el.querySelector('#mm-toggle')?.addEventListener('click', e => {
+      e.stopPropagation();
+      this.minimapCollapsed = !this.minimapCollapsed;
+      if (this.latest) this.renderMinimap(this.latest);
+    });
   }
 
   /**
@@ -1207,13 +1374,14 @@ export class BoardGameHUD {
       )
       .join('');
 
+    const isAll = this.selectedFloor === 'ALL';
     const floorTabs = snapshot.spatial?.floors?.length
       ? `<div class="floor-tabs">
-          <button class="floor-tab" data-floor="ALL">全部</button>
+          <button class="floor-tab ${isAll ? 'active' : ''}" data-floor="ALL">全部</button>
           ${snapshot.spatial.floors
             .map(
               floor =>
-                `<button class="floor-tab ${snapshot.spatial?.activeFloor === floor.id ? 'active' : ''}" data-floor="${floor.id}">${floor.name}</button>`
+                `<button class="floor-tab ${this.selectedFloor === floor.id ? 'active' : ''}" data-floor="${floor.id}">${floor.name}</button>`
             )
             .join('')}
         </div>`

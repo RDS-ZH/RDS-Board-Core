@@ -93,6 +93,8 @@ export class BoardGameScene {
   private prePlacementCamera?: { position: THREE.Vector3; target: THREE.Vector3 };
   /** Room the active actor occupied on the previous sync, for camera follow. */
   private lastActorRoomId?: string;
+  /** Floor currently isolated in the 3D scene ('ALL' shows every layer). */
+  private visibleFloor = 'ALL';
   private cameraTween?: {
     fromPosition: THREE.Vector3;
     fromTarget: THREE.Vector3;
@@ -631,6 +633,7 @@ export class BoardGameScene {
 
   /** Frame one floor (or the whole board) without changing logical coordinates. */
   public focusFloor(floorId: string): void {
+    this.setVisibleFloor(floorId);
     if (!this.lastState) return;
     if (floorId === 'ALL') {
       this.fitCameraToBoard(this.lastState, this.lastPlacement, this.lastLayout);
@@ -642,9 +645,36 @@ export class BoardGameScene {
     const center = new THREE.Vector3(anchor.x, 0, anchor.z);
     const direction = this.camera.position.clone().sub(this.controls.target).normalize();
     const distance = Math.max(anchor.width, anchor.depth) * 1.35 + 6;
-    this.controls.target.copy(center);
-    this.camera.position.copy(center.clone().add(direction.multiplyScalar(distance)));
-    this.controls.update();
+    const targetPos = center.clone().add(direction.multiplyScalar(distance));
+    this.skipFitUntil = performance.now() + 600;
+    this.startCameraTween(targetPos, center, 480);
+  }
+
+  /**
+   * Apply floor isolation filter: when a single floor is active, hide objects
+   * belonging to other floors. 'ALL' restores full visibility.
+   */
+  public setVisibleFloor(floorId: string): void {
+    this.visibleFloor = floorId;
+    this.applyFloorFilter();
+    if (this.lastState) {
+      this.refreshLabels(this.lastState);
+    }
+  }
+
+  public getVisibleFloor(): string {
+    return this.visibleFloor;
+  }
+
+  private applyFloorFilter(): void {
+    if (this.lastState?.gameId !== 'betrayal') return;
+    const isIsolated = this.visibleFloor !== 'ALL';
+    this.boardObjectsGroup.traverse(obj => {
+      const floor = obj.userData?.floor as string | undefined;
+      if (floor) {
+        obj.visible = !isIsolated || floor === this.visibleFloor;
+      }
+    });
   }
 
   /**
@@ -669,6 +699,20 @@ export class BoardGameScene {
     this.skipFitUntil = 0;
     this.hasFitted = false;
     this.fitCameraToBoard(this.lastState, this.lastPlacement, this.lastLayout);
+  }
+
+  /**
+   * Reset board caching and camera tracking state when switching games,
+   * guaranteeing that the incoming fixture is fully rendered and reframed.
+   */
+  public resetForNewGame(): void {
+    this.lastBoardKey = '';
+    this.lastFitSignature = '';
+    this.hasFitted = false;
+    this.lastActorRoomId = undefined;
+    this.visibleFloor = 'ALL';
+    this.prePlacementCamera = undefined;
+    this.cancelCameraTween();
   }
 
   /**
@@ -835,7 +879,7 @@ export class BoardGameScene {
     this.lastLayout = layout;
 
     if (!wasPlacing && isPlacing) {
-      this.beginPlacementCamera(state, displayPlacement!, layout);
+      this.beginPlacementCamera(displayPlacement!);
     } else if (wasPlacing && !isPlacing) {
       // The actor may have moved into the newly placed room during this sync;
       // `state` here is the post-placement projection, so it is what we centre on.
@@ -847,7 +891,7 @@ export class BoardGameScene {
     const placingSignature = displayPlacement
       ? `${displayPlacement.defId ?? displayPlacement.name}:${displayPlacement.floor}:${displayPlacement.col}:${displayPlacement.row}`
       : 'none';
-    const boardKey = `${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}:${[...this.highlightIds]
+    const boardKey = `${state.gameId}:${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}:${[...this.highlightIds]
       .sort()
       .join(',')}`;
     const boardChanged = boardKey !== this.lastBoardKey;
@@ -855,6 +899,7 @@ export class BoardGameScene {
       // Placement rotation only changes the preview mesh and connection links, not the board.
       this.clearPreviewObjects();
       if (displayPlacement) this.renderPlacementPreview(displayPlacement, state);
+      this.applyFloorFilter();
       const fitSignature = `${Object.keys(state.mapGraph.nodes).length}:${displayPlacement ? 'placing' : ''}`;
       if (fitSignature !== this.lastFitSignature) {
         this.lastFitSignature = fitSignature;
@@ -925,6 +970,7 @@ export class BoardGameScene {
       }
     }
     this.refreshLabels(state);
+    this.applyFloorFilter();
     this.lastSyncMs = performance.now() - syncStarted;
   }
 
@@ -962,9 +1008,12 @@ export class BoardGameScene {
     const labels: WorldLabel[] = [];
     this.groupMembers.clear();
     const activeActor = state.activeActorId ?? state.activePlayerId;
+    const isIsolated = state.gameId === 'betrayal' && this.visibleFloor !== 'ALL';
 
     for (const node of Object.values(state.mapGraph.nodes)) {
       if (node.type !== 'ROOM') continue;
+      const floor = String(node.props?.floor ?? '');
+      if (isIsolated && floor && floor !== this.visibleFloor) continue;
       labels.push({
         id: `room:${node.id}`,
         text: String(node.props?.name ?? '房间'),
@@ -983,6 +1032,8 @@ export class BoardGameScene {
       );
       const node = room ?? seat;
       if (!node) continue;
+      const floor = String(room?.props?.floor ?? '');
+      if (isIsolated && floor && floor !== this.visibleFloor) continue;
       labels.push({
         id: `player:${player.id}`,
         text: player.id === activeActor ? `▶ ${player.name}` : player.name,
@@ -997,6 +1048,9 @@ export class BoardGameScene {
       if (!custom?.monster || custom.dead) continue;
       const entityId = entity.id;
       if (!entityId) continue;
+      const roomNode = state.mapGraph.nodes[String(custom.roomId ?? '')];
+      const floor = String(roomNode?.props?.floor ?? '');
+      if (isIsolated && floor && floor !== this.visibleFloor) continue;
       const npc = Object.values(state.npcs ?? {}).find(candidate => candidate.entityId === entityId);
       const mesh = this.entityMeshes.get(entityId);
       const spatial = entity.components?.spatial;
@@ -1225,16 +1279,35 @@ export class BoardGameScene {
       metadata: Record<string, unknown>;
     }[] = [];
 
+    const seenTargets = new Set<string>();
+
     for (const edge of edges) {
       const from = String((edge as { from?: string }).from ?? '');
       const to = String((edge as { to?: string }).to ?? '');
-      if (from !== nodeId) continue;
       const type = String((edge as { type?: string }).type ?? '');
-      const other = state.mapGraph.nodes[to];
+      const isDirected = !!(edge as { directed?: boolean }).directed;
+
+      let targetRoomId = '';
+      if (from === nodeId) {
+        targetRoomId = to;
+      } else if (to === nodeId && !isDirected) {
+        targetRoomId = from;
+      }
+      if (!targetRoomId || seenTargets.has(targetRoomId)) continue;
+
+      const other = state.mapGraph.nodes[targetRoomId];
       if (!other) continue;
 
       if (type === 'STAIRS' && canSpendMove) {
-        const up = String(other.props?.floor ?? '') === 'UPPER';
+        seenTargets.add(targetRoomId);
+        const FLOOR_LEVEL: Record<string, number> = {
+          BASEMENT: 0,
+          GROUND: 1,
+          UPPER: 2
+        };
+        const currentFloor = String(node.props?.floor ?? 'GROUND');
+        const targetFloor = String(other.props?.floor ?? 'GROUND');
+        const up = (FLOOR_LEVEL[targetFloor] ?? 1) > (FLOOR_LEVEL[currentFloor] ?? 1);
         badges.push({
           icon: up ? '⬆' : '⬇',
           label: up ? '上楼' : '下楼',
@@ -1242,12 +1315,13 @@ export class BoardGameScene {
           metadata: {
             type: 'ROOM_NAV',
             fromRoomId: nodeId,
-            targetRoomId: to,
+            targetRoomId,
             targetName: String(other.props?.name ?? '楼梯'),
             intent: 'interact'
           }
         });
-      } else if (type === 'DROP' && canSpendMove) {
+      } else if (type === 'DROP' && canSpendMove && from === nodeId) {
+        seenTargets.add(targetRoomId);
         badges.push({
           icon: '⬇',
           label: '跳下',
@@ -1316,10 +1390,12 @@ export class BoardGameScene {
       FURNACE: { icon: '⚠', label: '熔炉 · 灼伤', color: '#c9a24a' }
     };
     const hazard = HAZARD[String(node.props?.special ?? '')];
+    const nodeFloor = String(node.props?.floor ?? '');
     if (hazard) {
       const plate = this.createLabelSprite(`${hazard.icon} ${hazard.label}`, hazard.color, 24);
       plate.position.set(node.position[0], node.position[1] + 0.72, node.position[2] + 1.02);
       plate.scale.set(1.7, 0.32, 1);
+      plate.userData.floor = nodeFloor;
       this.boardObjectsGroup.add(plate);
     }
 
@@ -1338,12 +1414,14 @@ export class BoardGameScene {
         })
       );
       plate.position.set(bx, node.position[1] + 0.14, bz);
+      plate.userData.floor = nodeFloor;
       this.boardObjectsGroup.add(plate);
       const plateMat = plate.material as THREE.MeshStandardMaterial;
       const pulseTarget = new THREE.Group();
       pulseTarget.position.copy(plate.position);
       plate.position.set(0, 0, 0);
       pulseTarget.add(plate);
+      pulseTarget.userData.floor = nodeFloor;
       this.boardObjectsGroup.add(pulseTarget);
       this.navArrowMeshes.push({
         group: pulseTarget,
@@ -1355,11 +1433,18 @@ export class BoardGameScene {
       const glyph = this.createLabelSprite(`${badge.icon} ${badge.label}`, badge.color, 26);
       glyph.position.set(bx, node.position[1] + 0.42, bz);
       glyph.scale.set(1.35, 0.3, 1);
+      glyph.userData.floor = nodeFloor;
       this.boardObjectsGroup.add(glyph);
 
+      const interactiveId = `${nodeId}:special:${badge.metadata.action ?? 'nav'}:${String(badge.metadata.targetRoomId ?? '')}`;
       this.raycaster.registerInteractive(plate, {
         type: 'NODE',
-        id: `${nodeId}:special:${badge.metadata.action ?? 'nav'}:${String(badge.metadata.targetRoomId ?? '')}`,
+        id: interactiveId,
+        metadata: badge.metadata
+      });
+      this.raycaster.registerInteractive(glyph, {
+        type: 'NODE',
+        id: interactiveId,
         metadata: badge.metadata
       });
     });
@@ -1505,6 +1590,9 @@ export class BoardGameScene {
           }
         );
         roomMesh.position.set(node.position[0], node.position[1], node.position[2]);
+        // Tagged so the floor filter can hide/show whole rooms without a rebuild.
+        const nodeFloor = String(node.props.floor ?? '');
+        roomMesh.userData.floor = nodeFloor;
         this.boardObjectsGroup.add(roomMesh);
         this.nodeMeshes.set(node.id, roomMesh);
 
@@ -1566,6 +1654,7 @@ export class BoardGameScene {
           const dx = dir === 'W' ? -halfSize : dir === 'E' ? halfSize : 0;
           const dz = dir === 'N' ? -halfSize : dir === 'S' ? halfSize : 0;
           doorMesh.position.set(node.position[0] + dx, node.position[1] + 0.22, node.position[2] + dz);
+          doorMesh.userData.floor = nodeFloor;
           this.boardObjectsGroup.add(doorMesh);
 
           if (isConnected && neighborRoom) {
@@ -1576,6 +1665,7 @@ export class BoardGameScene {
               const az = dir === 'N' ? -1.02 : dir === 'S' ? 1.02 : 0;
               const arrowY = node.position[1] + 0.125;
               navArrow.position.set(node.position[0] + ax, arrowY, node.position[2] + az);
+              navArrow.userData.floor = nodeFloor;
               this.boardObjectsGroup.add(navArrow);
 
               this.navArrowMeshes.push({
@@ -1618,6 +1708,7 @@ export class BoardGameScene {
               const az = dir === 'N' ? -1.02 : dir === 'S' ? 1.02 : 0;
               const arrowY = node.position[1] + 0.125;
               exploreArrow.position.set(node.position[0] + ax, arrowY, node.position[2] + az);
+              exploreArrow.userData.floor = nodeFloor;
               this.boardObjectsGroup.add(exploreArrow);
 
               this.navArrowMeshes.push({
@@ -1668,6 +1759,7 @@ export class BoardGameScene {
           const badge = this.createLabelSprite(icon, color, 46);
           badge.position.set(node.position[0] + 0.95, 0.34, node.position[2] - 0.95);
           badge.scale.set(0.42, 0.42, 1);
+          badge.userData.floor = nodeFloor;
           this.boardObjectsGroup.add(badge);
         }
 
@@ -1892,6 +1984,7 @@ export class BoardGameScene {
           room.position[1] + 0.12,
           room.position[2] + Math.sin(angle) * 0.3
         );
+        meeple.userData.floor = String(room.props?.floor ?? '');
         this.boardObjectsGroup.add(meeple);
         this.entityMeshes.set(`meeple_${p.id}`, meeple);
       });
@@ -1911,6 +2004,7 @@ export class BoardGameScene {
         });
         monster.position.set(x, 0.12, z);
         if (stunned) monster.rotation.z = Math.PI / 2;
+        if (roomNode?.props?.floor) monster.userData.floor = String(roomNode.props.floor);
         this.boardObjectsGroup.add(monster);
         this.entityMeshes.set(entity.id, monster);
         this.raycaster.registerInteractive(monster, {
@@ -2022,11 +2116,7 @@ export class BoardGameScene {
     this.hasFitted = true;
   }
 
-  private beginPlacementCamera(
-    state: ProjectedGameState,
-    placement: PlacementPreview,
-    layout?: LayoutHints
-  ): void {
+  private beginPlacementCamera(placement: PlacementPreview): void {
     if (this.cameraTween) return;
     const startPosition = this.camera.position.clone();
     const startTarget = this.controls.target.clone();
@@ -2035,39 +2125,53 @@ export class BoardGameScene {
       target: startTarget.clone()
     };
 
-    // Use the normal framing computation, then raise it slightly. Restore the
-    // starting pose and tween to the raised pose so placement never snaps.
-    this.fitCameraToBoard(state, placement, layout);
-    const raisedPosition = this.camera.position.clone();
-    const raisedTarget = this.controls.target.clone();
-    this.camera.position.copy(startPosition);
-    this.controls.target.copy(startTarget);
-    raisedPosition.y += Math.max(4, Math.abs(raisedPosition.y) * 0.12);
-    this.startCameraTween(raisedPosition, raisedTarget, 650);
+    // Frame the room being placed, not the whole board: the player is choosing
+    // an orientation for that tile, so it should be the thing under the lens.
+    const centre = new THREE.Vector3(
+      placement.position[0],
+      Math.max(0.12, placement.position[1] + 0.16),
+      placement.position[2]
+    );
+
+    // Keep the player's chosen bearing, come in closer, and lift the eye above
+    // the wide-board height so the new tile is read from above with its
+    // neighbours still visible around it.
+    const dir = startPosition.clone().sub(startTarget);
+    const len = dir.length() || 1;
+    const arm = Math.min(len, 15);
+    dir.normalize();
+    // Steepen the arm before scaling: looking down on the tile beats skimming
+    // it from the side, which is what a straight copy of the bearing gives.
+    dir.y = Math.max(dir.y, 0.72);
+    dir.normalize().multiplyScalar(arm);
+    const lifted = centre.clone().add(dir);
+    lifted.y = Math.max(lifted.y, startPosition.y + Math.max(3.4, arm * 0.34));
+
+    this.skipFitUntil = performance.now() + 900;
+    this.startCameraTween(lifted, centre, 650);
   }
 
   private endPlacementCamera(state?: ProjectedGameState): void {
     const previous = this.prePlacementCamera;
     this.prePlacementCamera = undefined;
-    this.skipFitUntil = performance.now() + 850;
-    if (!previous) return;
-    // Restore with a cut, not a tween. This is the last thing between the
-    // player and the finished board, and a stalled frame loop (background tab,
-    // heavy rebuild) would strand the camera up in the air with orbit controls
-    // still disabled.
     this.cancelCameraTween();
-    this.camera.position.copy(previous.position);
-    this.controls.target.copy(previous.target);
-    this.controls.enabled = true;
-    this.controls.update();
+    if (!previous) {
+      this.controls.enabled = true;
+      return;
+    }
 
-    // The placed tile usually moves the actor into the new room, so follow up
-    // with a pan that re-centres on them while keeping the restored bearing and
-    // distance — the board never appears to teleport, it just drifts over.
+    // Rather than jumping back to the old pre-placement room and panning from there,
+    // transition directly from the elevated placement view down to the actor
+    // in the new room, smoothly restoring the normal playing distance and eye height.
     const focus = state ? this.actorFocusPoint(state) : undefined;
-    if (!focus) return;
-    // Short enough that orbit control comes back quickly after confirming.
-    this.panToKeepBearing(focus, 420);
+    const targetCenter = focus ?? previous.target;
+
+    // Normal playing offset vector (restores pre-placement eye height & distance)
+    const normalOffset = previous.position.clone().sub(previous.target);
+    const targetCamPos = targetCenter.clone().add(normalOffset);
+
+    this.skipFitUntil = performance.now() + 650;
+    this.startCameraTween(targetCamPos, targetCenter, 460);
   }
 
   /**
@@ -2088,6 +2192,13 @@ export class BoardGameScene {
     if (!previousRoomId || !roomId || previousRoomId === roomId) return;
     // Never steal the camera mid-animation (placement raise, inspector tween…).
     if (this.cameraTween || performance.now() < this.skipFitUntil) return;
+
+    const roomNode = state.mapGraph.nodes[roomId];
+    const newFloor = String(roomNode?.props?.floor ?? '');
+    if (this.visibleFloor !== 'ALL' && newFloor && newFloor !== this.visibleFloor) {
+      this.focusFloor(newFloor);
+      return;
+    }
 
     const focus = this.actorFocusPoint(state);
     if (!focus) return;
@@ -2359,6 +2470,12 @@ export class BoardGameScene {
     label.scale.set(connectedList.length > 0 ? 3.4 : 3.0, 0.45, 1);
     this.boardObjectsGroup.add(label);
     this.previewObjects.push(label);
+
+    if (placement.floor) {
+      this.previewObjects.forEach(obj => {
+        obj.userData.floor = placement.floor;
+      });
+    }
   }
 
   private renderCardPile(
@@ -2565,10 +2682,11 @@ export class BoardGameScene {
       for (const [key, text] of labels) {
         const anchor = anchors[key];
         if (!anchor) continue;
-        this.addTableMat(anchor.width + 2, anchor.depth + 2, anchor.x, anchor.z);
+        this.addTableMat(anchor.width + 2, anchor.depth + 2, anchor.x, anchor.z, key);
         const plate = this.createLabelSprite(text, key === 'BASEMENT' ? '#a9c2d8' : key === 'UPPER' ? '#cbb4e8' : '#e0c98a', 34);
         plate.position.set(anchor.x, 0.55, anchor.z + anchor.depth / 2 + 1.3);
         plate.scale.set(6.4, 0.78, 1);
+        plate.userData.floor = key;
         this.boardObjectsGroup.add(plate);
       }
 
@@ -2592,6 +2710,7 @@ export class BoardGameScene {
         );
         sigil.rotation.x = -Math.PI / 2;
         sigil.position.set(room?.position[0] ?? 0, 0.08, room?.position[2] ?? 0);
+        if (room?.props?.floor) sigil.userData.floor = String(room.props.floor);
         this.boardObjectsGroup.add(sigil);
       }
     }
@@ -2641,13 +2760,14 @@ export class BoardGameScene {
   }
 
   /** Dark inset mat with a thin brass outline, used to frame card areas. */
-  private addTableMat(width: number, depth: number, x: number, z: number): void {
+  private addTableMat(width: number, depth: number, x: number, z: number, floor?: string): void {
     const plate = new THREE.Mesh(
       new THREE.BoxGeometry(width, 0.02, depth),
       new THREE.MeshStandardMaterial({ color: 0x0a1712, roughness: 0.96, metalness: 0.02 })
     );
     plate.position.set(x, 0.012, z);
     plate.receiveShadow = true;
+    if (floor) plate.userData.floor = floor;
     this.boardObjectsGroup.add(plate);
 
     const edges = new THREE.LineSegments(
@@ -2655,6 +2775,7 @@ export class BoardGameScene {
       new THREE.LineBasicMaterial({ color: 0xc9a24a, transparent: true, opacity: 0.4 })
     );
     edges.position.set(x, 0.024, z);
+    if (floor) edges.userData.floor = floor;
     this.boardObjectsGroup.add(edges);
   }
 
@@ -2949,6 +3070,7 @@ export class BoardGameScene {
     } else if (zone.type === 'BOARD') {
       const roomId = zone.id.startsWith('zone_room_') ? zone.id.slice('zone_room_'.length) : '';
       const roomNode = roomId ? this.lastState?.mapGraph.nodes[roomId] : undefined;
+      if (roomNode?.props?.floor) mesh.userData.floor = String(roomNode.props.floor);
       const anchor = roomNode
         ? [roomNode.position[0], roomNode.position[1] + 0.16, roomNode.position[2]]
         : zone.anchorPosition ?? [0, 0.16, 0];

@@ -88,13 +88,87 @@ if (!upstairs.handled || atUpper.room !== 'room_upper_landing' || atUpper.floor 
 console.log(`stairs: badges=${stairSpots.length} up=${hasUp} down=${hasDown} -> ${atUpper.room}/${atUpper.floor}`);
 await page.screenshot({ path: 'shots/special-stairs.png' });
 
+// Verify that Upper Landing has the return downstairs badge to Grand Staircase!
+const upperSpots = await hotspots();
+const hasDownFromUpper = upperSpots.some(s => s.includes('>room_grand_staircase'));
+if (!hasDownFromUpper) {
+  failures.push(`stairs: missing downstairs badge from upper landing (${upperSpots.join(', ')})`);
+}
+
+const downstairs = await page.evaluate(() =>
+  window.__boardGameApp.session.pickTarget({
+    kind: 'node',
+    id: 'room_upper_landing:special:nav:room_grand_staircase',
+    metadata: {
+      type: 'ROOM_NAV',
+      fromRoomId: 'room_upper_landing',
+      targetRoomId: 'room_grand_staircase',
+      targetName: '大楼梯',
+      intent: 'interact'
+    }
+  })
+);
+await page.waitForTimeout(500);
+const backAtStairs = await where();
+if (!downstairs.handled || backAtStairs.room !== 'room_grand_staircase' || backAtStairs.floor !== 'GROUND') {
+  failures.push(`stairs: descend back to grand staircase failed (${JSON.stringify(downstairs)} -> ${JSON.stringify(backAtStairs)})`);
+}
+console.log(`stairs return: hasDownFromUpper=${hasDownFromUpper} -> ${backAtStairs.room}/${backAtStairs.floor}`);
+
+// Test Basement Landing return upstairs badge!
+await page.evaluate(() => {
+  const raw = window.__boardGameApp.session.engine.getRawState();
+  raw.players.p1.customProps.movesLeft = 3;
+});
+const downstairsToBasement = await page.evaluate(() =>
+  window.__boardGameApp.session.pickTarget({
+    kind: 'node',
+    id: 'room_grand_staircase:special:nav:room_basement_landing',
+    metadata: {
+      type: 'ROOM_NAV',
+      fromRoomId: 'room_grand_staircase',
+      targetRoomId: 'room_basement_landing',
+      targetName: '地下平台',
+      intent: 'interact'
+    }
+  })
+);
+await page.waitForTimeout(500);
+const atBasement = await where();
+const basementSpots = await hotspots();
+const hasUpFromBasement = basementSpots.some(s => s.includes('>room_grand_staircase'));
+if (!downstairsToBasement.handled || atBasement.room !== 'room_basement_landing' || !hasUpFromBasement) {
+  failures.push(`stairs: basement descent or return badge missing (${JSON.stringify(downstairsToBasement)} -> ${atBasement.room}, badges: ${basementSpots.join(', ')})`);
+}
+
+const upstairsFromBasement = await page.evaluate(() =>
+  window.__boardGameApp.session.pickTarget({
+    kind: 'node',
+    id: 'room_basement_landing:special:nav:room_grand_staircase',
+    metadata: {
+      type: 'ROOM_NAV',
+      fromRoomId: 'room_basement_landing',
+      targetRoomId: 'room_grand_staircase',
+      targetName: '大楼梯',
+      intent: 'interact'
+    }
+  })
+);
+await page.waitForTimeout(500);
+const backAtStairsFromBasement = await where();
+if (!upstairsFromBasement.handled || backAtStairsFromBasement.room !== 'room_grand_staircase') {
+  failures.push(`stairs: ascend from basement failed (${JSON.stringify(upstairsFromBasement)} -> ${JSON.stringify(backAtStairsFromBasement)})`);
+}
+console.log(`stairs basement: hasUpFromBasement=${hasUpFromBasement} -> ${backAtStairsFromBasement.room}/${backAtStairsFromBasement.floor}`);
+
 /* ------------------------------ balcony ----------------------------- */
 // The kernel requires movement left to declare a fall (mirrors the rule test),
-// so hand p1 a fresh pool the same way the engine suite does.
+// so hand p1 a fresh pool and set room to upper landing for the balcony leg.
 await page.evaluate(() => {
   const app = window.__boardGameApp;
   const raw = app.session.engine.getRawState();
   raw.players.p1.customProps.movesLeft = 3;
+  raw.players.p1.customProps.currentRoomId = 'room_upper_landing';
   // Force a rebuild + repaint through a public presenter path.
   app.session.setViewer('GOD');
 });

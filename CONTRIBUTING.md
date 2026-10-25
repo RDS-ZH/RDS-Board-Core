@@ -52,7 +52,7 @@ BASE_URL=http://127.0.0.1:6000/ pnpm shots
 
 | 命令 | 覆盖 | 何时必跑 |
 | --- | --- | --- |
-| `pnpm test` | 内核一致性 131 例 + 分层边界检查 | 任何改动 |
+| `pnpm test` | 内核一致性 131 例（116 个 `test` 展开参数化后）+ 分层边界检查 | 任何改动 |
 | `pnpm test:matrix` | 五款夹具 × 多 seed × 全场景黑盒 + 回放哈希 | 动 `src/core` 或任一 `src/games/*` |
 | `pnpm test:ui` | Playwright 流程矩阵（拖拽/旋转/落定/悬停） | 动 `src/render`、`src/ui`、`src/app` 契约 |
 | `pnpm probe:layout` | 47 个房间的家具布局与**门位冲突**（必须 0） | 动 `props.ts` / `roomLayout.ts` / 房间摆件清单 |
