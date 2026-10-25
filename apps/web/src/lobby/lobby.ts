@@ -1,10 +1,17 @@
 import type { HubGameInfo, HubRoomInfo } from '@rds/room-protocol';
 import { getGames, getRooms, createRoom, joinRoom, leaveRoom, setRoomStatus, getRoom, me } from './api.ts';
+import { showToast } from './toast.ts';
 
 /**
  * 大厅视图：登录/房间列表/房间页。统一外壳(unified shell)的一部分——
  * 与游戏视图共用同一 SPA；"进入对局"通过 onEnterGame 回调切回游戏视图。
  * 契约见 docs/LOBBY-INTEGRATION.md。
+ *
+ * Phase A 约束：
+ * - 所有动态插值一律经 esc()（存储型 XSS 防御：房间名/用户名来自其他用户输入）
+ * - refreshRoom 不再无条件整页重渲：按数据签名跳过无变化渲染（避免按钮 focus/hover 被 3s 轮询重置）
+ * - 轮询在大厅隐藏（进对局）或页面不可见时暂停
+ * - 错误用 toast，不用 alert
  */
 export interface LobbyHandle { destroy(): void; }
 
@@ -17,24 +24,57 @@ let roomTimer: ReturnType<typeof setInterval> | null = null;
 let roomsTimer: ReturnType<typeof setInterval> | null = null;
 let rootEl: HTMLElement | null = null;
 let onEnterGame: ((p: EnterGameParams) => void) | null = null;
+let visibilityHandler: (() => void) | null = null;
+/** 上次渲染房间页的数据签名：未变化则跳过 DOM 重建 */
+let lastRoomSig = '';
+
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+/** 大厅是否处于前台（进对局后 lobby-root 被 shell 隐藏，轮询应暂停） */
+function lobbyVisible(): boolean {
+  return !!rootEl && !(rootEl as HTMLElement & { hidden?: boolean }).hidden && !document.hidden;
+}
 
 export async function startLobby(container: HTMLElement, enterGame: (p: EnterGameParams) => void): Promise<LobbyHandle> {
   rootEl = container;
   onEnterGame = enterGame;
+  visibilityHandler = () => {
+    // 从后台/对局回到大厅：立即刷一次，弥补暂停期间的空窗
+    if (lobbyVisible()) {
+      if (currentRoom) void refreshRoom(); else void refreshRooms();
+    }
+  };
+  document.addEventListener('visibilitychange', visibilityHandler);
   await boot();
   return {
     destroy() {
-      clearInterval(roomTimer!); clearInterval(roomsTimer!);
+      stopTimer('room'); stopTimer('list');
+      if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
       if (rootEl) rootEl.innerHTML = '';
-      rootEl = null; onEnterGame = null; currentRoom = null;
+      rootEl = null; onEnterGame = null; currentRoom = null; lastRoomSig = '';
     }
   };
 }
 
-function render() {
+function stopTimer(which: 'room' | 'list'): void {
+  const t = which === 'room' ? roomTimer : roomsTimer;
+  if (t) clearInterval(t);
+  if (which === 'room') roomTimer = null; else roomsTimer = null;
+}
+
+function render(): void {
   if (!rootEl) return;
   rootEl.innerHTML = !user ? authHtml() : currentRoom ? roomHtml() : lobbyHtml();
+  lastRoomSig = currentRoom ? roomSig(currentRoom) : '';
   bind();
+}
+
+/** 房间页渲染签名：签名字段变化才值得重建 DOM */
+function roomSig(r: HubRoomInfo): string {
+  return [r.id, r.status, r.name, r.gameId, r.hostId, r.maxPlayers,
+    r.players.map(p => p.id + ':' + p.name).join(',')].join('|');
 }
 
 function authHtml() {
@@ -56,13 +96,13 @@ function authHtml() {
 
 function lobbyHtml() {
   return `
-  <header class="lob-header"><h1>RDS Board · 联机大厅</h1><div class="lob-row"><span class="lob-muted">${user!.name}</span><button id="logout" class="lob-secondary">退出</button></div></header>
+  <header class="lob-header"><h1>RDS Board · 联机大厅</h1><div class="lob-row"><span class="lob-muted">${esc(user!.name)}</span><button id="logout" class="lob-secondary">退出</button></div></header>
   <div class="lob-main">
     <div class="lob-card">
       <b>创建房间</b>
       <div class="lob-row" style="margin-top:10px">
         <input id="room-name" placeholder="房间名" style="flex:1;min-width:160px" />
-        <select id="game">${games.map(g => `<option value="${g.id}">${g.name}（${g.minPlayers}-${g.maxPlayers}人）</option>`).join('')}</select>
+        <select id="game">${games.map(g => `<option value="${esc(g.id)}">${esc(g.name)}（${g.minPlayers}-${g.maxPlayers}人）</option>`).join('')}</select>
         <button id="create">创建</button>
       </div>
     </div>
@@ -74,22 +114,22 @@ function lobbyHtml() {
 function roomRow(r: HubRoomInfo) {
   const g = games.find(x => x.id === r.gameId);
   return `<tr>
-    <td>${r.name}</td><td>${g?.name ?? r.gameId}</td>
-    <td>${r.players.map(p => p.name).join('、')}${r.hostId === user!.sub ? '（你是房主）' : ''}</td>
+    <td>${esc(r.name)}</td><td>${esc(g?.name ?? r.gameId)}</td>
+    <td>${r.players.map(p => esc(p.name)).join('、')}${r.hostId === user!.sub ? '（你是房主）' : ''}</td>
     <td><span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span></td>
-    <td><button data-join="${r.id}" ${r.status !== 'open' ? 'disabled' : ''}>加入</button></td>
+    <td><button data-join="${esc(r.id)}" ${r.status !== 'open' ? 'disabled' : ''}>加入</button></td>
   </tr>`;
 }
 
 async function refreshRooms() {
   const el = document.getElementById('rooms');
-  if (!el) return;
+  if (!el || !lobbyVisible()) return;
   try {
     const rooms = await getRooms();
     el.innerHTML = rooms.length
       ? '<table><tr><th>房间</th><th>游戏</th><th>玩家</th><th>状态</th><th></th></tr>' + rooms.map(roomRow).join('') + '</table>'
       : '暂无房间，创建一个吧';
-  } catch (e: any) { el.innerHTML = '<span class="lob-error">' + e.message + '</span>'; }
+  } catch (e: any) { el.innerHTML = '<span class="lob-error">' + esc(e.message) + '</span>'; }
 }
 
 function bind() {
@@ -120,7 +160,7 @@ function bind() {
   if (currentRoom) {
     const r0 = currentRoom;
     $('exit-room')?.addEventListener('click', async () => {
-      try { await leaveRoom(r0.id); } catch (e: any) { alert(e.message); return; }
+      try { await leaveRoom(r0.id); } catch (e: any) { showToast(e.message, 'error'); return; }
       currentRoom = null; render();
     });
     $('start-game')?.addEventListener('click', async () => {
@@ -128,11 +168,12 @@ function bind() {
         currentRoom = await setRoomStatus(r0.id, 'playing');
         onEnterGame?.({ query: gameQuery(currentRoom, 'host') });
         render();
-      } catch (e: any) { alert(e.message); }
+      } catch (e: any) { showToast(e.message, 'error'); }
     });
     $('reopen-game')?.addEventListener('click', () => onEnterGame?.({ query: gameQuery(r0, 'host') }));
     $('join-game')?.addEventListener('click', () => onEnterGame?.({ query: gameQuery(r0, 'guest') }));
-    clearInterval(roomTimer!);
+    stopTimer('list');
+    stopTimer('room');
     roomTimer = setInterval(refreshRoom, 3000);
     return;
   }
@@ -140,17 +181,18 @@ function bind() {
   $('create')?.addEventListener('click', async () => {
     try {
       const room = await createRoom(($('room-name') as HTMLInputElement).value, ($('game') as HTMLSelectElement).value);
+      showToast('房间已创建', 'success');
       currentRoom = room; render();
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { showToast(e.message, 'error'); }
   });
   // 事件委托：refreshRooms 周期性重建表格 innerHTML，直接绑按钮会丢失监听器
   $('rooms')?.addEventListener('click', async (ev) => {
     const btn = (ev.target as HTMLElement).closest<HTMLElement>('[data-join]');
     if (!btn) return;
-    try { currentRoom = await joinRoom(btn.dataset.join!); render(); } catch (e: any) { alert(e.message); }
+    try { currentRoom = await joinRoom(btn.dataset.join!); render(); } catch (e: any) { showToast(e.message, 'error'); }
   });
   refreshRooms();
-  clearInterval(roomsTimer!);
+  stopTimer('list');
   roomsTimer = setInterval(refreshRooms, 5000);
 }
 
@@ -178,12 +220,12 @@ function roomHtml() {
   const isHost = r.hostId === user!.sub;
   const seat = seatOf(r, user!.sub);
   return `
-  <header class="lob-header"><h1>${r.name}</h1><div class="lob-row"><span class="lob-muted">${user!.name}</span><button id="exit-room" class="lob-secondary">离开房间</button></div></header>
+  <header class="lob-header"><h1>${esc(r.name)}</h1><div class="lob-row"><span class="lob-muted">${esc(user!.name)}</span><button id="exit-room" class="lob-secondary">离开房间</button></div></header>
   <div class="lob-main">
     <div class="lob-card">
-      <b>${g?.name ?? r.gameId}（${r.players.length}/${r.maxPlayers}人）</b>
+      <b>${esc(g?.name ?? r.gameId)}（${r.players.length}/${r.maxPlayers}人）</b>
       <span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span>
-      <ol style="margin:12px 0 0 18px">${r.players.map((p, i) => `<li>${p.name}${p.id === r.hostId ? ' 🏠房主' : ''} · 座位 p${i + 1}${p.id === user!.sub ? '（你）' : ''}</li>`).join('')}</ol>
+      <ol style="margin:12px 0 0 18px">${r.players.map((p, i) => `<li>${esc(p.name)}${p.id === r.hostId ? ' 🏠房主' : ''} · 座位 p${i + 1}${p.id === user!.sub ? '（你）' : ''}</li>`).join('')}</ol>
       <div class="lob-row" style="margin-top:14px">
         ${isHost ? `<button id="start-game" ${r.players.length < (g?.minPlayers ?? 1) ? 'disabled' : ''}>开始游戏（${g?.minPlayers ?? ''}人起）</button>` : ''}
         ${isHost && r.status === 'playing' ? '<button id="reopen-game">再次进入对局</button>' : ''}
@@ -196,12 +238,15 @@ function roomHtml() {
 }
 
 async function refreshRoom() {
-  if (!currentRoom) return;
+  if (!currentRoom || !lobbyVisible()) return;
   try {
-    currentRoom = await getRoom(currentRoom.id);
+    const fresh = await getRoom(currentRoom.id);
+    // 数据签名未变化：跳过整页重建，保住按钮 focus/hover 等交互状态
+    if (roomSig(fresh) === lastRoomSig) { currentRoom = fresh; return; }
+    currentRoom = fresh;
     render();
   } catch (e: any) {
-    currentRoom = null; render(); alert(e.message);
+    currentRoom = null; render(); showToast(e.message, 'error');
   }
 }
 

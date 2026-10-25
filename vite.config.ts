@@ -21,7 +21,14 @@ export default defineConfig({
   server: {
     port: 3000,
     host: true,
-    open: false
+    open: false,
+    // Dev-time proxy to apps/server (8787)：让统一外壳在 vite dev 下也能探测到大厅。
+    // 没有它，/healthz 命中 SPA fallback 的 200 HTML，shell 会退回本地单机模式。
+    proxy: {
+      '/healthz': 'http://localhost:8787',
+      '/api': 'http://localhost:8787',
+      '/ws': { target: 'ws://localhost:8787', ws: true }
+    }
   },
   build: {
     target: 'esnext'
