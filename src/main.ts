@@ -332,6 +332,10 @@ class BoardGameSimulatorApp {
     this.currentGameId = gameId;
     this.session = this.createSession(gameId);
 
+    this.scene.resetForNewGame();
+    this.lastRevision = -1;
+    this.lastPlacementKey = '';
+
     this.hud.setPresenter(this.session);
     this.inspector.setPresenter(this.session);
     this.bindSession(this.session);
@@ -342,6 +346,14 @@ class BoardGameSimulatorApp {
     this.lastRevision = snapshot.revision;
     this.lastPlacementKey = snapshot.placement ? `${snapshot.placement.defId}:${snapshot.placement.rotation}` : '';
     this.hud.syncCamera('iso');
+
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('game', gameId);
+      url.searchParams.delete('scenario');
+      window.history.replaceState({}, '', url.toString());
+      document.title = `${module.meta.name} · Universal Board Game Engine`;
+    } catch {}
 
     this.hud.showAnnouncement(`已载入 · ${module.meta.name}`);
   }
@@ -360,6 +372,10 @@ class BoardGameSimulatorApp {
     this.session.dispose();
     this.session = this.createSession(this.currentGameId, scenario);
 
+    this.scene.resetForNewGame();
+    this.lastRevision = -1;
+    this.lastPlacementKey = '';
+
     this.hud.setPresenter(this.session);
     this.inspector.setPresenter(this.session);
     this.bindSession(this.session);
@@ -370,6 +386,16 @@ class BoardGameSimulatorApp {
     this.lastRevision = snapshot.revision;
     this.lastPlacementKey = snapshot.placement ? `${snapshot.placement.defId}:${snapshot.placement.rotation}` : '';
     this.hud.syncCamera('iso');
+
+    try {
+      const url = new URL(window.location.href);
+      if (scenario) {
+        url.searchParams.set('scenario', scenario);
+      } else {
+        url.searchParams.delete('scenario');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
 
     const label = scenario ? String(module.scenarios?.[scenario]?.description ?? scenario) : '标准开局';
     this.hud.showAnnouncement(`剧本已重开 · ${label}`);
