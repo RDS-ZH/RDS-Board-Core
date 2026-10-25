@@ -48,6 +48,8 @@ export interface RoomDef {
   name: string;
   en: string;
   floor: Floor;
+  /** Allowed floors for placing this tile; if omitted, defaults to [floor]. */
+  floors?: Floor[];
   /** Local door layout; the tile may be rotated when placed. */
   doors: DoorDir[];
   symbol?: 'EVENT' | 'ITEM' | 'OMEN';

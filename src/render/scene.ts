@@ -93,6 +93,8 @@ export class BoardGameScene {
   private prePlacementCamera?: { position: THREE.Vector3; target: THREE.Vector3 };
   /** Room the active actor occupied on the previous sync, for camera follow. */
   private lastActorRoomId?: string;
+  /** Active actor on the previous sync, for tracking turn switches in GOD mode. */
+  private lastActorId?: string;
   /** Floor currently isolated in the 3D scene ('ALL' shows every layer). */
   private visibleFloor = 'ALL';
   private cameraTween?: {
@@ -710,6 +712,7 @@ export class BoardGameScene {
     this.lastFitSignature = '';
     this.hasFitted = false;
     this.lastActorRoomId = undefined;
+    this.lastActorId = undefined;
     this.visibleFloor = 'ALL';
     this.prePlacementCamera = undefined;
     this.cancelCameraTween();
@@ -1382,12 +1385,12 @@ export class BoardGameScene {
       });
     }
 
-    // Passive hazard marker: the chute and the collapsed floor hurt on entry,
-    // so flag them before the player steps in. Not clickable — nothing to choose.
+    // Passive hazard marker: indicates when debuffs take effect
+    // (on entry vs on ending turn). Not clickable — pure informative billboard.
     const HAZARD: Record<string, { icon: string; label: string; color: string }> = {
-      COAL_CHUTE: { icon: '⚠', label: '煤槽 · 入内擦伤', color: '#c9a24a' },
-      COLLAPSED: { icon: '⚠', label: '坍塌 · 速度检定', color: '#c9a24a' },
-      FURNACE: { icon: '⚠', label: '熔炉 · 灼伤', color: '#c9a24a' }
+      COAL_CHUTE: { icon: '⚠', label: '煤槽 · 滑落地下室', color: '#c9a24a' },
+      COLLAPSED: { icon: '⚠', label: '坍塌 · 入内速度检定', color: '#c9a24a' },
+      FURNACE: { icon: '⚠', label: '熔炉 · 停留灼伤', color: '#c9a24a' }
     };
     const hazard = HAZARD[String(node.props?.special ?? '')];
     const nodeFloor = String(node.props?.floor ?? '');
@@ -2175,23 +2178,40 @@ export class BoardGameScene {
   }
 
   /**
-   * Keep the actor framed while they walk around the board.
+   * Keep the active actor framed when they move or when turns switch.
    *
-   * Movement used to leave the camera where it was, so a character could leave
-   * the viewport entirely. Panning (not orbiting or dollying) keeps the player's
-   * chosen bearing intact while the actor stays centred.
+   * Movement and turn handovers used to leave the camera behind, especially
+   * in GOD / spectator mode where actors occupy completely different rooms.
+   * Panning (not orbiting or dollying) preserves the player's chosen bearing.
    */
   private followActorIfMoved(state: ProjectedGameState): void {
     const actorId = state.activeActorId ?? state.activePlayerId;
-    const player = actorId ? state.players[actorId] : undefined;
-    const roomId = String(player?.customProps?.currentRoomId ?? '');
+    const actor = actorId ? (state.players[actorId] ?? state.npcs?.[actorId]) : undefined;
+    const roomId = String(actor?.customProps?.currentRoomId ?? actor?.customProps?.roomId ?? '');
     const previousRoomId = this.lastActorRoomId;
-    this.lastActorRoomId = roomId || undefined;
+    const previousActorId = this.lastActorId;
 
-    // First sync only records the starting room; there is nothing to follow yet.
-    if (!previousRoomId || !roomId || previousRoomId === roomId) return;
-    // Never steal the camera mid-animation (placement raise, inspector tween…).
-    if (this.cameraTween || performance.now() < this.skipFitUntil) return;
+    this.lastActorId = actorId;
+
+    // First sync only records the starting actor & room; there is nothing to follow yet.
+    if (!previousRoomId || !roomId) {
+      this.lastActorRoomId = roomId || undefined;
+      return;
+    }
+
+    const actorSwitched = !!previousActorId && previousActorId !== actorId;
+    const roomChanged = previousRoomId !== roomId;
+
+    if (!actorSwitched && !roomChanged) return;
+
+    // When an actor switch occurs (turn handed over), it takes precedence over
+    // lingering skipFit timers so the new active character is immediately framed.
+    if (!actorSwitched && (this.cameraTween || performance.now() < this.skipFitUntil)) {
+      // Keep previousRoomId untouched so the next frame can retry once skipFit passes
+      return;
+    }
+
+    this.lastActorRoomId = roomId || undefined;
 
     const roomNode = state.mapGraph.nodes[roomId];
     const newFloor = String(roomNode?.props?.floor ?? '');
@@ -2202,21 +2222,17 @@ export class BoardGameScene {
 
     const focus = this.actorFocusPoint(state);
     if (!focus) return;
-    this.panToKeepBearing(focus, 460);
+    this.panToKeepBearing(focus, actorSwitched ? 520 : 460);
   }
 
   /**
-   * World point to frame after a placement: the room the active actor now
-   * stands in.
-   *
-   * Deliberately reads the projected node rather than the actor's meeple: this
-   * runs before `renderEntities()` has rebuilt the tokens for the new room, so
-   * the mesh still sits on the pre-placement tile.
+   * World point to frame after a placement or turn change: the room the
+   * active actor (player or monster) now stands in.
    */
   private actorFocusPoint(state: ProjectedGameState): THREE.Vector3 | undefined {
     const actorId = state.activeActorId ?? state.activePlayerId;
-    const player = actorId ? state.players[actorId] : undefined;
-    const roomId = String(player?.customProps?.currentRoomId ?? '');
+    const actor = actorId ? (state.players[actorId] ?? state.npcs?.[actorId]) : undefined;
+    const roomId = String(actor?.customProps?.currentRoomId ?? actor?.customProps?.roomId ?? '');
     const node = roomId ? state.mapGraph.nodes[roomId] : undefined;
     if (!node) return undefined;
     return new THREE.Vector3(node.position[0], Math.max(0.12, node.position[1] + 0.16), node.position[2]);
