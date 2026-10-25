@@ -40,6 +40,8 @@ export class LabelOverlay {
   }[] = [];
   private labels: WorldLabel[] = [];
   private chips = new Map<string, HTMLDivElement>();
+  private chipContentKeys = new Map<string, string>();
+  private chipAttrs = new Map<string, { interactive: boolean; groupId?: string }>();
   private leaders = new Map<string, SVGLineElement>();
   private onClick?: (id: string) => void;
   private onGroupDrag?: (groupId: string, phase: 'start' | 'move' | 'end', clientX: number, clientY: number) => void;
@@ -174,41 +176,58 @@ export class LabelOverlay {
         this.svg.appendChild(line);
         this.leaders.set(placement.id, line);
       }
-      chip.className = `label-chip label-kind-${placement.kind ?? 'generic'}`;
-      chip.replaceChildren(...this.chipContent(placement));
-      chip.title = placement.text;
+
+      // Dirty-check DOM contents to avoid tearing down and recreating DOM nodes every frame.
+      const contentKey = `${placement.kind ?? 'generic'}:${placement.text}:${placement.count ?? 1}`;
+      if (this.chipContentKeys.get(placement.id) !== contentKey) {
+        this.chipContentKeys.set(placement.id, contentKey);
+        chip.className = `label-chip label-kind-${placement.kind ?? 'generic'}`;
+        chip.replaceChildren(...this.chipContent(placement));
+        chip.title = placement.text;
+      }
+
       chip.style.transform = `translate(${placement.left}px, ${placement.top}px)`;
       chip.style.width = `${placement.width}px`;
       chip.style.height = `${placement.height}px`;
-      chip.style.pointerEvents = placement.interactive || placement.groupId ? 'auto' : 'none';
-      chip.style.cursor = placement.groupId ? 'grab' : placement.interactive ? 'pointer' : 'default';
-      chip.onclick = placement.interactive
-        ? event => {
+
+      const prevAttrs = this.chipAttrs.get(placement.id);
+      if (!prevAttrs || prevAttrs.interactive !== placement.interactive || prevAttrs.groupId !== placement.groupId) {
+        this.chipAttrs.set(placement.id, { interactive: !!placement.interactive, groupId: placement.groupId });
+        chip.style.pointerEvents = placement.interactive || placement.groupId ? 'auto' : 'none';
+        chip.style.cursor = placement.groupId ? 'grab' : placement.interactive ? 'pointer' : 'default';
+        chip.onclick = placement.interactive
+          ? event => {
+              event.stopPropagation();
+              this.onClick?.(placement.id);
+            }
+          : null;
+        if (placement.groupId) {
+          chip.onpointerdown = event => {
+            if (event.button !== 0) return;
+            event.preventDefault();
             event.stopPropagation();
-            this.onClick?.(placement.id);
-          }
-        : null;
-      if (placement.groupId) {
-        chip.onpointerdown = event => {
-          if (event.button !== 0) return;
-          event.preventDefault();
-          event.stopPropagation();
-          chip?.setPointerCapture(event.pointerId);
-          this.onGroupDrag?.(placement.groupId!, 'start', event.clientX, event.clientY);
-        };
-        chip.onpointermove = event => {
-          if (!chip?.hasPointerCapture(event.pointerId)) return;
-          this.onGroupDrag?.(placement.groupId!, 'move', event.clientX, event.clientY);
-        };
-        chip.onpointerup = event => {
-          if (!chip?.hasPointerCapture(event.pointerId)) return;
-          chip.releasePointerCapture(event.pointerId);
-          this.onGroupDrag?.(placement.groupId!, 'end', event.clientX, event.clientY);
-        };
-        chip.onpointercancel = event => {
-          if (chip?.hasPointerCapture(event.pointerId)) chip.releasePointerCapture(event.pointerId);
-          this.onGroupDrag?.(placement.groupId!, 'end', event.clientX, event.clientY);
-        };
+            chip?.setPointerCapture(event.pointerId);
+            this.onGroupDrag?.(placement.groupId!, 'start', event.clientX, event.clientY);
+          };
+          chip.onpointermove = event => {
+            if (!chip?.hasPointerCapture(event.pointerId)) return;
+            this.onGroupDrag?.(placement.groupId!, 'move', event.clientX, event.clientY);
+          };
+          chip.onpointerup = event => {
+            if (!chip?.hasPointerCapture(event.pointerId)) return;
+            chip.releasePointerCapture(event.pointerId);
+            this.onGroupDrag?.(placement.groupId!, 'end', event.clientX, event.clientY);
+          };
+          chip.onpointercancel = event => {
+            if (chip?.hasPointerCapture(event.pointerId)) chip.releasePointerCapture(event.pointerId);
+            this.onGroupDrag?.(placement.groupId!, 'end', event.clientX, event.clientY);
+          };
+        } else {
+          chip.onpointerdown = null;
+          chip.onpointermove = null;
+          chip.onpointerup = null;
+          chip.onpointercancel = null;
+        }
       }
 
       const leader = this.leaders.get(placement.id);
@@ -246,6 +265,8 @@ export class LabelOverlay {
   public clear(): void {
     this.labels = [];
     this.chips.clear();
+    this.chipContentKeys.clear();
+    this.chipAttrs.clear();
     this.leaders.clear();
     this.chipHost.replaceChildren();
     this.svg.replaceChildren();
