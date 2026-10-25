@@ -28,6 +28,8 @@ class BoardGameSimulatorApp {
   private currentGameId = 'catan';
   private lastRevision = -1;
   private lastPlacementKey = '';
+  /** Net sessions: show the game-over overlay exactly once per session. */
+  private netGameOverShown = false;
   private lastRoomId = '';
   private freeDragEntityId?: string;
   private readonly initialScenario?: string;
@@ -317,6 +319,13 @@ class BoardGameSimulatorApp {
           );
         }
       }
+
+      // Lobby lifecycle (Phase A): a finished net game offers a path back to the
+      // lobby; the host also reopens the room so the table returns to 准备态.
+      if (snapshot.gameOver && this.netOptions && !this.netGameOverShown) {
+        this.netGameOverShown = true;
+        showNetGameOverOverlay(this.netOptions);
+      }
     });
   }
 
@@ -526,4 +535,47 @@ function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | un
     hostId,
     scenario: params.get('scenario') ?? undefined
   };
+}
+
+/**
+ * Phase A 生命周期回流：网络对局结束后展示「返回大厅」浮层。
+ * 房主负责把房间状态置回 open（大厅房间页随即显示等待中，可再开一局）；
+ * 返回大厅 = 清掉 URL 网络参数整页重载，让统一外壳重新探测并回到大厅视图。
+ */
+function showNetGameOverOverlay(opts: NetSessionOptions): void {
+  if (document.getElementById('net-gameover-overlay')) return;
+  const isHost = opts.role === 'host';
+  const overlay = document.createElement('div');
+  overlay.id = 'net-gameover-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:900;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.78)';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#161d29;border:1px solid #2b3442;border-radius:12px;padding:28px 36px;text-align:center;font-family:system-ui,sans-serif;color:#e6e1d5;box-shadow:0 12px 48px rgba(0,0,0,.55)';
+  const title = document.createElement('h2');
+  title.textContent = '对局结束';
+  title.style.cssText = 'margin:0 0 8px;color:#d9b45b;letter-spacing:1px';
+  const hint = document.createElement('p');
+  hint.textContent = isHost
+    ? '房间已恢复为等待中，回到大厅可邀请新朋友再开一局。'
+    : '等待房主把房间恢复为等待中，回到大厅查看房间状态。';
+  hint.style.cssText = 'margin:0 0 18px;color:#8b94a3;font-size:14px';
+  const back = document.createElement('button');
+  back.textContent = '⟵ 返回大厅';
+  back.style.cssText = 'background:#d9b45b;color:#17130a;border:none;border-radius:6px;padding:10px 22px;font-size:15px;font-weight:600;cursor:pointer';
+  back.addEventListener('click', async () => {
+    back.disabled = true;
+    if (isHost) {
+      // 尽力而为：失败也允许返回（房间页轮询会看到 stale 状态）
+      try {
+        await fetch('/api/rooms/' + opts.roomId + '/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + opts.token },
+          body: JSON.stringify({ status: 'open' })
+        });
+      } catch { /* 返回大厅后房间轮询兜底 */ }
+    }
+    location.href = location.pathname;
+  });
+  card.append(title, hint, back);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
 }
