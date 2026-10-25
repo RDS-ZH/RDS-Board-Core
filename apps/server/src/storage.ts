@@ -7,6 +7,8 @@ export interface UserRecord { id: string; name: string; passHash: string; salt: 
 export interface RoomRecord {
   id: string; name: string; gameId: string; hostId: string; status: 'open' | 'playing' | 'closed';
   maxPlayers: number; players: string[]; createdAt: number;
+  /** Phase B（旧数据可能缺省） */
+  readyPlayers?: string[]; isPrivate?: boolean; code?: string; scenarioId?: string;
 }
 
 interface DbShape { users: UserRecord[]; rooms: RoomRecord[]; }

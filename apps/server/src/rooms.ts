@@ -3,66 +3,153 @@ import { randomId } from './config.ts';
 import { gameById } from './games.ts';
 import type { HubRoomInfo } from '@rds/room-protocol';
 
-function toInfo(r: NonNullable<ReturnType<typeof rooms.byId>>): HubRoomInfo {
+interface RoomRec {
+  id: string; name: string; gameId: string; hostId: string;
+  status: 'open' | 'playing' | 'closed'; maxPlayers: number;
+  players: string[]; createdAt: number;
+  /** Phase B */
+  readyPlayers: string[];      // 已就绪玩家 id（开局时清空）
+  isPrivate: boolean;
+  code: string;                // 私密房加入码（6 位大写）
+  scenarioId?: string;         // 开局变体
+}
+
+/** 房间字段变化 → 推送钩子（index.ts 注入 SignalHub 广播；rooms.ts 不反向依赖 ws）。 */
+export let onRoomChanged: (room: HubRoomInfo) => void = () => {};
+export function setRoomChangedHook(hook: (room: HubRoomInfo) => void): void { onRoomChanged = hook; }
+
+function genCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < 6; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return s;
+}
+
+function toInfo(r: RoomRec, opts: { includeCode?: boolean } = {}): HubRoomInfo {
   const host = users.byId(r.hostId);
-  return {
+  const info: HubRoomInfo = {
     id: r.id, name: r.name, gameId: r.gameId,
     hostId: r.hostId, hostName: host?.name ?? '?', status: r.status,
     maxPlayers: r.maxPlayers,
     players: r.players.map(pid => ({ id: pid, name: users.byId(pid)?.name ?? '?' })),
     createdAt: r.createdAt,
+    readyPlayers: [...(r.readyPlayers ?? [])],
+    isPrivate: r.isPrivate ?? false,
+    scenarioId: r.scenarioId,
   };
+  if (opts.includeCode && r.code) info.code = r.code;
+  return info;
 }
 
-export function getRoomInfo(roomId: string): HubRoomInfo | { error: string } {
-  const r = rooms.byId(roomId);
+function changed(r: RoomRec, opts: { includeCode?: boolean } = {}): HubRoomInfo {
+  const info = toInfo(r, opts);
+  onRoomChanged(info);
+  return info;
+}
+
+export function getRoomInfo(roomId: string, viewerId?: string): HubRoomInfo | { error: string } {
+  const r = rooms.byId(roomId) as RoomRec | undefined;
   if (!r) return { error: '房间不存在' };
-  return toInfo(r);
+  return toInfo(r, { includeCode: viewerId === r.hostId });
 }
 
 export function listRooms(): HubRoomInfo[] {
-  return rooms.all().filter(r => r.status !== 'closed').map(toInfo);
+  return rooms.all()
+    .filter(r => r.status !== 'closed')
+    .map(r => toInfo(r as RoomRec)) as HubRoomInfo[];
 }
 
-export function createRoom(userId: string, name: string, gameId: string): HubRoomInfo | { error: string } {
+export interface CreateRoomOpts { maxPlayers?: number; isPrivate?: boolean; scenarioId?: string; }
+
+export function createRoom(userId: string, name: string, gameId: string, opts: CreateRoomOpts = {}): HubRoomInfo | { error: string } {
   const game = gameById(gameId);
   if (!game) return { error: '未知游戏：' + gameId };
+  const variantOk = !opts.scenarioId || game.variants?.some(v => v.id === opts.scenarioId);
+  if (!variantOk) return { error: '未知开局变体' };
+  const maxPlayers = Math.min(Math.max(opts.maxPlayers ?? game.maxPlayers, game.minPlayers), game.maxPlayers);
   const id = randomId('r_');
-  const rec = {
+  const rec: RoomRec = {
     id, name: (name || '未命名房间').slice(0, 40), gameId, hostId: userId,
-    status: 'open' as const, maxPlayers: game.maxPlayers,
+    status: 'open', maxPlayers,
     players: [userId], createdAt: Date.now(),
+    readyPlayers: [userId],          // 房主默认就绪
+    isPrivate: !!opts.isPrivate,
+    code: genCode(),
+    scenarioId: opts.scenarioId,
   };
   rooms.add(rec);
-  return toInfo(rec);
+  return changed(rec, { includeCode: true });
 }
 
-export function joinRoom(userId: string, roomId: string): HubRoomInfo | { error: string } {
-  const r = rooms.byId(roomId);
+export function joinRoom(userId: string, roomId: string, code?: string): HubRoomInfo | { error: string } {
+  const r = rooms.byId(roomId) as RoomRec | undefined;
   if (!r) return { error: '房间不存在' };
   if (r.status !== 'open') return { error: '房间不可加入（' + r.status + '）' };
   if (!r.players.includes(userId)) {
     if (r.players.length >= r.maxPlayers) return { error: '房间已满' };
+    if (r.isPrivate && (!code || code.toUpperCase() !== r.code)) return { error: '房间码不正确' };
     r.players.push(userId);
-    rooms.update(roomId, { players: r.players });
+    rooms.update(roomId, { players: r.players, readyPlayers: r.readyPlayers ?? [] });
   }
-  return toInfo(r);
+  return changed(r, { includeCode: userId === r.hostId });
 }
 
-export function leaveRoom(userId: string, roomId: string): HubRoomInfo | { error: string } {
-  const r = rooms.byId(roomId);
+export function leaveRoom(userId: string, roomId: string) {
+  const r = rooms.byId(roomId) as RoomRec | undefined;
   if (!r) return { error: '房间不存在' };
-  rooms.update(roomId, { players: r.players.filter(p => p !== userId) });
-  const after = rooms.byId(roomId)!;
-  if (after.players.length === 0) { rooms.remove(roomId); return { id: roomId, closed: true } as unknown as HubRoomInfo; }
-  if (after.hostId === userId) rooms.update(roomId, { hostId: after.players[0] });
-  return toInfo(after);
+  const players = r.players.filter(p => p !== userId);
+  const readyPlayers = (r.readyPlayers ?? []).filter(p => players.includes(p));
+  if (players.length === 0) {
+    rooms.remove(roomId);
+    onRoomChanged({ id: roomId, name: r.name, gameId: r.gameId, hostId: '', hostName: '', status: 'closed', maxPlayers: r.maxPlayers, players: [], createdAt: r.createdAt });
+    return { id: roomId, closed: true } as unknown as HubRoomInfo;
+  }
+  const hostId = r.hostId === userId ? players[0] : r.hostId;
+  rooms.update(roomId, { players, readyPlayers, hostId });
+  const after = rooms.byId(roomId)! as RoomRec;
+  return changed(after);
 }
 
 export function setRoomStatus(hostId: string, roomId: string, status: 'open' | 'playing' | 'closed') {
-  const r = rooms.byId(roomId);
+  const r = rooms.byId(roomId) as RoomRec | undefined;
   if (!r) return { error: '房间不存在' };
   if (r.hostId !== hostId) return { error: '只有房主可以操作' };
-  rooms.update(roomId, { status });
-  return toInfo(rooms.byId(roomId)!);
+  const patch: Partial<RoomRec> = { status };
+  if (status === 'playing') patch.readyPlayers = [];   // 开局清就绪态
+  if (status === 'open') patch.readyPlayers = [hostId]; // 回到准备页：房主重新就绪
+  rooms.update(roomId, patch);
+  return changed(rooms.byId(roomId)! as RoomRec);
+}
+
+/** Phase B：玩家就绪/取消就绪。 */
+export function setReady(userId: string, roomId: string, ready: boolean) {
+  const r = rooms.byId(roomId) as RoomRec | undefined;
+  if (!r) return { error: '房间不存在' };
+  if (!r.players.includes(userId)) return { error: '你不在该房间内' };
+  if (r.status !== 'open') return { error: '对局进行中不能更改就绪状态' };
+  const readyPlayers = ready
+    ? [...new Set([...(r.readyPlayers ?? []), userId])]
+    : (r.readyPlayers ?? []).filter(p => p !== userId);
+  rooms.update(roomId, { readyPlayers });
+  return changed(rooms.byId(roomId)! as RoomRec);
+}
+
+/** Phase B：房主请离玩家。 */
+export function kickPlayer(hostId: string, roomId: string, targetId: string) {
+  const r = rooms.byId(roomId) as RoomRec | undefined;
+  if (!r) return { error: '房间不存在' };
+  if (r.hostId !== hostId) return { error: '只有房主可以操作' };
+  if (targetId === hostId) return { error: '不能请离自己' };
+  if (!r.players.includes(targetId)) return { error: '该玩家不在房间内' };
+  return leaveRoom(targetId, roomId);
+}
+
+/** Phase B：转移房主。 */
+export function transferHost(hostId: string, roomId: string, targetId: string) {
+  const r = rooms.byId(roomId) as RoomRec | undefined;
+  if (!r) return { error: '房间不存在' };
+  if (r.hostId !== hostId) return { error: '只有房主可以操作' };
+  if (!r.players.includes(targetId)) return { error: '该玩家不在房间内' };
+  rooms.update(roomId, { hostId: targetId });
+  return changed(rooms.byId(roomId)! as RoomRec);
 }

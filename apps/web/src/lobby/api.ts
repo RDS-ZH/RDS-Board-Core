@@ -11,11 +11,20 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const getGames = () => api<HubGameInfo[]>('/api/games');
 export const getRooms = () => api<HubRoomInfo[]>('/api/rooms');
-export const createRoom = (name: string, gameId: string) =>
-  api<HubRoomInfo>('/api/rooms', { method: 'POST', body: JSON.stringify({ name, gameId }) });
-export const joinRoom = (id: string) => api<HubRoomInfo>('/api/rooms/' + id + '/join', { method: 'POST' });
+export interface CreateRoomOpts { maxPlayers?: number; isPrivate?: boolean; scenarioId?: string; }
+export const createRoom = (name: string, gameId: string, opts: CreateRoomOpts = {}) =>
+  api<HubRoomInfo>('/api/rooms', { method: 'POST', body: JSON.stringify({ name, gameId, ...opts }) });
+export const joinRoom = (id: string, code?: string) =>
+  api<HubRoomInfo>('/api/rooms/' + id + '/join', { method: 'POST', body: JSON.stringify(code ? { code } : {}) });
 export const me = () => api<{ sub: string; name: string }>('/api/auth/me');
 export const getRoom = (id: string) => api<HubRoomInfo>('/api/rooms/' + id);
-export const leaveRoom = (id: string) => api<{ ok: true }>('/api/rooms/' + id + '/leave', { method: 'POST' });
+export const leaveRoom = (id: string) => api<HubRoomInfo | { ok: true }>('/api/rooms/' + id + '/leave', { method: 'POST' });
 export const setRoomStatus = (id: string, status: 'open' | 'playing' | 'closed') =>
   api<HubRoomInfo>('/api/rooms/' + id + '/status', { method: 'POST', body: JSON.stringify({ status }) });
+// ---- Phase B ----
+export const setReady = (id: string, ready: boolean) =>
+  api<HubRoomInfo>('/api/rooms/' + id + '/ready', { method: 'POST', body: JSON.stringify({ ready }) });
+export const kickPlayer = (id: string, target: string) =>
+  api<HubRoomInfo>('/api/rooms/' + id + '/kick', { method: 'POST', body: JSON.stringify({ target }) });
+export const transferHost = (id: string, target: string) =>
+  api<HubRoomInfo>('/api/rooms/' + id + '/host', { method: 'POST', body: JSON.stringify({ target }) });
