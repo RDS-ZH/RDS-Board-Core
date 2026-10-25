@@ -8,9 +8,9 @@ import { createServer } from 'vite';
 
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
 
-const { WebRtcGuestTransport } = await server.ssrLoadModule('/src/net/webrtc-transport.ts');
-const { NetSession } = await server.ssrLoadModule('/src/app/netSession.ts');
-const { GAME_REGISTRY } = await server.ssrLoadModule('/src/games/registry.ts');
+const { WebRtcGuestTransport } = await server.ssrLoadModule('/packages/net/src/webrtc-transport.ts');
+const { NetSession } = await server.ssrLoadModule('/packages/app/src/netSession.ts');
+const { GAME_REGISTRY } = await server.ssrLoadModule('/packages/games/src/registry.ts');
 
 let failed = 0;
 const ok = (cond, name) => { if (!cond) { failed++; console.error('FAIL', name); } else console.log('ok -', name); };

@@ -1,7 +1,9 @@
 node_modules
 dist
-shots
 .git
-.gitignore
+apps/server/data
+shots*
 *.log
-.DS_Store
+Dockerfile
+docker-compose.yml
+.dockerignore

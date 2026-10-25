@@ -8,11 +8,20 @@
     "strict": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "noEmit": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@rds/kernel/*": ["./packages/kernel/src/*"],
+      "@rds/games/*": ["./packages/games/src/*"],
+      "@rds/app/*": ["./packages/app/src/*"],
+      "@rds/net/*": ["./packages/net/src/*"],
+      "@rds/web/*": ["./apps/web/src/*"],
+      "@rds/room-protocol": ["./packages/room-protocol/src/index.ts"]
+    }
   },
-  "include": ["src"]
+  "include": ["apps/web/src", "apps/server/src", "packages/*/src"]
 }

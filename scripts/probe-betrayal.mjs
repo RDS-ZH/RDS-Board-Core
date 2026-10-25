@@ -2,9 +2,9 @@ import { createServer } from 'vite';
 
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
 
-const { GAME_REGISTRY } = await server.ssrLoadModule('/src/games/registry.ts');
-const { UniversalGameEngine } = await server.ssrLoadModule('/src/core/engine.ts');
-const { withDefaultPayload } = await server.ssrLoadModule('/src/core/actionPayload.ts');
+const { GAME_REGISTRY } = await server.ssrLoadModule('/packages/games/src/registry.ts');
+const { UniversalGameEngine } = await server.ssrLoadModule('/packages/kernel/src/engine.ts');
+const { withDefaultPayload } = await server.ssrLoadModule('/packages/kernel/src/actionPayload.ts');
 
 function log(engine, label) {
   const s = engine.getRawState();

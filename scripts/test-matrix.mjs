@@ -13,9 +13,9 @@ const server = await createServer({
   logLevel: 'error'
 });
 
-const { GAME_MODULES } = await server.ssrLoadModule('/src/games/registry.ts');
-const { UniversalGameEngine } = await server.ssrLoadModule('/src/core/engine.ts');
-const { RandomPolicy, runPolicies } = await server.ssrLoadModule('/src/ai/policy.ts');
+const { GAME_MODULES } = await server.ssrLoadModule('/packages/games/src/registry.ts');
+const { UniversalGameEngine } = await server.ssrLoadModule('/packages/kernel/src/engine.ts');
+const { RandomPolicy, runPolicies } = await server.ssrLoadModule('/packages/harness/src/policy.ts');
 
 const failures = [];
 let scenarios = 0;

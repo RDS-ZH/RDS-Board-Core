@@ -1,0 +1,922 @@
+/**
+ * Networked session (lobby mode) — GamePresenter for rds-room/1 WebRTC play.
+ *
+ * Host: engine authority stays local (inner UniversalSession + GameRoom mirror
+ * kept in lockstep by replaying the append-only action log both ways); guests
+ * are served through WebRtcHostTransport + startHostMesh.
+ *
+ * Guest: no local engine. Consumes its own projection O(s, i) pushed by the
+ * host, renders it with the same pure view builders as UniversalSession, and
+ * forwards performed actions over the data channel. Local-only debug features
+ * (rewind / replay verification / clock forcing) are no-ops with a notice.
+ */
+import { UniversalGameEngine } from '@rds/kernel/engine';
+import { GameModule } from '@rds/kernel/module';
+import {
+  Action,
+  ActorId,
+  EntityType,
+  GameState,
+  PlayerId,
+  ProjectedGameState,
+  SelectionCandidate,
+  SelectionSpec,
+  SelectionSpec as Spec,
+  VisualTraceEvent
+} from '@rds/kernel/types';
+import { applyPatch } from '@rds/net/patch';
+import { DispatchResult } from '@rds/kernel/types';
+import { GameRoom, RoomUpdate } from '@rds/net/room';
+import {
+  HubSignaling,
+  WebRtcGuestTransport,
+  WebRtcHostTransport,
+  openGuestChannel,
+  startHostMesh
+} from '@rds/net/webrtc-transport';
+import {
+  BoardPick,
+  GamePresenter,
+  GameSnapshot,
+  UiAction,
+  UiHistoryEntry,
+  UiNotice,
+  UiSpatialInfo,
+  ViewerId
+} from './contracts';
+import {
+  UniversalSession,
+  BoundAction,
+  actorNameOf,
+  buildActionsView,
+  buildDecisionView,
+  buildHooksView,
+  buildNpcsView,
+  buildPlacementView,
+  buildPlayersView,
+  buildStackView,
+  focusActorsOf,
+  missionLineOf,
+  phaseLabelOf
+} from './session';
+
+export interface NetSessionOptions {
+  /** Hub origin, e.g. https://hub.example (docs/LOBBY-INTEGRATION.md). */
+  hub: string;
+  roomId: string;
+  token: string;
+  role: 'host' | 'guest';
+  /** This browser's seat; the host's playerId is also its local viewer. */
+  playerId: PlayerId;
+  /** Guest only: hub userId of the host to dial. */
+  hostId?: string;
+  scenario?: string;
+  /** Host only; guests ignore this (the host owns the seed). Default 42. */
+  seed?: number;
+}
+
+/** Minimal channel the guest transport needs (RTCDataChannel or loopback). */
+interface GuestChannel {
+  send(text: string): void;
+  close?(): void;
+}
+
+/** GameRoom subclass that reports accepted actions back to the session mirror. */
+class BridgedRoom extends GameRoom {
+  constructor(
+    module: GameModule,
+    seed: number,
+    scenario: string | undefined,
+    private readonly onAccepted: (action: Action) => void
+  ) {
+    super(module, seed, undefined, scenario);
+  }
+
+  public submit(action: Action): DispatchResult {
+    const result = super.submit(action);
+    if (result.ok) this.onAccepted(action);
+    return result;
+  }
+}
+
+/**
+ * Networked GamePresenter. Construct synchronously (getSnapshot works before
+ * the signaling connection resolves), then call \`start()\` to connect.
+ */
+export class NetSession implements GamePresenter {
+  public readonly role: 'host' | 'guest';
+  public readonly viewer: PlayerId;
+
+  private readonly module: GameModule;
+  private readonly options: NetSessionOptions;
+  private readonly listeners = new Set<(snapshot: GameSnapshot) => void>();
+  private readonly noticeListeners = new Set<(notice: UiNotice) => void>();
+  private readonly visualListeners = new Set<(events: VisualTraceEvent[]) => void>();
+  private readonly unsubscribeSession?: () => void;
+
+  // --- host state ---
+  private readonly session?: UniversalSession;
+  private room?: BridgedRoom;
+  private hostTransport?: WebRtcHostTransport;
+  private syncing = false;
+
+  // --- guest state ---
+  private state?: ProjectedGameState;
+  private guestTransport?: WebRtcGuestTransport;
+  private netRevision = 0;
+  private appliedRevision = -1;
+  private snapshot?: GameSnapshot;
+  private bound: BoundAction[] = [];
+  private legal: Action[] = [];
+  private history: UiHistoryEntry[] = [];
+  private activeBoardGroup?: { type: string; idKey: 'targetEdgeId' | 'targetNodeId' | 'entityId'; targets: string[] };
+  private armedPlacement?: { entityId: string };
+  private placementRotation?: number;
+  private readonly bootstrapDependencyErrors: string[] = [];
+
+  // --- shared transport state ---
+  private signaling?: HubSignaling;
+  private pc?: RTCPeerConnection;
+  private channel?: GuestChannel;
+  private disposed = false;
+
+  constructor(module: GameModule, options: NetSessionOptions) {
+    this.module = module;
+    this.options = options;
+    this.role = options.role;
+    this.viewer = options.playerId;
+
+    if (options.role === 'host') {
+      const seed = options.seed ?? 42;
+      const inner = new UniversalSession(module, seed, options.scenario);
+      inner.setViewer(options.playerId);
+      this.session = inner;
+      // Every local dispatch (any UI path) tails into the authoritative room,
+      // so guests observe exactly what the host's own HUD observes.
+      // NOTE: the engine notifies state changes BEFORE appending to its action
+      // history (finalizeTransition), so the tail must run a microtask later.
+      this.unsubscribeSession = inner.subscribe(() => {
+        queueMicrotask(() => this.syncRoomFromSession());
+      });
+    } else {
+      // Bootstrap a plausible viewer projection without keeping an engine: the
+      // initial state of module+seed(42)+scenario is deterministic, and the
+      // first full room-update from the host replaces it wholesale.
+      const boot = new UniversalGameEngine(module, 42, options.scenario ? { scenario: options.scenario } : undefined);
+      this.state = boot.getProjectedStateFor(options.playerId);
+      this.bootstrapDependencyErrors = boot.getRules().dependencyErrors();
+      this.rebuild();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Lifecycle                                                           */
+  /* ------------------------------------------------------------------ */
+
+  /** Connect signaling + WebRTC mesh. Safe to call once after construction. */
+  public async start(): Promise<void> {
+    if (this.disposed) return;
+    try {
+      if (this.role === 'host') await this.startHost();
+      else await this.startGuest();
+    } catch (error) {
+      this.emitNotice({
+        kind: 'error',
+        icon: '⚠',
+        title: '联机初始化失败',
+        detail: String((error as Error)?.message ?? error),
+        durationMs: 8000
+      });
+    }
+  }
+
+  private async startHost(): Promise<void> {
+    const signaling = new HubSignaling(this.options.hub, this.options.token);
+    this.signaling = signaling;
+    await signaling.connect(this.options.roomId);
+    const { transport } = this.buildHostRoom(signaling.selfId);
+    startHostMesh(signaling, transport);
+  }
+
+  /** Create the authoritative room mirror + host transport (signaling-agnostic). */
+  private buildHostRoom(selfId: string): { transport: WebRtcHostTransport } {
+    const seed = this.options.seed ?? 42;
+    const room = new BridgedRoom(this.module, seed, this.options.scenario, action =>
+      this.onGuestAction(action)
+    );
+    this.room = room;
+    const transport = new WebRtcHostTransport(room, selfId, () => {});
+    this.hostTransport = transport;
+    this.syncRoomFromSession();
+    return { transport };
+  }
+
+  /** Host session without signaling: tests drive transport.acceptChannel(). */
+  public static createLoopbackHost(
+    module: GameModule,
+    options: NetSessionOptions
+  ): { session: NetSession; transport: WebRtcHostTransport } {
+    const session = new NetSession(module, { ...options, role: 'host' });
+    const { transport } = session.buildHostRoom('u_host_lo');
+    return { session, transport };
+  }
+
+  private async startGuest(): Promise<void> {
+    if (!this.options.hostId) throw new Error('guest role requires hostId');
+    const signaling = new HubSignaling(this.options.hub, this.options.token);
+    this.signaling = signaling;
+    await signaling.connect(this.options.roomId);
+    const { channel, pc } = await openGuestChannel(signaling, this.options.hostId);
+    this.pc = pc;
+    this.channel = channel as unknown as GuestChannel;
+    const transport = new WebRtcGuestTransport(text => this.sendToHost(text));
+    channel.onmessage = ev => transport.receive(String((ev as MessageEvent).data));
+    channel.onclose = () => this.onGuestDisconnected();
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      if (state === 'disconnected' || state === 'failed') this.onGuestDisconnected();
+    };
+    this.attachGuestTransport(transport);
+  }
+
+  /** Wire an already-connected guest transport (used by start() and tests). */
+  public attachGuestTransport(transport: WebRtcGuestTransport): void {
+    this.guestTransport = transport;
+    transport.onUpdate = update => this.applyUpdate(update);
+    transport.join(this.viewer);
+  }
+
+  private sendToHost(text: string): void {
+    try {
+      this.channel?.send(text);
+    } catch {
+      this.onGuestDisconnected();
+    }
+  }
+
+  private onGuestDisconnected(): void {
+    if (this.disposed || this.role !== 'guest') return;
+    this.emitNotice({
+      kind: 'error',
+      icon: '📡',
+      title: '与房主的连接已断开',
+      detail: '本页面仍显示最后收到的局面；刷新或等待房主重新开局。',
+      durationMs: 0
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Host bridging (local engine ⇄ authoritative room)                    */
+  /* ------------------------------------------------------------------ */
+
+  /** Mirror actions dispatched by the local HUD into the guest-facing room. */
+  private syncRoomFromSession(): void {
+    if (this.role !== 'host' || !this.room || !this.session) return;
+    const source = this.session.getActionHistory();
+    const mirror = this.room.engine.getHistory();
+    if (source.length > mirror.length) {
+      this.syncing = true;
+      try {
+        for (const action of source.slice(mirror.length)) this.room.submit(action);
+      } finally {
+        this.syncing = false;
+      }
+    }
+    this.hostTransport?.pushDeltas();
+  }
+
+  /** Guest-submitted actions are replayed into the local HUD engine. */
+  private onGuestAction(action: Action): void {
+    if (this.syncing || !this.session) return; // already mirrored locally
+    const result = this.session.dispatchAction(action);
+    if (!result.ok) {
+      this.emitNotice({
+        kind: 'error',
+        icon: '⚠',
+        title: '房主本地镜像拒绝了远端动作（两引擎疑似分歧）',
+        detail: result.error,
+        durationMs: 6000
+      });
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Guest update pipeline                                               */
+  /* ------------------------------------------------------------------ */
+
+  private applyUpdate(update: RoomUpdate): void {
+    if (this.role !== 'guest') return;
+    const updateError = (update as { error?: string }).error;
+    if (updateError) {
+      this.emitNotice({
+        kind: 'error',
+        icon: '⚠',
+        title: '房主拒绝了该操作',
+        detail: updateError,
+        durationMs: 4200
+      });
+      return;
+    }
+    if (update.full) {
+      this.state = update.state ?? this.state;
+    } else if (update.patches && update.patches.length > 0) {
+      if (this.appliedRevision >= 0 && update.baseRevision !== this.appliedRevision) {
+        // Missed a delta (e.g. tab was suspended): resync with a full snapshot.
+        this.guestTransport?.requestSnapshot();
+        return;
+      }
+      if (this.state) this.state = applyPatch(this.state, update.patches);
+    }
+    this.appliedRevision = update.revision;
+    this.netRevision = update.revision;
+    this.rebuild();
+    this.publish();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* GamePresenter                                                       */
+  /* ------------------------------------------------------------------ */
+
+  public getSnapshot(): GameSnapshot {
+    return this.role === 'host' ? this.session!.getSnapshot() : this.snapshot!;
+  }
+
+  public subscribe(listener: (snapshot: GameSnapshot) => void): () => void {
+    if (this.role === 'host') return this.session!.subscribe(listener);
+    this.listeners.add(listener);
+    listener(this.snapshot!);
+    return () => this.listeners.delete(listener);
+  }
+
+  public onNotice(listener: (notice: UiNotice) => void): () => void {
+    if (this.role === 'host') return this.session!.onNotice(listener);
+    this.noticeListeners.add(listener);
+    return () => this.noticeListeners.delete(listener);
+  }
+
+  /** No kernel events exist on guests; the host forwards its local engine's. */
+  public onVisualEvent(listener: (events: VisualTraceEvent[]) => void): () => void {
+    if (this.role === 'host') return this.session!.onVisualEvent(listener);
+    this.visualListeners.add(listener);
+    return () => this.visualListeners.delete(listener);
+  }
+
+  public perform(
+    actionId: string,
+    payload?: Record<string, unknown>,
+    targets?: string[]
+  ): { ok: boolean; error?: string } {
+    if (this.role === 'host') return this.session!.perform(actionId, payload, targets);
+
+    const bound = this.bound.find(entry => entry.ui.id === actionId);
+    if (!bound) return { ok: false, error: `unknown action: ${actionId}` };
+
+    if (bound.highlight && !bound.action) {
+      if (bound.type && bound.idKey) {
+        this.activeBoardGroup = { type: bound.type, idKey: bound.idKey, targets: bound.highlight };
+      }
+      this.emitNotice({
+        kind: 'event',
+        icon: '✧',
+        title: `已高亮 ${bound.highlight.length} 个合法位置，请在 3D 桌面上点击目标`,
+        durationMs: 2800
+      });
+      return { ok: true };
+    }
+    this.activeBoardGroup = undefined;
+    if (!bound.action) return { ok: false, error: 'action has no dispatch payload' };
+
+    const action: Action = { ...bound.action };
+    if (payload && Object.keys(payload).length > 0) {
+      action.payload = { ...(bound.action.payload ?? {}), ...payload };
+    }
+    if (targets && targets.length > 0) action.targets = targets;
+    return this.submitAction(action);
+  }
+
+  public armPlacement(actionId: string): { ok: boolean; error?: string } {
+    if (this.role === 'host') return this.session!.armPlacement(actionId);
+    const bound = this.bound.find(entry => entry.ui.id === actionId);
+    if (!bound?.action || bound.action.type !== 'PLACE_ENTITY' || !bound.action.entityId) {
+      return { ok: false, error: '该动作不支持目标点选' };
+    }
+    this.armedPlacement = { entityId: bound.action.entityId };
+    this.emitNotice({ kind: 'event', icon: '◎', title: '请点击高亮的目标房间', durationMs: 2200 });
+    return { ok: true };
+  }
+
+  public cancelPlacement(): void {
+    if (this.role === 'host') return this.session!.cancelPlacement();
+    this.armedPlacement = undefined;
+  }
+
+  public pickTarget(pick: BoardPick): { handled: boolean; message?: string } {
+    if (this.role === 'host') return this.session!.pickTarget(pick);
+    return this.guestPickTarget(pick);
+  }
+
+  public rotatePlacement(direction: 1 | -1 = 1): void {
+    if (this.role === 'host') return this.session!.rotatePlacement(direction);
+    const placement = this.snapshot?.placement;
+    if (!placement || placement.rotations.length === 0) return;
+    const index = placement.rotations.indexOf(placement.rotation);
+    this.placementRotation = placement.rotations[(index + direction + placement.rotations.length) % placement.rotations.length];
+    this.rebuild();
+    this.publish();
+  }
+
+  public confirmPlacement(): { ok: boolean; error?: string } {
+    if (this.role === 'host') return this.session!.confirmPlacement();
+    const placement = this.snapshot?.placement;
+    if (!placement) return { ok: false, error: 'no pending room placement' };
+    const bound = this.bound.find(entry => entry.action?.type === 'PLACE_ROOM');
+    if (!bound) return { ok: false, error: 'placement action is not legal' };
+    return this.perform(bound.ui.id, { rotation: String(placement.rotation) });
+  }
+
+  public setViewer(viewer: ViewerId): void {
+    if (this.role === 'host') {
+      this.session!.setViewer(viewer);
+      return;
+    }
+    this.emitNotice({
+      kind: 'event',
+      icon: '🪑',
+      title: '联机模式下座位固定',
+      detail: `你的座位是 ${this.viewer}，不能切换视角。`,
+      durationMs: 2600
+    });
+  }
+
+  public rewind(step: number): void {
+    this.emitNotice({
+      kind: 'event',
+      icon: '⏪',
+      title: '联机模式下禁用回溯',
+      detail: '回溯会破坏房主侧的权威状态，请在本地单机模式使用。',
+      durationMs: 3200
+    });
+  }
+
+  public verifyReplay(): void {
+    this.emitNotice({
+      kind: 'event',
+      icon: '🔎',
+      title: '联机模式下禁用回放校验',
+      detail: '回放校验是本地调试功能；房主可在单机模式使用。',
+      durationMs: 3200
+    });
+  }
+
+  public advanceClock(ticks = 1): void {
+    if (this.role === 'host') {
+      // Local dispatch tails into the room, so guests follow the tick.
+      this.session!.advanceClock(ticks);
+      return;
+    }
+    this.emitNotice({
+      kind: 'event',
+      icon: '⏱',
+      title: '时钟由房主推进',
+      detail: '联机模式下逻辑时钟只在房主侧推进。',
+      durationMs: 2600
+    });
+  }
+
+  public dispose(): void {
+    this.disposed = true;
+    if (this.role === 'guest') {
+      try { this.guestTransport?.bye(); } catch { /* channel already gone */ }
+      try { this.channel?.close?.(); } catch { /* ignore */ }
+      try { this.pc?.close(); } catch { /* ignore */ }
+    }
+    this.unsubscribeSession?.();
+    this.session?.dispose();
+    try { this.signaling?.close(); } catch { /* already closed */ }
+    this.listeners.clear();
+    this.noticeListeners.clear();
+    this.visualListeners.clear();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* main.ts extras (drag & drop placement)                              */
+  /* ------------------------------------------------------------------ */
+
+  public placeEntityAtNode(entityId: string, nodeId?: string): { ok: boolean; error?: string } {
+    if (this.role === 'host') return this.session!.placeEntityAtNode(entityId, nodeId);
+    const state = this.state;
+    if (!state) return { ok: false, error: 'not connected' };
+    const actor = state.players[this.viewer];
+    const currentRoomId = String(actor?.customProps?.currentRoomId ?? '');
+    const trySlots = (roomId: string) => {
+      const slots = Object.values(state.mapGraph.slots ?? {}).filter(slot => {
+        if (slot.nodeId !== roomId) return false;
+        if (slot.accepts?.entityTypes && !slot.accepts.entityTypes.includes(state.entities[entityId]?.type as EntityType)) return false;
+        return true;
+      });
+      for (const slot of slots) {
+        const bound = this.bound.find(
+          entry =>
+            entry.action?.type === 'PLACE_ENTITY' &&
+            entry.action.entityId === entityId &&
+            entry.action.targetSlotId === slot.id
+        );
+        if (bound) return this.perform(bound.ui.id);
+      }
+      return undefined;
+    };
+    const targetRoomId = nodeId || currentRoomId;
+    const direct = trySlots(targetRoomId);
+    if (direct) return direct;
+    if (currentRoomId && targetRoomId !== currentRoomId) {
+      const fallback = trySlots(currentRoomId);
+      if (fallback) return fallback;
+    }
+    return { ok: false, error: '该实体没有可放置到目标房间的合法位置' };
+  }
+
+  public getPlacementTargets(entityId: string): { nodeId: string; slotId: string; label: string }[] {
+    if (this.role === 'host') return this.session!.getPlacementTargets(entityId);
+    const state = this.state;
+    if (!state) return [];
+    const targets: { nodeId: string; slotId: string; label: string }[] = [];
+    for (const slot of Object.values(state.mapGraph.slots ?? {})) {
+      if (!slot.nodeId) continue;
+      if (slot.accepts?.entityTypes && !slot.accepts.entityTypes.includes(state.entities[entityId]?.type as EntityType)) continue;
+      const bound = this.bound.find(
+        entry =>
+          entry.action?.type === 'PLACE_ENTITY' &&
+          entry.action.entityId === entityId &&
+          entry.action.targetSlotId === slot.id
+      );
+      if (!bound) continue;
+      const node = state.mapGraph.nodes[slot.nodeId];
+      targets.push({ nodeId: slot.nodeId, slotId: slot.id, label: String(node?.props?.name ?? slot.nodeId) });
+    }
+    return targets;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Guest internals                                                     */
+  /* ------------------------------------------------------------------ */
+
+  private submitAction(action: Action): { ok: boolean; error?: string } {
+    if (!this.guestTransport) {
+      return { ok: false, error: '尚未连接房主，操作未发送' };
+    }
+    // Optimistic accept: illegal actions are rejected by the host and come
+    // back as an error room-update (emitted as a notice in applyUpdate).
+    this.guestTransport.submit(action);
+    return { ok: true };
+  }
+
+  private resolveCandidates(actorId: ActorId, spec: SelectionSpec): SelectionCandidate[] {
+    const state = this.state;
+    if (!state) return [];
+    if (this.module.resolveSelection) {
+      try {
+        return this.module.resolveSelection(state as unknown as GameState, actorId, spec);
+      } catch {
+        // Module expected raw-state bits the projection hides; fall through.
+      }
+    }
+    return this.defaultCandidates(state, spec, actorId);
+  }
+
+  private defaultCandidates(state: ProjectedGameState, spec: Spec, actorId: ActorId): SelectionCandidate[] {
+    switch (spec.source) {
+      case 'node':
+      case 'room':
+        return Object.values(state.mapGraph.nodes)
+          .filter(node => (spec.source === 'room' ? node.type === 'ROOM' : true))
+          .map(node => ({ id: node.id, label: String(node.props?.name ?? node.id) }));
+      case 'edge':
+        return Object.values(state.mapGraph.edges).map(edge => ({ id: edge.id, label: edge.id }));
+      case 'entity':
+        return Object.values(state.entities)
+          .filter((entity): entity is typeof entity & { id: string } => !!entity.id && !entity.isMasked)
+          .map(entity => ({ id: entity.id, label: entity.components?.cardFace?.title ?? entity.id }));
+      case 'actor':
+      case 'player':
+        return [
+          ...(state.playerOrder ?? []).map(id => ({ id, label: state.players[id]?.name ?? id })),
+          ...Object.values(state.npcs ?? {})
+            .filter((npc): npc is typeof npc & { id: string } => !!npc.id)
+            .map(npc => ({ id: npc.id, label: npc.name }))
+        ];
+      case 'zone':
+        return Object.values(state.zones).map(zone => ({ id: zone.id, label: zone.name }));
+      case 'hand': {
+        if (this.viewer !== 'GOD' && this.viewer !== actorId) return [];
+        const zone = state.zones[`zone_hand_${actorId}`];
+        return (zone?.orderedEntities ?? [])
+          .map(id => state.entities[id])
+          .filter((entity): entity is NonNullable<typeof entity> & { id: string } => !!entity?.id && !entity.isMasked)
+          .map(entity => ({ id: entity.id, label: entity.components?.cardFace?.title ?? entity.id }));
+      }
+      default:
+        return [];
+    }
+  }
+
+  private guestPickTarget(pick: BoardPick): { handled: boolean; message?: string } {
+    const snapshot = this.snapshot;
+    const state = this.state;
+    if (!snapshot || !state) return { handled: false, message: '尚未连接房主' };
+
+    if (this.armedPlacement) {
+      if (pick.kind !== 'node') return { handled: false, message: '请点击高亮的房间节点' };
+      const entityId = this.armedPlacement.entityId;
+      this.armedPlacement = undefined;
+      const result = this.placeEntityAtNode(entityId, pick.id);
+      return { handled: result.ok, message: result.error };
+    }
+
+    const legal = this.legal;
+    const actor = this.viewer !== 'GOD' ? this.viewer : focusActorsOf(state)[0] ?? state.activeActorId ?? state.activePlayerId;
+
+    if (snapshot.placement) {
+      if (pick.id === 'placement_rotate' || (pick.metadata as Record<string, unknown>)?.intent === 'rotate') {
+        this.rotatePlacement(1);
+        return { handled: true };
+      }
+      if (pick.id === 'placement_confirm' || (pick.metadata as Record<string, unknown>)?.intent === 'confirm') {
+        const res = this.confirmPlacement();
+        return { handled: res.ok, message: res.error };
+      }
+    }
+
+    const meta = (pick.metadata ?? {}) as Record<string, unknown>;
+    if (meta?.type === 'ROOM_NAV') {
+      const targetRoomId = String(meta.targetRoomId ?? '');
+      const targetName = String(meta.targetName ?? '相邻房间');
+      const moveAction = legal.find(
+        a =>
+          a.type === 'MOVE_TO_ROOM' &&
+          (a.targetNodeId === targetRoomId ||
+            (a.selection?.scope as { neighbors?: string[] } | undefined)?.neighbors?.includes(targetRoomId))
+      );
+      if (moveAction) {
+        const res = this.submitAction({ ...moveAction, targets: [targetRoomId] });
+        if (res.ok) {
+          this.emitNotice({ kind: 'event', icon: '🚪', title: `走入了【${targetName}】`, durationMs: 1800, roomId: targetRoomId });
+        }
+        return { handled: res.ok, message: res.error };
+      }
+      const moveNpcAction = legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === targetRoomId);
+      if (moveNpcAction) return { handled: this.submitAction(moveNpcAction).ok };
+    }
+
+    if (meta?.type === 'DOOR') {
+      const dir = meta.direction;
+      const exploreAction = legal.find(a => a.type === 'EXPLORE_DOOR' && a.payload?.direction === dir);
+      if (exploreAction) return { handled: this.submitAction(exploreAction).ok };
+    }
+
+    const isDirectInteract = meta?.intent === 'interact';
+    if (isDirectInteract && !this.activeBoardGroup) {
+      if (pick.kind === 'node') {
+        const directMoveAction = legal.find(
+          a =>
+            a.type === 'MOVE_TO_ROOM' &&
+            (a.targetNodeId === pick.id ||
+              (a.selection?.scope as { neighbors?: string[] } | undefined)?.neighbors?.includes(pick.id))
+        );
+        if (directMoveAction) {
+          const res = this.submitAction({ ...directMoveAction, targetNodeId: pick.id, targets: [pick.id] });
+          return { handled: res.ok, message: res.error };
+        }
+        const directNpcAction = legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === pick.id);
+        if (directNpcAction) return { handled: this.submitAction(directNpcAction).ok };
+      } else if (pick.kind === 'entity') {
+        const directCombatAction =
+          legal.find(a => a.type === 'ATTACK_MONSTER' && a.entityId === pick.id) ??
+          legal.find(a => a.type === 'ATTACK_HERO' && a.targetPlayerId === pick.id) ??
+          legal.find(a => a.type === 'SLAP' && a.targetPlayerId === pick.id);
+        if (directCombatAction) return { handled: this.submitAction(directCombatAction).ok };
+      }
+    }
+
+    if (pick.kind === 'entity' && !this.activeBoardGroup) {
+      const entity = state.entities[pick.id];
+      const face = entity?.components?.cardFace;
+      if (face) {
+        const custom = (entity?.components?.custom ?? {}) as Record<string, unknown>;
+        const kind = String(face.type ?? custom.cardType ?? 'ITEM');
+        this.emitNotice({
+          kind: 'event',
+          icon: entity.isMasked ? '🂠' : '🃏',
+          title: entity.isMasked ? '未揭示的卡牌' : face.title,
+          detail: entity.isMasked ? '需要先揭示这张牌。' : face.desc,
+          durationMs: 6500,
+          card: entity.isMasked
+            ? undefined
+            : {
+                title: face.title,
+                en: String(custom.en ?? ''),
+                kind,
+                desc: String(face.desc ?? ''),
+                color: String(face.color ?? ''),
+                actions: snapshot.actions
+                  .filter(action => action.entityId === entity.id || action.placementEntityId === entity.id)
+                  .map(action => ({ id: action.id, icon: action.icon, label: action.label }))
+                  .slice(0, 6)
+              }
+        });
+        return { handled: true };
+      }
+    }
+
+    if ((pick.kind === 'node' || pick.kind === 'edge') && !this.activeBoardGroup) {
+      const node = state.mapGraph.nodes[pick.id];
+      const edge = state.mapGraph.edges[pick.id];
+      const isRoom = pick.kind === 'node' && node?.type === 'ROOM';
+      const title = pick.kind === 'node' ? String(node?.props?.name ?? node?.type ?? '节点') : String(edge?.id ?? '边');
+      this.emitNotice({
+        kind: 'event',
+        icon: isRoom ? '🏚' : '🔍',
+        title: isRoom ? `察看了 ${title}` : `已选中 ${title}`,
+        detail: isRoom ? '房间档案已更新。' : '这是查看操作；移动/建造请先从动作栏选择动作。',
+        durationMs: 2600,
+        roomId: isRoom ? pick.id : undefined
+      });
+      return { handled: true };
+    }
+
+    const match = (() => {
+      if (this.activeBoardGroup) {
+        return legal.find(
+          action =>
+            action.type === this.activeBoardGroup!.type &&
+            action[this.activeBoardGroup!.idKey] === pick.id
+        );
+      }
+      if (pick.kind === 'dice') {
+        return legal.find(a => a.type === 'ROLL_DICE') ?? legal.find(a => a.type === 'ROLL_HAUNT_CHECK');
+      }
+      if (pick.kind === 'node') {
+        return (
+          legal.find(a => a.type === 'SETUP_SETTLEMENT' && a.targetNodeId === pick.id) ??
+          legal.find(a => a.type === 'BUILD_SETTLEMENT' && a.targetNodeId === pick.id) ??
+          legal.find(a => a.type === 'UPGRADE_CITY' && a.targetNodeId === pick.id) ??
+          legal.find(a => a.type === 'MOVE_TO_ROOM' && a.targetNodeId === pick.id) ??
+          legal.find(a => a.type === 'MOVE_NPC' && a.targetNodeId === pick.id) ??
+          legal.find(a => a.type === 'MOVE_ROBBER' && a.targetNodeId === pick.id)
+        );
+      }
+      if (pick.kind === 'edge') {
+        return (
+          legal.find(a => a.type === 'SETUP_ROAD' && a.targetEdgeId === pick.id) ??
+          legal.find(a => a.type === 'BUILD_ROAD' && a.targetEdgeId === pick.id) ??
+          legal.find(a => a.type === 'BUILD_ROAD_FREE' && a.targetEdgeId === pick.id)
+        );
+      }
+      return (
+        legal.find(a => a.entityId === pick.id) ??
+        (() => {
+          const selectionAction = legal.find(
+            action => !!action.selection && this.resolveCandidates(action.actorId ?? action.playerId, action.selection).some(candidate => candidate.id === pick.id)
+          );
+          return selectionAction ? { ...selectionAction, targets: [pick.id] } : undefined;
+        })()
+      );
+    })();
+
+    if (!match) {
+      const message = '该对象当前不是合法目标。可先在动作栏选择动作，桌面会高亮全部候选位置。';
+      this.emitNotice({ kind: 'error', icon: '◌', title: message, durationMs: 2800 });
+      return { handled: false, message };
+    }
+
+    this.activeBoardGroup = undefined;
+    const result = this.submitAction(match);
+    return { handled: result.ok, message: result.error };
+  }
+
+  private rebuild(): void {
+    const state = this.state;
+    if (!state) return;
+    const module = this.module;
+    const actorName = (id: ActorId) => actorNameOf(state, id);
+
+    const focusActors = focusActorsOf(state);
+    const focus = focusActors.filter(id => !!state.players[id]);
+    const actor = this.viewer !== 'GOD' ? this.viewer : focusActors[0] ?? state.activeActorId ?? state.activePlayerId;
+
+    const openDecision = state.pendingDecisions.find(w => w.status === 'OPEN');
+    const acting = openDecision
+      ? openDecision.participants.filter(pid => openDecision.submissions[pid] === undefined)
+      : focusActors;
+
+    // The projection's legalActions are always the viewer's own; show them
+    // only when it is actually this viewer's turn to act.
+    this.legal = acting.length === 0 || acting.includes(this.viewer) ? state.legalActions : [];
+    this.bound = buildActionsView(state, this.legal, (actorId, spec) => this.resolveCandidates(actorId, spec));
+
+    const actorNameLabel =
+      acting.length > 1 ? `${acting.length} 个行动者待提交` : actorName(acting[0] ?? actor);
+
+    const placement = buildPlacementView(state, this.viewer, actor, this.placementRotation ?? 0);
+    if (!placement) this.placementRotation = undefined;
+    else if (this.placementRotation === undefined) this.placementRotation = placement.rotation;
+
+    // Guest activity feed: derive UiHistoryEntry from the authoritative actionLog
+    // (visual trace events do not cross the wire).
+    this.history = state.actionLog.slice(-60).map((action, i) => ({
+      id: `n${state.actionLog.length - Math.min(60, state.actionLog.length) + i}`,
+      kind: 'system' as const,
+      icon: '•',
+      title: `${actorName(action.actorId ?? action.playerId)}：${action.type}`,
+      round: state.round,
+      turn: state.turn,
+      actorName: actorName(action.actorId ?? action.playerId)
+    })).reverse();
+
+    this.snapshot = {
+      revision: this.netRevision,
+      gameId: module.meta.id,
+      gameName: module.meta.name,
+      capabilities: { ...module.meta.capabilities },
+      schemaCount: Object.keys(module.actionSchemas ?? {}).length,
+      dependencyErrors: this.bootstrapDependencyErrors,
+
+      phaseLabel: phaseLabelOf(state),
+      mission: missionLineOf(state),
+      round: state.round,
+      turn: state.turn,
+      clock: state.clock,
+      actorName: actorNameLabel,
+      focus,
+      focusActors,
+      viewer: this.viewer,
+      viewers: [
+        { id: 'GOD', name: '全知上帝视角' },
+        ...state.playerOrder.map(pid => ({ id: pid, name: state.players[pid]?.name ?? pid }))
+      ],
+
+      players: buildPlayersView(state, focus),
+      npcs: buildNpcsView(state, focusActors, actorName),
+      actions: this.bound.map(entry => entry.ui),
+      legalCount: this.legal.length,
+
+      stackDepth: state.interruptStack.length,
+      stack: buildStackView(state, actorName),
+      decision: openDecision ? buildDecisionView(state, openDecision, actorName) : undefined,
+      openDecisions: state.pendingDecisions.filter(w => w.status === 'OPEN').length,
+
+      hooks: buildHooksView(state, () => undefined, actorName),
+      history: this.history,
+      spatial: this.buildSpatial(state, actor),
+      placement,
+      log: {
+        entries: state.actionLog.map((action, index) => ({
+          index,
+          playerId: action.playerId,
+          type: action.type,
+          targetId: action.targetPlayerId
+        })),
+        cursor: state.actionLog.length,
+        total: state.actionLog.length,
+        seed: 0, // seed is host-owned and never sent to guests
+        hash: ''
+      },
+      board: state,
+
+      gameOver: state.gameOver,
+      winnerLabel: state.gameOver
+        ? Array.isArray(state.winner)
+          ? state.winner.map(id => actorName(id)).join(' / ')
+          : state.winner
+          ? actorName(state.winner)
+          : ''
+        : ''
+    };
+  }
+
+  private buildSpatial(state: ProjectedGameState, actor?: string): UiSpatialInfo | undefined {
+    const floors = state.mapGraph.topology?.layers ?? [];
+    if (floors.length === 0) return undefined;
+    const playerRoom = actor ? state.players[actor]?.customProps?.currentRoomId : undefined;
+    const npcRoom = actor ? state.npcs?.[actor]?.customProps?.roomId : undefined;
+    const activeNodeId = String(playerRoom ?? npcRoom ?? '') || undefined;
+    let activeFloor: string | undefined;
+    if (activeNodeId) {
+      try {
+        activeFloor = this.module.spatial?.floorAt?.(state as unknown as GameState, activeNodeId);
+      } catch {
+        activeFloor = undefined;
+      }
+      const node = state.mapGraph.nodes[activeNodeId];
+      activeFloor = activeFloor ?? node?.layer ?? (node?.props?.floor as string | undefined);
+    }
+    return { floors, activeNodeId, activeFloor };
+  }
+
+  private emitNotice(notice: UiNotice): void {
+    this.noticeListeners.forEach(listener => listener(notice));
+  }
+
+  private publish(): void {
+    this.listeners.forEach(listener => listener(this.snapshot!));
+  }
+}

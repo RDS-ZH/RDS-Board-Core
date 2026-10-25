@@ -5,18 +5,18 @@
 import { createServer } from 'vite';
 
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
-const { layoutRoom, hashString } = await server.ssrLoadModule('/src/render/procedural/roomLayout.ts');
-const { ROOM_DEFS } = await server.ssrLoadModule('/src/games/betrayal/cards.ts');
+const { layoutRoom, hashString } = await server.ssrLoadModule('/apps/web/src/render/procedural/roomLayout.ts');
+const { ROOM_DEFS } = await server.ssrLoadModule('/packages/games/src/betrayal/cards.ts');
 
 const { ROOM_PROPS } = await server
-  .ssrLoadModule('/src/render/procedural/roomTile.ts')
+  .ssrLoadModule('/apps/web/src/render/procedural/roomTile.ts')
   .catch(() => ({ ROOM_PROPS: null }));
 
 let table = ROOM_PROPS;
 if (!table) {
   // roomTile imports three + DOM helpers; derive the table from source instead.
   const fs = await import('node:fs');
-  const src = fs.readFileSync('src/render/procedural/roomTile.ts', 'utf8');
+  const src = fs.readFileSync('apps/web/src/render/procedural/roomTile.ts', 'utf8');
   const block = src.slice(src.indexOf('const ROOM_PROPS'), src.indexOf('/** Rooms whose solid walls'));
   const body = block.slice(block.indexOf('{'), block.lastIndexOf('}') + 1);
   table = new Function(`return (${body});`)();
