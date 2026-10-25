@@ -63,6 +63,13 @@ export interface RenderStats {
 }
 
 export class BoardGameScene {
+  private static readonly _scratchNdc = new THREE.Vector2();
+  private static readonly _scratchRaycaster = new THREE.Raycaster();
+  private static readonly _scratchPoint = new THREE.Vector3();
+  private static readonly _scratchPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.2);
+  private static readonly _scratchRayOrigin = new THREE.Vector3();
+  private static readonly _scratchRayDir = new THREE.Vector3(0, -1, 0);
+
   private container: HTMLElement;
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -402,16 +409,15 @@ export class BoardGameScene {
 
   private screenToTable(clientX: number, clientY: number): [number, number, number] | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
+    BoardGameScene._scratchNdc.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
       -((clientY - rect.top) / rect.height) * 2 + 1
     );
-    const ray = new THREE.Raycaster();
-    ray.setFromCamera(ndc, this.camera);
-    const point = new THREE.Vector3();
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.2);
-    if (!ray.ray.intersectPlane(plane, point)) return null;
-    return [point.x, 0.08, point.z];
+    BoardGameScene._scratchRaycaster.setFromCamera(BoardGameScene._scratchNdc, this.camera);
+    if (!BoardGameScene._scratchRaycaster.ray.intersectPlane(BoardGameScene._scratchPlane, BoardGameScene._scratchPoint)) {
+      return null;
+    }
+    return [BoardGameScene._scratchPoint.x, 0.08, BoardGameScene._scratchPoint.z];
   }
 
   private followCardDrag(entityId: string, clientX: number, clientY: number): void {
@@ -440,13 +446,14 @@ export class BoardGameScene {
       }
     }
 
-    const ray = new THREE.Raycaster(new THREE.Vector3(x, 30, z), new THREE.Vector3(0, -1, 0));
-    ray.camera = this.camera;
+    BoardGameScene._scratchRayOrigin.set(x, 30, z);
+    BoardGameScene._scratchRaycaster.set(BoardGameScene._scratchRayOrigin, BoardGameScene._scratchRayDir);
+    BoardGameScene._scratchRaycaster.camera = this.camera;
     // Newly created room/card meshes have not rendered yet. Raycaster reads
     // matrixWorld directly, so refresh it before querying the surface or a
     // freshly discarded card lands on the table height and clips the room tile.
     this.scene.updateMatrixWorld(true);
-    const hits = ray.intersectObjects(this.boardObjectsGroup.children, true);
+    const hits = BoardGameScene._scratchRaycaster.intersectObjects(this.boardObjectsGroup.children, true);
 
     const hit = hits.find(entry => {
       if (!(entry.object as THREE.Mesh).isMesh) return false;
