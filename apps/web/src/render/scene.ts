@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { Entity, GameState, MapGraphNode, NodeId, ProjectedGameState } from '@rds/kernel/types';
+import { Entity, MapGraphNode, ProjectedGameState } from '@rds/kernel/types';
 import { TransactionalAnimationQueue } from './animationQueue';
 import { BoardRaycaster, InteractiveObjectData } from './raycaster';
 import { CardMeshBuilder } from './procedural/cardMesh';
@@ -9,14 +9,14 @@ import { HexTileBuilder } from './procedural/hexTile';
 import { RoomTileBuilder } from './procedural/roomTile';
 import { TokenMeshBuilder } from './procedural/tokenMesh';
 import { GameTableBuilder } from './table';
-import { createDefaultProjectionRegistry, computeAutoLayerOffsets, ProjectionRegistry } from './projectionPort';
+import { createDefaultProjectionRegistry, ProjectionRegistry } from './projectionPort';
 import { LabelOverlay, WorldLabel } from './labels/labelOverlay';
 import { ScreenRect } from './labels/labelLayout';
 import { buildCardGroups } from './cardGroups';
 import { cardGroupKey } from './cardGroups';
 import { PresentationPhysics } from './physics';
 import { BoardGameAudio } from './audio';
-import { CANVAS_FONT_STACK, ensureCanvasFontsReady } from './fonts';
+import { CANVAS_FONT_STACK } from './fonts';
 
 export type CameraPreset = 'ISOMETRIC' | 'TOP_DOWN' | 'PLAYER_1' | 'PLAYER_2';
 
@@ -144,6 +144,10 @@ export class BoardGameScene {
     { startY: number; targetY: number; startedAt: number; duration: number }
   >();
   private highlightIds = new Set<string>();
+  private highlightedMeshes = new Map<
+    THREE.Mesh,
+    { emissive?: THREE.Color; emissiveIntensity?: number; color?: THREE.Color; opacity?: number }
+  >();
   private framing = {
     isoPos: new THREE.Vector3(10.5, 22, 24.5),
     isoTarget: new THREE.Vector3(1.8, 0, -0.2),
@@ -617,7 +621,7 @@ export class BoardGameScene {
     const dx = current[0] - this.groupDrag.startWorld[0];
     const dz = current[2] - this.groupDrag.startWorld[2];
 
-    for (const [id, [bx, by, bz]] of this.groupDrag.bases) {
+    for (const [id, [bx, _by, bz]] of this.groupDrag.bases) {
       const mesh = this.entityMeshes.get(id);
       if (!mesh) continue;
       const start = this.groupDrag.offsets.get(id) ?? { dx: 0, dz: 0 };
@@ -894,9 +898,7 @@ export class BoardGameScene {
     const placingSignature = displayPlacement
       ? `${displayPlacement.defId ?? displayPlacement.name}:${displayPlacement.floor}:${displayPlacement.col}:${displayPlacement.row}`
       : 'none';
-    const boardKey = `${state.gameId}:${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}:${[...this.highlightIds]
-      .sort()
-      .join(',')}`;
+    const boardKey = `${state.gameId}:${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}`;
     const boardChanged = boardKey !== this.lastBoardKey;
     if (!boardChanged) {
       // Placement rotation only changes the preview mesh and connection links, not the board.
@@ -1069,7 +1071,7 @@ export class BoardGameScene {
       });
     }
 
-    for (const [zoneId, zone] of Object.entries(state.zones)) {
+    for (const [_zoneId, zone] of Object.entries(state.zones)) {
       const groups = buildCardGroups(zone, state.entities as Record<string, any>);
       for (const group of groups) {
         if (group.count < 2) continue;
@@ -1188,6 +1190,7 @@ export class BoardGameScene {
   /** Remove and release GPU-side resources; shared texture caches stay alive. */
   private clearBoardObjects(): void {
     this.physics.clear();
+    this.highlightedMeshes.clear();
     this.navArrowMeshes = [];
     while (this.boardObjectsGroup.children.length > 0) {
       const child = this.boardObjectsGroup.children[0];
@@ -1217,11 +1220,18 @@ export class BoardGameScene {
 
   /**
    * Highlight a set of interactive candidates (board targets, cards).
-   * Re-renders the board so previously highlighted objects return to normal.
+   * Incrementally updates visual highlights and label overlay without destroying/rebuilding the board.
    */
-  public setHighlight(ids: string[] | null, resync = true): void {
-    this.highlightIds = new Set(ids ?? []);
-    if (resync && this.lastRawState) this.syncState(this.lastRawState, this.lastPlacement, this.lastLayout);
+  public setHighlight(ids: string[] | null, _resync = true): void {
+    const next = new Set(ids ?? []);
+    if (this.highlightIds.size === next.size && [...this.highlightIds].every(id => next.has(id))) {
+      return;
+    }
+    this.highlightIds = next;
+    this.applyHighlights();
+    if (this.lastState) {
+      this.refreshLabels(this.lastState);
+    }
   }
 
   public getHighlight(): string[] {
@@ -1229,8 +1239,27 @@ export class BoardGameScene {
   }
 
   private applyHighlights(): void {
+    // 1. Restore previously highlighted meshes
+    for (const [mesh, orig] of this.highlightedMeshes) {
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      materials.forEach(mat => {
+        const m = mat as THREE.MeshStandardMaterial;
+        if (orig.emissive !== undefined && 'emissive' in m && m.emissive) {
+          m.emissive.copy(orig.emissive);
+          m.emissiveIntensity = orig.emissiveIntensity ?? 0;
+        } else if (orig.color !== undefined && 'color' in m && m.color) {
+          // SAFETY: MeshBasicMaterial and MeshStandardMaterial both implement color and opacity in Three.js runtime
+          const basic = m as unknown as THREE.MeshBasicMaterial;
+          basic.color.copy(orig.color);
+          basic.opacity = orig.opacity ?? 1.0;
+        }
+      });
+    }
+    this.highlightedMeshes.clear();
+
     if (this.highlightIds.size === 0) return;
 
+    // 2. Pulse currently highlighted objects
     const pulse = (obj: THREE.Object3D) => {
       obj.traverse(child => {
         const mesh = child as THREE.Mesh;
@@ -1239,10 +1268,23 @@ export class BoardGameScene {
         materials.forEach(mat => {
           const m = mat as THREE.MeshStandardMaterial;
           if ('emissive' in m && m.emissive) {
+            if (!this.highlightedMeshes.has(mesh)) {
+              this.highlightedMeshes.set(mesh, {
+                emissive: m.emissive.clone(),
+                emissiveIntensity: m.emissiveIntensity
+              });
+            }
             m.emissive = new THREE.Color(0xd9b45b);
             m.emissiveIntensity = 0.85;
           } else if ('color' in m && m.color) {
+            // SAFETY: fallback for unlit materials that only support color/opacity tinting.
             const basic = m as unknown as THREE.MeshBasicMaterial;
+            if (!this.highlightedMeshes.has(mesh)) {
+              this.highlightedMeshes.set(mesh, {
+                color: basic.color.clone(),
+                opacity: basic.opacity
+              });
+            }
             basic.color = new THREE.Color(0xf6dc9c);
             basic.opacity = 0.85;
           }
@@ -2314,7 +2356,7 @@ export class BoardGameScene {
    * Builds the 3D room placement preview: semi-transparent ghost tile, in-world
    * rotate & confirm widgets, and dynamic portal link arches / door beacons.
    */
-  private renderPlacementPreview(placement: PlacementPreview, state?: ProjectedGameState): void {
+  private renderPlacementPreview(placement: PlacementPreview, _state?: ProjectedGameState): void {
     if (this.lastPreviewRotation !== undefined && this.lastPreviewRotation !== placement.rotation) {
       BoardGameAudio.playCardFlip();
     }
@@ -2495,7 +2537,7 @@ export class BoardGameScene {
   }
 
   private renderCardPile(
-    state: ProjectedGameState,
+    _state: ProjectedGameState,
     zone: ProjectedGameState['zones'][string],
     items: (Partial<Entity> & { isMasked?: boolean; id: string })[]
   ): void {
