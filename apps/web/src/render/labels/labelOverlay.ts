@@ -26,6 +26,7 @@ export interface WorldLabel {
  * the overlay projects them through the camera and resolves overlaps in pixels.
  */
 export class LabelOverlay {
+  private static readonly _scratchProjVec = new THREE.Vector3();
   private readonly container: HTMLElement;
   private readonly root: HTMLDivElement;
   private readonly svg: SVGSVGElement;
@@ -93,7 +94,7 @@ export class LabelOverlay {
         burst.el.remove();
         return false;
       }
-      const vector = new THREE.Vector3(...burst.world).project(camera);
+      const vector = LabelOverlay._scratchProjVec.set(...burst.world).project(camera);
       const x = (vector.x * 0.5 + 0.5) * viewport.width;
       const y = (-vector.y * 0.5 + 0.5) * viewport.height;
       // Rise ~46px over the lifetime, independent of the CSS keyframes.
@@ -147,7 +148,7 @@ export class LabelOverlay {
     const anchors: LabelAnchor[] = [];
     const anchorWorld = new Map<string, { x: number; y: number }>();
     for (const label of this.labels) {
-      const vector = new THREE.Vector3(...label.world).project(camera);
+      const vector = LabelOverlay._scratchProjVec.set(...label.world).project(camera);
       if (vector.z < -1 || vector.z > 1) continue;
       const x = (vector.x * 0.5 + 0.5) * viewport.width;
       const y = (-vector.y * 0.5 + 0.5) * viewport.height;
