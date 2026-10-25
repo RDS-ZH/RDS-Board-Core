@@ -871,7 +871,7 @@ export class BetrayalRules {
 
     const candidate = drawRoomCandidate(state, from, dir);
     if (!candidate) {
-      trace(ctx, 'ANNOUNCEMENT', `房间堆中没有可用的 ${dir} 向板块`, 400);
+      trace(ctx, 'ANNOUNCEMENT', '该楼层的房间板块已全部探索完毕', 400);
       return;
     }
 
@@ -900,10 +900,10 @@ export class BetrayalRules {
       cost,
       name: candidate.def.name,
       en: candidate.def.en,
-      floor: candidate.def.floor,
-      position: gridToWorld(candidate.def.floor, candidate.col, candidate.row),
+      floor: candidate.floor,
+      position: gridToWorld(candidate.floor, candidate.col, candidate.row),
       localDoors: candidate.def.doors,
-      color: FLOOR_META[candidate.def.floor].color,
+      color: FLOOR_META[candidate.floor].color,
       symbol: candidate.def.symbol,
       text: candidate.def.text,
       special: candidate.def.special,
@@ -952,6 +952,7 @@ export class BetrayalRules {
           defId: string;
           col: number;
           row: number;
+          floor: Floor;
           rotations: number[];
           discarded: string[];
           cost: number;
@@ -982,6 +983,7 @@ export class BetrayalRules {
         dir: pending.dir,
         col: pending.col,
         row: pending.row,
+        floor: pending.floor,
         rotations: pending.rotations,
         discarded: pending.discarded
       },
@@ -1054,13 +1056,18 @@ export class BetrayalRules {
     const tags = roomTags(state, roomId);
 
     if (!traitor) {
-      if (special === 'FURNACE') {
-        damagePlayer(state, pid, 'PHYSICAL', 1);
-        trace(ctx, 'DAMAGE_EFFECT', `${player.name} 被熔炉热浪灼伤（1 点物理伤害）`, 500);
-      }
-      if (special === 'COAL_CHUTE' && !ownsDef(state, pid, 'rope')) {
-        damagePlayer(state, pid, 'PHYSICAL', 1);
-        trace(ctx, 'DAMAGE_EFFECT', `${player.name} 在煤槽中擦伤（1 点物理伤害）`, 400);
+      if (special === 'COAL_CHUTE') {
+        const hasRope = ownsDef(state, pid, 'rope');
+        if (!hasRope) {
+          damagePlayer(state, pid, 'PHYSICAL', 1);
+          trace(ctx, 'DAMAGE_EFFECT', `${player.name} 从煤槽滑下擦伤（1 点物理伤害）`, 500);
+        } else {
+          trace(ctx, 'ANNOUNCEMENT', `${player.name} 借助绳索安全滑落煤槽`, 500);
+        }
+        if (state.mapGraph.nodes.room_basement_landing) {
+          movePlayerTo(state, pid, 'room_basement_landing');
+          trace(ctx, 'MOVE_OBJECT', `${player.name} 滑落至地下平台`, 500);
+        }
       }
       if (special === 'COLLAPSED') {
         const check = rollTraitCheck(state, pid, 'speed', { threshold: 5, reason: 'collapsed room' });
@@ -1073,15 +1080,6 @@ export class BetrayalRules {
           player.customProps.movesLeft = 0;
           trace(ctx, 'DAMAGE_EFFECT', `${player.name} 坠入地下室平台（1 点物理伤害）`, 700);
           return;
-        }
-      }
-      if (tags.includes('pentagram') || tags.includes('crypt') || tags.includes('graveyard')) {
-        if (!ownsDef(state, pid, 'medallion')) {
-          const check = rollTraitCheck(state, pid, 'sanity', { threshold: 4, reason: 'unholy room' });
-          if (!check.success) {
-            damagePlayer(state, pid, 'MENTAL', 1);
-            trace(ctx, 'DAMAGE_EFFECT', `${room.props.name} 的寒气侵蚀 ${player.name}（1 点精神伤害）`, 500);
-          }
         }
       }
     }
@@ -2332,6 +2330,9 @@ export class BetrayalRules {
   /* ------------------------------------------------------------------ */
 
   private static endTurn(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    // Settle room debuffs for explorers ending their turn in hazardous rooms (Furnace, Crypt, Pentagram, etc.)
+    this.settleRoomEndTurnDebuff(state, pid, ctx);
+
     const pending = state.globalVars.pendingHauntRoll as { playerId: PlayerId; omens: number } | null;
     if (pending && pending.playerId === pid && !state.globalVars.hauntTriggered) {
       const frame: StackFrame = {
@@ -2463,6 +2464,39 @@ export class BetrayalRules {
       trace(ctx, 'RULE_MUTATE', '木乃伊把小女孩放入石棺——封印完成！', 1400);
     }
     this.advanceTurn(state, ctx);
+  }
+
+  /**
+   * Room debuffs that specifically take effect only when ending the turn in that room
+   * (Furnace room, Pentagram Chamber, Crypt, Graveyard, etc.).
+   */
+  private static settleRoomEndTurnDebuff(state: GameState, pid: PlayerId, ctx: ReduceContext): void {
+    const player = state.players[pid];
+    if (!player || !player.alive || player.role === 'TRAITOR') return;
+    const roomId = activeRoom(state, pid);
+    const room = state.mapGraph.nodes[roomId];
+    if (!room) return;
+
+    const special = room.props?.special as string | null;
+    const tags = roomTags(state, roomId);
+
+    // 1. 熔炉房：回合结束停留在此受到 1 点物理伤害（仅穿行无伤）
+    if (special === 'FURNACE') {
+      damagePlayer(state, pid, 'PHYSICAL', 1);
+      trace(ctx, 'DAMAGE_EFFECT', `🔥 ${player.name} 在熔炉房结束回合，被高温灼伤（1 点物理伤害）`, 500);
+    }
+
+    // 2. 邪恶/不洁房间：回合结束停留在此进行神智检定
+    if (tags.includes('pentagram') || tags.includes('crypt') || tags.includes('graveyard')) {
+      if (!ownsDef(state, pid, 'medallion')) {
+        const check = rollTraitCheck(state, pid, 'sanity', { threshold: 4, reason: 'unholy room' });
+        trace(ctx, 'DICE_ROLL', `${room.props.name} · 神智检定 ${check.total} vs 4`, 600);
+        if (!check.success) {
+          damagePlayer(state, pid, 'MENTAL', 1);
+          trace(ctx, 'DAMAGE_EFFECT', `👻 ${room.props.name} 的阴冷寒气侵蚀 ${player.name}（1 点精神伤害）`, 500);
+        }
+      }
+    }
   }
 
   private static startOfTurn(state: GameState, pid: PlayerId, ctx: ReduceContext): void {

@@ -311,6 +311,10 @@ export const BETRAYAL_SCENARIOS: Record<string, GameScenario> = {
       addExploredRoom(state, 'vault', 3, 1, 'room_basement_landing');
       addExploredRoom(state, 'mystic_elevator', 1, 3, 'room_basement_landing');
       addExploredRoom(state, 'collapsed_room', 1, 3, 'room_upper_landing');
+      addExploredRoom(state, 'furnace_room', 3, 3, 'room_basement_landing');
+
+      connectRooms(state, 'room_basement_landing', 'room_coal_chute', 'DOOR');
+      connectRooms(state, 'room_basement_landing', 'room_furnace_room', 'DOOR');
 
       setRoom(state, 'p1', 'room_vault');
       setRoom(state, 'p2', 'room_coal_chute');

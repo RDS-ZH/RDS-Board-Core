@@ -715,6 +715,7 @@ export interface RoomPlacementCandidate {
   dir: DoorDir;
   col: number;
   row: number;
+  floor: Floor;
   /** Valid quarter turns (0..3) that put a door on the entry side. */
   rotations: number[];
   discarded: string[];
@@ -752,9 +753,30 @@ export function drawRoomCandidate(
   const discarded: string[] = [];
   let attempts = 0;
 
-  while (state.zones.zone_room_deck && state.zones.zone_room_deck.orderedEntities.length > 0 && attempts < 44) {
+  const reshuffleDiscard = () => {
+    const deck = state.zones.zone_room_deck;
+    const discard = state.zones.zone_room_discard;
+    if (deck && deck.orderedEntities.length === 0 && discard && discard.orderedEntities.length > 0) {
+      const items = [...discard.orderedEntities];
+      for (const tid of items) {
+        commit(state, ECSManager.moveEntity(state, tid, 'zone_room_deck'));
+      }
+      const shuffled = DeterministicPRNG.shuffle(
+        (state.seed ?? 42) + items.length + attempts * 19,
+        state.zones.zone_room_deck.orderedEntities
+      );
+      state.zones.zone_room_deck.orderedEntities = shuffled.result;
+    }
+  };
+
+  while (attempts < 64) {
     attempts += 1;
     const deck = state.zones.zone_room_deck;
+    if (!deck || deck.orderedEntities.length === 0) {
+      reshuffleDiscard();
+      if (!deck || deck.orderedEntities.length === 0) break;
+    }
+
     const tileId = deck.orderedEntities[deck.orderedEntities.length - 1];
     const tile = state.entities[tileId];
     const defId = String(tile?.components.custom?.roomDefId ?? '');
@@ -771,7 +793,8 @@ export function drawRoomCandidate(
       continue;
     }
 
-    if (def.floor !== grid.floor) {
+    const allowedFloors = def.floors ?? [def.floor];
+    if (!allowedFloors.includes(grid.floor)) {
       discarded.push(defId);
       commit(state, ECSManager.moveEntity(state, tileId, 'zone_room_discard'));
       continue;
@@ -791,6 +814,7 @@ export function drawRoomCandidate(
       dir,
       col,
       row,
+      floor: grid.floor,
       rotations,
       discarded
     };
@@ -847,7 +871,8 @@ export function placeRoomCandidate(
   const nodeId = `room_${candidate.def.id}`;
   if (state.mapGraph.nodes[nodeId]) return null;
 
-  const node = addRoomNode(state, candidate.def, candidate.col, candidate.row, rotation, nodeId);
+  const placedDef: RoomDef = { ...candidate.def, floor: candidate.floor ?? candidate.def.floor };
+  const node = addRoomNode(state, placedDef, candidate.col, candidate.row, rotation, nodeId);
   const entryEdge = connectRooms(state, candidate.fromRoomId, nodeId, 'DOOR', candidate.dir);
   const entry = state.mapGraph.edges[entryEdge];
   if (entry) entry.ports = { from: candidate.dir, to: opposite(candidate.dir) };
