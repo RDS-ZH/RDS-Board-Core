@@ -92,12 +92,21 @@ export class BoardRaycaster {
     this.onDragMoveCallback = callback;
   }
 
+  private isHierarchyVisible(obj: THREE.Object3D): boolean {
+    let cur: THREE.Object3D | null = obj;
+    while (cur) {
+      if (!cur.visible) return false;
+      cur = cur.parent;
+    }
+    return true;
+  }
+
   private pickAt(clientX: number, clientY: number): InteractiveObjectData | null {
     const rect = this.domElement.getBoundingClientRect();
     this.mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouse, this.camera);
-    const meshes = Array.from(this.interactiveMeshes.keys());
+    const meshes = Array.from(this.interactiveMeshes.keys()).filter(m => this.isHierarchyVisible(m));
     const intersects = this.raycaster.intersectObjects(meshes, false);
     if (intersects.length === 0) return null;
     return this.interactiveMeshes.get(intersects[0].object) ?? null;
@@ -123,7 +132,7 @@ export class BoardRaycaster {
     this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 
     this.raycaster.setFromCamera(this.mouse, this.camera);
-    const meshes = Array.from(this.interactiveMeshes.keys());
+    const meshes = Array.from(this.interactiveMeshes.keys()).filter(m => this.isHierarchyVisible(m));
     const intersects = this.raycaster.intersectObjects(meshes, false);
 
     if (intersects.length > 0) {

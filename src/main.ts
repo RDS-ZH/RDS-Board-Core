@@ -60,6 +60,10 @@ class BoardGameSimulatorApp {
         this.scene.focusNode(nodeId);
       },
       clearRoomFocus: () => this.scene.clearFocus(),
+      setFloor: (floorId: string) => {
+        this.scene.focusFloor(floorId);
+        this.hud.setSelectedFloor(floorId);
+      },
       showTraitChange: change => {
         const tone = change.delta < 0 ? (change.damageKind === 'MENTAL' ? 'mental' : 'physical') : 'heal';
         const sign = change.delta > 0 ? '+' : '';
@@ -85,7 +89,16 @@ class BoardGameSimulatorApp {
     document.addEventListener('click', event => {
       const target = event.target as HTMLElement | null;
       const floor = target?.closest<HTMLElement>('[data-floor]')?.dataset.floor;
-      if (floor) this.scene.focusFloor(floor);
+      if (floor) {
+        this.scene.focusFloor(floor);
+        this.hud.setSelectedFloor(floor);
+      }
+      const roomEl = target?.closest<HTMLElement>('[data-room-id]');
+      const roomId = roomEl?.dataset.roomId;
+      if (roomId && this.currentGameId === 'betrayal') {
+        this.scene.focusNode(roomId);
+        this.session.pickTarget({ kind: 'node', id: roomId });
+      }
     });
     this.scene.onInteractiveClick(data => {
       // Clicking a room entity is also the inspection camera gesture: the
