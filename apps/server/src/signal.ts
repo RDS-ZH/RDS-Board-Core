@@ -1,9 +1,9 @@
-/** WebSocket 信令：房间组 + SDP/ICE 盲转发。不接触游戏数据。 */
+/** WebSocket 信令：房间组 + SDP/ICE 盲转发 + 大厅实时频道。不接触游戏数据。 */
 import type { WebSocket } from 'ws';
 import { verifyJwt } from './auth.ts';
-import type { SignalMessage } from '@rds/room-protocol';
+import type { HubRoomInfo, SignalMessage } from '@rds/room-protocol';
 
-interface Client { userId: string; name: string; ws: WebSocket; roomId?: string; alive: boolean; }
+interface Client { userId: string; name: string; ws: WebSocket; roomId?: string; alive: boolean; lobby: boolean; }
 
 export class SignalHub {
   private clients = new Set<Client>();
@@ -11,7 +11,16 @@ export class SignalHub {
   accept(ws: WebSocket, token: string | null) {
     const payload = token ? verifyJwt(token) : null;
     if (!payload) { ws.close(4001, 'unauthorized'); return; }
-    const client: Client = { userId: payload.sub, name: payload.name, ws, alive: true };
+    const client: Client = { userId: payload.sub, name: payload.name, ws, alive: true, lobby: false };
+    // 同一用户新连接顶掉旧连接（页面重载/大厅→对局切换时旧 ws 可能未及时关闭，
+    // 尤其经代理时服务端收不到 close；旧连接残留在房间组会让 SDP offer 发给死端）
+    for (const c of [...this.clients]) {
+      if (c.userId === client.userId && c.ws !== ws) {
+        this.clients.delete(c);
+        if (c.roomId) this.broadcastRoom(c.roomId, { t: 'peer-leave', peerId: c.userId });
+        c.ws.terminate();
+      }
+    }
     this.clients.add(client);
     ws.on('pong', () => { client.alive = true; });
     ws.on('message', raw => this.onMessage(client, raw.toString()));
@@ -46,7 +55,29 @@ export class SignalHub {
         if (target) this.send(target, { ...msg, from: client.userId } as SignalMessage);
         break;
       }
+      // ---- 大厅实时频道（Phase B） ----
+      case 'lobby-sub': client.lobby = true; break;
+      case 'lobby-unsub': client.lobby = false; break;
+      case 'lobby-chat': {
+        // 只做群内转发（房间组成员 + 发送者），不落盘、不鉴权成员资格（房间页只把
+        // 自己 join-room 进组；游戏对局的 ws 连接不受影响——它不处理 lobby-chat）。
+        if (!msg.roomId || typeof msg.text !== 'string' || !msg.text.trim()) return;
+        const trimmed = msg.text.trim().slice(0, 200);
+        const payload: SignalMessage = { t: 'lobby-chat', roomId: msg.roomId, from: client.userId, name: client.name, text: trimmed, at: Date.now() };
+        for (const c of this.clients) {
+          if (c.roomId === msg.roomId) this.send(c, payload);
+        }
+        break;
+      }
       default: break; // 未知消息忽略（前向兼容）
+    }
+  }
+
+  /** 房间字段变化 → 房间组成员 + 大厅订阅者。closed 房间只推给大厅（刷新列表）。 */
+  broadcastRoomUpdate(room: HubRoomInfo): void {
+    const msg: SignalMessage = { t: 'room-updated', room };
+    for (const c of this.clients) {
+      if (c.lobby || (room.status !== 'closed' && c.roomId === room.id)) this.send(c, msg);
     }
   }
 

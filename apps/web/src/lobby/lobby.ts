@@ -1,16 +1,14 @@
 import type { HubGameInfo, HubRoomInfo } from '@rds/room-protocol';
-import { getGames, getRooms, createRoom, joinRoom, leaveRoom, setRoomStatus, getRoom, me } from './api.ts';
+import { getGames, getRooms, createRoom, joinRoom, leaveRoom, setRoomStatus, getRoom, me, setReady, kickPlayer, transferHost } from './api.ts';
 import { showToast } from './toast.ts';
 
 /**
- * 大厅视图：登录/房间列表/房间页。统一外壳(unified shell)的一部分——
- * 与游戏视图共用同一 SPA；"进入对局"通过 onEnterGame 回调切回游戏视图。
- * 契约见 docs/LOBBY-INTEGRATION.md。
+ * 大厅 2.0（Phase B）：游戏货架 + 快速加入 + 创建模态 + 座位/就绪/聊天 + ws 实时。
  *
- * Phase A 约束：
- * - 所有动态插值一律经 esc()（存储型 XSS 防御：房间名/用户名来自其他用户输入）
- * - refreshRoom 不再无条件整页重渲：按数据签名跳过无变化渲染（避免按钮 focus/hover 被 3s 轮询重置）
- * - 轮询在大厅隐藏（进对局）或页面不可见时暂停
+ * 继承 Phase A 约束：
+ * - 所有动态插值一律经 esc()（存储型 XSS 防御）
+ * - 渲染按数据签名跳过无变化重建（保 focus/hover）
+ * - 轮询在大厅隐藏时暂停；ws 健康时轮询仅作兜底
  * - 错误用 toast，不用 alert
  */
 export interface LobbyHandle { destroy(): void; }
@@ -20,6 +18,8 @@ export interface EnterGameParams { query: string; }
 let user: { sub: string; name: string } | null = null;
 let games: HubGameInfo[] = [];
 let currentRoom: HubRoomInfo | null = null;
+let roomsCache: HubRoomInfo[] = [];
+let roomsCacheSig = '';
 let roomTimer: ReturnType<typeof setInterval> | null = null;
 let roomsTimer: ReturnType<typeof setInterval> | null = null;
 let rootEl: HTMLElement | null = null;
@@ -28,8 +28,96 @@ let visibilityHandler: (() => void) | null = null;
 /** 上次渲染房间页的数据签名：未变化则跳过 DOM 重建 */
 let lastRoomSig = '';
 
+/** 聊天记录：roomId → 消息缓冲（上限 200 条，仅内存） */
+interface ChatMsg { from: string; name: string; text: string; at: number; self: boolean; }
+const chatLog = new Map<string, ChatMsg[]>();
+
+// ---- ws 实时通道（lobby-sub + join-room + room-updated + lobby-chat） ----
+let ws: WebSocket | null = null;
+let wsWanted = false;
+let wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let wsHealthy = false;
+
+function wsUrl(): string {
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  return proto + location.host + '/ws?token=' + encodeURIComponent(localStorage.getItem('token') ?? '');
+}
+
+function wsSend(msg: unknown): void {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
+}
+
+function openWs(): void {
+  if (!user || ws || !wsWanted) return;
+  try { ws = new WebSocket(wsUrl()); } catch { scheduleWsRetry(); return; }
+  ws.onopen = () => {
+    wsHealthy = true;
+    wsSend({ t: 'lobby-sub' });
+    if (currentRoom) wsSend({ t: 'join-room', roomId: currentRoom.id });
+    void refreshRooms();
+  };
+  ws.onmessage = ev => {
+    let msg: any;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.t === 'room-updated') onRoomUpdated(msg.room as HubRoomInfo);
+    else if (msg.t === 'lobby-chat' && user) onChat(msg.roomId, { from: msg.from, name: msg.name, text: msg.text, at: msg.at, self: msg.from === user.sub });
+    // hello/peer-join/peer-leave：游戏信令消息，大厅忽略
+  };
+  ws.onclose = () => { ws = null; wsHealthy = false; scheduleWsRetry(); };
+  ws.onerror = () => { /* onclose 会跟着触发 */ };
+}
+
+function scheduleWsRetry(): void {
+  if (!wsWanted || wsRetryTimer) return;
+  wsRetryTimer = setTimeout(() => { wsRetryTimer = null; openWs(); }, 3000);
+}
+
+function closeWs(): void {
+  wsWanted = false; wsHealthy = false;
+  if (wsRetryTimer) { clearTimeout(wsRetryTimer); wsRetryTimer = null; }
+  if (ws) { const s = ws; ws = null; try { s.close(); } catch { /* noop */ } }
+}
+
+function onRoomUpdated(room: HubRoomInfo): void {
+  const uid = user?.sub;
+  if (!uid) return;
+  if (currentRoom && room.id === currentRoom.id) {
+    if (room.status === 'closed' || !room.players.some(p => p.id === uid)) {
+      currentRoom = null;
+      showToast('你已不在该房间', 'info');
+      render();
+      void refreshRooms();
+      return;
+    }
+    if (roomSig(room) !== lastRoomSig) { currentRoom = room; render(); }
+    else currentRoom = room;
+    return;
+  }
+  roomsCacheSig = '';
+  void refreshRooms();
+}
+
+function onChat(roomId: string, m: ChatMsg): void {
+  const buf = chatLog.get(roomId) ?? [];
+  buf.push(m);
+  if (buf.length > 200) buf.splice(0, buf.length - 200);
+  chatLog.set(roomId, buf);
+  appendChatDom(m);
+}
+
+function appendChatDom(m: ChatMsg): void {
+  const log = document.getElementById('chat-log');
+  if (!log || !currentRoom) return;
+  log.querySelector('.lob-chat-empty')?.remove();
+  const div = document.createElement('div');
+  div.className = 'lob-chat-msg' + (m.self ? ' self' : '');
+  div.innerHTML = '<span class="lob-chat-name">' + esc(m.self ? '你' : m.name) + '</span>' + esc(m.text);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
 function esc(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 
 /** 大厅是否处于前台（进对局后 lobby-root 被 shell 隐藏，轮询应暂停） */
@@ -41,7 +129,6 @@ export async function startLobby(container: HTMLElement, enterGame: (p: EnterGam
   rootEl = container;
   onEnterGame = enterGame;
   visibilityHandler = () => {
-    // 从后台/对局回到大厅：立即刷一次，弥补暂停期间的空窗
     if (lobbyVisible()) {
       if (currentRoom) void refreshRoom(); else void refreshRooms();
     }
@@ -51,9 +138,10 @@ export async function startLobby(container: HTMLElement, enterGame: (p: EnterGam
   return {
     destroy() {
       stopTimer('room'); stopTimer('list');
+      closeWs();
       if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
       if (rootEl) rootEl.innerHTML = '';
-      rootEl = null; onEnterGame = null; currentRoom = null; lastRoomSig = '';
+      rootEl = null; onEnterGame = null; currentRoom = null; lastRoomSig = ''; roomsCacheSig = '';
     }
   };
 }
@@ -73,64 +161,264 @@ function render(): void {
 
 /** 房间页渲染签名：签名字段变化才值得重建 DOM */
 function roomSig(r: HubRoomInfo): string {
-  return [r.id, r.status, r.name, r.gameId, r.hostId, r.maxPlayers,
-    r.players.map(p => p.id + ':' + p.name).join(',')].join('|');
+  return [r.id, r.status, r.name, r.gameId, r.hostId, r.maxPlayers, r.isPrivate ? 1 : 0, r.code ?? '', r.scenarioId ?? '',
+    r.players.map(p => p.id + ':' + p.name).join(','),
+    (r.readyPlayers ?? []).join(',')].join('|');
 }
+
+const accentOf = (g?: HubGameInfo): string => g?.accent ?? '#6ea8fe';
+
+// ---------------- 认证视图 ----------------
 
 function authHtml() {
   return `
-  <div class="lob-card lob-auth">
-    <h2>RDS Board · 联机大厅</h2>
-    <p class="lob-muted">桌游联机中心 · 账号</p>
-    <div class="lob-stack">
-      <input id="name" placeholder="用户名（2-24 位字母数字下划线）" />
-      <input id="pass" type="password" placeholder="密码（至少 6 位）" />
-      <div class="lob-row">
-        <button id="login">登录</button>
-        <button id="register" class="lob-secondary">注册</button>
+  <div class="lob-auth-wrap">
+    <div class="lob-card lob-auth">
+      <div class="lob-brand"><span class="lob-brand-dot"></span>RDS Board</div>
+      <h2>联机大厅</h2>
+      <p class="lob-muted">创建账号，和朋友来一局桌游。</p>
+      <div class="lob-stack">
+        <input id="name" placeholder="用户名（2-24 位字母数字下划线）" autocomplete="username" />
+        <input id="pass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password" />
+        <div class="lob-row">
+          <button id="login">登录</button>
+          <button id="register" class="lob-secondary">注册</button>
+        </div>
+        <div id="err" class="lob-error"></div>
       </div>
-      <div id="err" class="lob-error"></div>
     </div>
   </div>`;
 }
+
+// ---------------- 首页：货架 + 快速加入 ----------------
 
 function lobbyHtml() {
   return `
-  <header class="lob-header"><h1>RDS Board · 联机大厅</h1><div class="lob-row"><span class="lob-muted">${esc(user!.name)}</span><button id="logout" class="lob-secondary">退出</button></div></header>
-  <div class="lob-main">
-    <div class="lob-card">
-      <b>创建房间</b>
-      <div class="lob-row" style="margin-top:10px">
-        <input id="room-name" placeholder="房间名" style="flex:1;min-width:160px" />
-        <select id="game">${games.map(g => `<option value="${esc(g.id)}">${esc(g.name)}（${g.minPlayers}-${g.maxPlayers}人）</option>`).join('')}</select>
-        <button id="create">创建</button>
-      </div>
+  <header class="lob-header">
+    <div class="lob-brand"><span class="lob-brand-dot"></span>RDS Board<span class="lob-muted lob-brand-sub">联机大厅</span></div>
+    <div class="lob-row">
+      <button id="solo" class="lob-secondary">本地单机</button>
+      <span class="lob-userchip">${esc(user!.name)}</span>
+      <button id="logout" class="lob-secondary">退出</button>
     </div>
-    <div class="lob-card"><b>房间列表</b><div id="rooms" class="lob-muted" style="margin-top:8px">加载中…</div></div>
-    <div class="lob-card lob-solo"><b>单机模式</b><p class="lob-muted">不想联机？直接开一桌本地对局。</p><button id="solo">本地单机</button></div>
-  </div>`;
+  </header>
+  <div class="lob-main lob-home">
+    <section class="lob-primary">
+      <div class="lob-section-head">
+        <h2>选择游戏</h2>
+        <button id="create-open" class="lob-primary-btn">＋ 创建房间</button>
+      </div>
+      <div class="lob-shelf" id="shelf">
+        ${games.map(shelfCard).join('')}
+      </div>
+      <div class="lob-section-head">
+        <h2>快速加入</h2>
+        <span class="lob-muted" id="rooms-hint"></span>
+      </div>
+      <div id="rooms" class="lob-quick">加载中…</div>
+    </section>
+    <aside class="lob-side">
+      <div class="lob-card lob-solo">
+        <b>单机模式</b>
+        <p class="lob-muted">不想联机？直接开一桌本地对局，与联机同一内核。</p>
+        <button id="solo2" class="lob-secondary">本地单机</button>
+      </div>
+      <div class="lob-card">
+        <b>联机说明</b>
+        <p class="lob-muted">对局为 P2P（WebRTC）：房主浏览器是对局权威。全员就绪后由房主开局。</p>
+      </div>
+    </aside>
+  </div>
+  ${createModalHtml()}`;
 }
 
-function roomRow(r: HubRoomInfo) {
+function shelfCard(g: HubGameInfo) {
+  const openCount = roomsCache.filter(r => r.gameId === g.id && r.status === 'open' && r.players.length < r.maxPlayers).length;
+  return `
+  <button class="lob-gamecard" data-game="${esc(g.id)}" style="--accent:${accentOf(g)}">
+    <span class="lob-gamecard-art"></span>
+    <span class="lob-gamecard-body">
+      <span class="lob-gamecard-name">${esc(g.name)}</span>
+      <span class="lob-gamecard-meta">${g.minPlayers}-${g.maxPlayers} 人${g.durationMin ? ' · 约 ' + g.durationMin + ' 分钟' : ''}</span>
+      <span class="lob-gamecard-open">${openCount > 0 ? openCount + ' 个房间等待中' : '暂无等待中的房间'}</span>
+    </span>
+  </button>`;
+}
+
+function quickRow(r: HubRoomInfo) {
   const g = games.find(x => x.id === r.gameId);
-  return `<tr>
-    <td>${esc(r.name)}</td><td>${esc(g?.name ?? r.gameId)}</td>
-    <td>${r.players.map(p => esc(p.name)).join('、')}${r.hostId === user!.sub ? '（你是房主）' : ''}</td>
-    <td><span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span></td>
-    <td><button data-join="${esc(r.id)}" ${r.status !== 'open' ? 'disabled' : ''}>加入</button></td>
-  </tr>`;
+  const full = r.players.length >= r.maxPlayers;
+  return `
+  <div class="lob-quick-row" style="--accent:${accentOf(g)}">
+    <span class="lob-quick-dot"></span>
+    <span class="lob-quick-name">${esc(r.name)}${r.isPrivate ? ' 🔒' : ''}</span>
+    <span class="lob-quick-game">${esc(g?.name ?? r.gameId)}</span>
+    <span class="lob-quick-count">${r.players.length}/${r.maxPlayers}</span>
+    <span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span>
+    <button data-join="${esc(r.id)}" ${r.status !== 'open' || full ? 'disabled' : ''}>${r.isPrivate ? '输码加入' : '加入'}</button>
+  </div>`;
 }
 
 async function refreshRooms() {
   const el = document.getElementById('rooms');
-  if (!el || !lobbyVisible()) return;
+  if (!el || !lobbyVisible() || !user) return;
   try {
     const rooms = await getRooms();
-    el.innerHTML = rooms.length
-      ? '<table><tr><th>房间</th><th>游戏</th><th>玩家</th><th>状态</th><th></th></tr>' + rooms.map(roomRow).join('') + '</table>'
-      : '暂无房间，创建一个吧';
+    const sig = rooms.map(r => r.id + r.status + r.players.length + (r.isPrivate ? 1 : 0)).join('|');
+    roomsCache = rooms;
+    if (sig !== roomsCacheSig) {
+      roomsCacheSig = sig;
+      const joinable = rooms.filter(r => r.status === 'open' && r.players.length < r.maxPlayers)
+        .sort((a, b) => b.players.length - a.players.length);
+      el.innerHTML = joinable.length
+        ? joinable.map(quickRow).join('')
+        : '<div class="lob-empty">暂无可加入的房间——从上面选个游戏开一桌吧。</div>';
+      const hint = document.getElementById('rooms-hint');
+      if (hint) hint.textContent = rooms.length ? '（' + joinable.length + '/' + rooms.length + ' 个可加入）' : '';
+      const shelf = document.getElementById('shelf');
+      if (shelf) shelf.innerHTML = games.map(shelfCard).join('');
+    }
   } catch (e: any) { el.innerHTML = '<span class="lob-error">' + esc(e.message) + '</span>'; }
 }
+
+// ---------------- 创建房间模态 ----------------
+
+function createModalHtml() {
+  return `
+  <div class="lob-modal-backdrop" id="create-modal" hidden>
+    <div class="lob-card lob-modal">
+      <h3>创建房间</h3>
+      <div class="lob-stack">
+        <label class="lob-field-label">游戏</label>
+        <div class="lob-chips" id="cm-games">
+          ${games.map((g, i) => '<button class="lob-chip' + (i === 0 ? ' on' : '') + '" data-id="' + esc(g.id) + '" style="--accent:' + accentOf(g) + '">' + esc(g.name) + '</button>').join('')}
+        </div>
+        <label class="lob-field-label">房间名</label>
+        <input id="cm-name" placeholder="今晚开一桌" maxlength="40" />
+        <label class="lob-field-label">人数上限 <span id="cm-max-label"></span></label>
+        <input type="range" id="cm-max" min="2" max="6" value="4" />
+        <div id="cm-variant-wrap" hidden>
+          <label class="lob-field-label">开局变体</label>
+          <select id="cm-variant"></select>
+        </div>
+        <label class="lob-check"><input type="checkbox" id="cm-private" /> 私密房（需要 6 位房间码加入）</label>
+        <div class="lob-row" style="justify-content:flex-end">
+          <button id="cm-cancel" class="lob-secondary">取消</button>
+          <button id="cm-create" class="lob-primary-btn">创建</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="lob-modal-backdrop" id="code-modal" hidden>
+    <div class="lob-card lob-modal">
+      <h3>加入私密房</h3>
+      <p class="lob-muted" id="code-hint"></p>
+      <div class="lob-stack">
+        <input id="code-input" placeholder="6 位房间码" maxlength="6" style="text-transform:uppercase" />
+        <div class="lob-row" style="justify-content:flex-end">
+          <button id="code-cancel" class="lob-secondary">取消</button>
+          <button id="code-join">加入</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ---------------- 房间页：座位 + 就绪 + 聊天 ----------------
+
+function seatOf(r: HubRoomInfo, userId: string): number {
+  return r.players.findIndex(p => p.id === userId);
+}
+
+function roomHtml() {
+  const r = currentRoom!;
+  const g = games.find(x => x.id === r.gameId);
+  const isHost = r.hostId === user!.sub;
+  const seat = seatOf(r, user!.sub);
+  const ready = (r.readyPlayers ?? []);
+  const min = g?.minPlayers ?? 1;
+  const allReady = r.players.every(p => ready.includes(p.id));
+  const canStart = isHost && r.status === 'open' && r.players.length >= min && allReady;
+  const myReady = ready.includes(user!.sub);
+  const variantLabel = r.scenarioId ? (g?.variants?.find(v => v.id === r.scenarioId)?.label ?? r.scenarioId) : '';
+  return `
+  <header class="lob-header">
+    <div class="lob-row">
+      <button id="exit-room" class="lob-secondary">← 离开房间</button>
+      <h1 class="lob-room-title">${esc(r.name)}</h1>
+      <span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span>
+      ${r.isPrivate && isHost && r.code ? '<button id="copy-invite" class="lob-code-chip" title="点击复制">房间码 ' + esc(r.code) + '</button>' : ''}
+    </div>
+    <div class="lob-row"><span class="lob-userchip">${esc(user!.name)}</span></div>
+  </header>
+  <div class="lob-main lob-room">
+    <section class="lob-card lob-seats-card">
+      <div class="lob-room-gameinfo" style="--accent:${accentOf(g)}">
+        <b>${esc(g?.name ?? r.gameId)}</b>
+        <span class="lob-muted">${r.players.length}/${r.maxPlayers} 人${variantLabel ? ' · ' + esc(variantLabel) : ''}${g?.durationMin ? ' · 约 ' + g.durationMin + ' 分钟' : ''}</span>
+      </div>
+      <div class="lob-seats">
+        ${r.players.map((p, i) => seatCard(r, p, i, isHost)).join('')}
+        ${Array.from({ length: Math.max(0, r.maxPlayers - r.players.length) }, (_, i) =>
+          '<div class="lob-seat empty"><span class="lob-seat-avatar"></span><span class="lob-seat-name lob-muted">空位 p' + (r.players.length + i + 1) + '</span></div>').join('')}
+      </div>
+      <div class="lob-row lob-room-actions">
+        ${isHost && r.status === 'open'
+          ? '<button id="start-game" class="lob-primary-btn"' + (canStart ? '' : ' disabled') + '>开始游戏（' + min + '人起，需全员就绪）</button>'
+            + (canStart ? '' : '<span class="lob-muted">' + (r.players.length < min ? '人数不足' : ready.length + '/' + r.players.length + ' 已就绪') + '</span>')
+          : ''}
+        ${!isHost && r.status === 'open'
+          ? '<button id="ready-toggle" class="' + (myReady ? 'lob-secondary' : 'lob-primary-btn') + '">' + (myReady ? '✓ 已就绪（点击取消）' : '准备') + '</button>'
+            + '<span class="lob-muted">' + ready.length + '/' + r.players.length + ' 已就绪，等待房主开局…</span>'
+          : ''}
+        ${isHost && r.status === 'playing' ? '<button id="reopen-game">再次进入对局</button>' : ''}
+        ${!isHost && r.status === 'playing' ? '<button id="join-game">进入对局</button>' : ''}
+      </div>
+      <p class="lob-muted lob-room-note">对局为 P2P（WebRTC）：房主浏览器是对局权威，房主关闭对局窗口则对局中断。你的座位：p${seat + 1}。</p>
+    </section>
+    <aside class="lob-card lob-chat">
+      <b>房间聊天</b>
+      <div id="chat-log" class="lob-chat-log">
+        ${(chatLog.get(r.id) ?? []).map(m =>
+          '<div class="lob-chat-msg' + (m.self ? ' self' : '') + '"><span class="lob-chat-name">' + esc(m.self ? '你' : m.name) + '</span>' + esc(m.text) + '</div>').join('') || '<div class="lob-muted lob-chat-empty">暂无消息</div>'}
+      </div>
+      <div class="lob-row">
+        <input id="chat-input" placeholder="说点什么…" maxlength="200" />
+        <button id="chat-send">发送</button>
+      </div>
+    </aside>
+  </div>`;
+}
+
+function seatCard(r: HubRoomInfo, p: { id: string; name: string }, i: number, isHost: boolean) {
+  const ready = (r.readyPlayers ?? []).includes(p.id);
+  const isRoomHost = p.id === r.hostId;
+  const me = p.id === user!.sub;
+  const hostCtl = isHost && !me
+    ? '<div class="lob-seat-ctl"><button data-kick="' + esc(p.id) + '" class="lob-mini lob-danger">请离</button><button data-host="' + esc(p.id) + '" class="lob-mini">转房主</button></div>'
+    : '';
+  return `
+  <div class="lob-seat${ready ? ' ready' : ''}">
+    <span class="lob-seat-avatar">${esc(p.name.slice(0, 1).toUpperCase())}</span>
+    <span class="lob-seat-name">${esc(p.name)}${isRoomHost ? ' <span title="房主">👑</span>' : ''}${me ? '<span class="lob-muted">（你）</span>' : ''}</span>
+    <span class="lob-seat-sub">座位 p${i + 1}${r.status === 'open' ? (ready ? ' · <span class="lob-ready-tag">已就绪</span>' : ' · 未就绪') : ''}</span>
+    ${hostCtl}
+  </div>`;
+}
+
+async function refreshRoom() {
+  if (!currentRoom || !lobbyVisible()) return;
+  try {
+    const fresh = await getRoom(currentRoom.id);
+    if (roomSig(fresh) === lastRoomSig) { currentRoom = fresh; return; }
+    currentRoom = fresh;
+    render();
+  } catch (e: any) {
+    currentRoom = null; render(); showToast(e.message, 'error');
+  }
+}
+
+// ---------------- 事件绑定 ----------------
 
 function bind() {
   const $ = (id: string) => document.getElementById(id) as HTMLElement;
@@ -154,53 +442,159 @@ function bind() {
     return;
   }
 
-  $('logout')?.addEventListener('click', () => { localStorage.removeItem('token'); user = null; currentRoom = null; render(); });
+  $('logout')?.addEventListener('click', () => { localStorage.removeItem('token'); user = null; currentRoom = null; closeWs(); render(); });
   $('solo')?.addEventListener('click', () => onEnterGame?.({ query: '' }));
+  $('solo2')?.addEventListener('click', () => onEnterGame?.({ query: '' }));
 
-  if (currentRoom) {
-    const r0 = currentRoom;
-    $('exit-room')?.addEventListener('click', async () => {
-      try { await leaveRoom(r0.id); } catch (e: any) { showToast(e.message, 'error'); return; }
-      currentRoom = null; render();
-    });
-    $('start-game')?.addEventListener('click', async () => {
-      try {
-        currentRoom = await setRoomStatus(r0.id, 'playing');
-        onEnterGame?.({ query: gameQuery(currentRoom, 'host') });
-        render();
-      } catch (e: any) { showToast(e.message, 'error'); }
-    });
-    $('reopen-game')?.addEventListener('click', () => onEnterGame?.({ query: gameQuery(r0, 'host') }));
-    $('join-game')?.addEventListener('click', () => onEnterGame?.({ query: gameQuery(r0, 'guest') }));
-    stopTimer('list');
-    stopTimer('room');
-    roomTimer = setInterval(refreshRoom, 3000);
-    return;
-  }
+  if (currentRoom) { bindRoom(); return; }
 
-  $('create')?.addEventListener('click', async () => {
+  // ---- 首页 ----
+  $('create-open')?.addEventListener('click', () => openCreateModal());
+  document.getElementById('shelf')?.addEventListener('click', ev => {
+    const card = (ev.target as HTMLElement).closest<HTMLElement>('[data-game]');
+    if (card) openCreateModal(card.dataset.game);
+  });
+  $('cm-cancel')?.addEventListener('click', () => { $('create-modal').hidden = true; });
+  $('create-modal')?.addEventListener('click', ev => { if (ev.target === $('create-modal')) $('create-modal').hidden = true; });
+  document.getElementById('cm-games')?.addEventListener('click', ev => {
+    const chip = (ev.target as HTMLElement).closest<HTMLElement>('.lob-chip');
+    if (chip?.dataset.id) syncCreateModal(chip.dataset.id);
+  });
+
+  $('cm-create')?.addEventListener('click', async () => {
+    const gameId = document.querySelector('#cm-games .lob-chip.on')?.getAttribute('data-id') ?? games[0]?.id;
+    const name = ($('cm-name') as HTMLInputElement).value;
+    const maxPlayers = Number(($('cm-max') as HTMLInputElement).value);
+    const isPrivate = ($('cm-private') as HTMLInputElement).checked;
+    const variantSel = $('cm-variant') as HTMLSelectElement | null;
+    const scenarioId = variantSel && !variantSel.closest('[hidden]') ? (variantSel.value || undefined) : undefined;
     try {
-      const room = await createRoom(($('room-name') as HTMLInputElement).value, ($('game') as HTMLSelectElement).value);
+      const room = await createRoom(name, gameId, { maxPlayers, isPrivate, scenarioId });
       showToast('房间已创建', 'success');
+      $('create-modal').hidden = true;
       currentRoom = room; render();
+      wsSend({ t: 'join-room', roomId: room.id });
     } catch (e: any) { showToast(e.message, 'error'); }
   });
-  // 事件委托：refreshRooms 周期性重建表格 innerHTML，直接绑按钮会丢失监听器
+
+  // 快速加入 / 私密码模态
+  let codeRoomId = '';
+  $('code-cancel')?.addEventListener('click', () => { $('code-modal').hidden = true; });
+  $('code-join')?.addEventListener('click', async () => {
+    try {
+      currentRoom = await joinRoom(codeRoomId, ($('code-input') as HTMLInputElement).value.trim().toUpperCase());
+      $('code-modal').hidden = true;
+      render();
+      wsSend({ t: 'join-room', roomId: currentRoom.id });
+    } catch (e: any) { showToast(e.message, 'error'); }
+  });
   $('rooms')?.addEventListener('click', async (ev) => {
     const btn = (ev.target as HTMLElement).closest<HTMLElement>('[data-join]');
-    if (!btn) return;
-    try { currentRoom = await joinRoom(btn.dataset.join!); render(); } catch (e: any) { showToast(e.message, 'error'); }
+    if (!btn || (btn as HTMLButtonElement).disabled) return;
+    const id = btn.dataset.join!;
+    const r = roomsCache.find(x => x.id === id);
+    if (r?.isPrivate) {
+      codeRoomId = id;
+      $('code-hint').textContent = '「' + r.name + '」需要房间码。';
+      ($('code-input') as HTMLInputElement).value = '';
+      $('code-modal').hidden = false;
+      $('code-input').focus();
+      return;
+    }
+    try { currentRoom = await joinRoom(id); render(); wsSend({ t: 'join-room', roomId: id }); }
+    catch (e: any) { showToast(e.message, 'error'); }
   });
+
   refreshRooms();
   stopTimer('list');
-  roomsTimer = setInterval(refreshRooms, 5000);
+  roomsTimer = setInterval(refreshRooms, wsHealthy ? 10000 : 5000);
 }
 
-function seatOf(r: HubRoomInfo, userId: string): number {
-  return r.players.findIndex(p => p.id === userId);
+/** 创建模态：选中游戏 → 联动人数滑条与变体 */
+function openCreateModal(selectGame?: string) {
+  const modal = document.getElementById('create-modal');
+  if (!modal || !games.length) return;
+  syncCreateModal(selectGame ?? games[0].id);
+  (document.getElementById('cm-name') as HTMLInputElement).value = '';
+  (document.getElementById('cm-private') as HTMLInputElement).checked = false;
+  modal.hidden = false;
+  document.getElementById('cm-name')?.focus();
 }
 
-/** 网络对局启动参数契约见 docs/LOBBY-INTEGRATION.md（与原 Hub gameClientUrl 一致，但同页切换而非 window.open） */
+function syncCreateModal(gameId: string) {
+  const g = games.find(x => x.id === gameId) ?? games[0];
+  document.querySelectorAll('#cm-games .lob-chip').forEach(el => el.classList.toggle('on', (el as HTMLElement).dataset.id === g.id));
+  const range = document.getElementById('cm-max') as HTMLInputElement;
+  range.min = String(g.minPlayers); range.max = String(g.maxPlayers); range.value = String(g.maxPlayers);
+  const label = document.getElementById('cm-max-label')!;
+  label.textContent = range.value + ' 人（' + g.minPlayers + '-' + g.maxPlayers + '）';
+  range.oninput = () => { label.textContent = range.value + ' 人（' + g.minPlayers + '-' + g.maxPlayers + '）'; };
+  const wrap = document.getElementById('cm-variant-wrap')!;
+  const sel = document.getElementById('cm-variant') as HTMLSelectElement;
+  if (g.variants?.length) {
+    wrap.hidden = false;
+    sel.innerHTML = '<option value="">标准</option>' + g.variants.map(v => '<option value="' + esc(v.id) + '">' + esc(v.label) + '</option>').join('');
+  } else { wrap.hidden = true; sel.innerHTML = ''; }
+}
+
+function bindRoom() {
+  const $ = (id: string) => document.getElementById(id) as HTMLElement;
+  const r0 = currentRoom!;
+  const isHost = r0.hostId === user!.sub;
+
+  $('exit-room')?.addEventListener('click', async () => {
+    try { await leaveRoom(r0.id); } catch (e: any) { showToast(e.message, 'error'); return; }
+    wsSend({ t: 'leave-room' });
+    currentRoom = null; render();
+  });
+  $('copy-invite')?.addEventListener('click', async () => {
+    const text = 'RDS Board 房间号 ' + r0.id + (r0.code ? '，房间码 ' + r0.code : '') + '，来一局 ' + (games.find(g => g.id === r0.gameId)?.name ?? '');
+    try { await navigator.clipboard.writeText(text); showToast('邀请信息已复制', 'success'); }
+    catch { showToast(text, 'info'); }
+  });
+
+  $('start-game')?.addEventListener('click', async () => {
+    if (!currentRoom) return;
+    try {
+      currentRoom = await setRoomStatus(r0.id, 'playing');
+      onEnterGame?.({ query: gameQuery(currentRoom, 'host') });
+    } catch (e: any) { showToast(e.message, 'error'); }
+  });
+  $('reopen-game')?.addEventListener('click', () => onEnterGame?.({ query: gameQuery(currentRoom ?? r0, 'host') }));
+  $('join-game')?.addEventListener('click', () => onEnterGame?.({ query: gameQuery(currentRoom ?? r0, 'guest') }));
+  $('ready-toggle')?.addEventListener('click', async () => {
+    const myReady = (currentRoom?.readyPlayers ?? []).includes(user!.sub);
+    try { currentRoom = await setReady(r0.id, !myReady); render(); }
+    catch (e: any) { showToast(e.message, 'error'); }
+  });
+
+  // 房主座位操作（事件委托：seat 卡片随刷新重建）
+  document.querySelector('.lob-seats')?.addEventListener('click', async ev => {
+    const kick = (ev.target as HTMLElement).closest<HTMLElement>('[data-kick]');
+    const host = (ev.target as HTMLElement).closest<HTMLElement>('[data-host]');
+    try {
+      if (kick) { currentRoom = await kickPlayer(r0.id, kick.dataset.kick!); render(); }
+      else if (host) { currentRoom = await transferHost(r0.id, host.dataset.host!); render(); showToast('已转移房主', 'success'); }
+    } catch (e: any) { showToast(e.message, 'error'); }
+  });
+
+  // 聊天
+  const sendChat = () => {
+    const input = $('chat-input') as HTMLInputElement;
+    const text = input.value.trim();
+    if (!text || !currentRoom) return;
+    wsSend({ t: 'lobby-chat', roomId: currentRoom.id, text });
+    input.value = '';
+  };
+  $('chat-send')?.addEventListener('click', sendChat);
+  $('chat-input')?.addEventListener('keydown', ev => { if (ev.key === 'Enter') sendChat(); });
+
+  stopTimer('list');
+  stopTimer('room');
+  roomTimer = setInterval(refreshRoom, wsHealthy ? 8000 : 3000);
+}
+
+/** 网络对局启动参数契约见 docs/LOBBY-INTEGRATION.md（同页切换而非 window.open） */
 function gameQuery(r: HubRoomInfo, role: 'host' | 'guest'): string {
   const q = new URLSearchParams({
     game: r.gameId,
@@ -211,43 +605,8 @@ function gameQuery(r: HubRoomInfo, role: 'host' | 'guest'): string {
     playerId: 'p' + (seatOf(r, user!.sub) + 1),
   });
   if (role === 'guest') q.set('hostId', r.hostId);
+  if (r.scenarioId) q.set('scenario', r.scenarioId);
   return q.toString();
-}
-
-function roomHtml() {
-  const r = currentRoom!;
-  const g = games.find(x => x.id === r.gameId);
-  const isHost = r.hostId === user!.sub;
-  const seat = seatOf(r, user!.sub);
-  return `
-  <header class="lob-header"><h1>${esc(r.name)}</h1><div class="lob-row"><span class="lob-muted">${esc(user!.name)}</span><button id="exit-room" class="lob-secondary">离开房间</button></div></header>
-  <div class="lob-main">
-    <div class="lob-card">
-      <b>${esc(g?.name ?? r.gameId)}（${r.players.length}/${r.maxPlayers}人）</b>
-      <span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span>
-      <ol style="margin:12px 0 0 18px">${r.players.map((p, i) => `<li>${esc(p.name)}${p.id === r.hostId ? ' 🏠房主' : ''} · 座位 p${i + 1}${p.id === user!.sub ? '（你）' : ''}</li>`).join('')}</ol>
-      <div class="lob-row" style="margin-top:14px">
-        ${isHost ? `<button id="start-game" ${r.players.length < (g?.minPlayers ?? 1) ? 'disabled' : ''}>开始游戏（${g?.minPlayers ?? ''}人起）</button>` : ''}
-        ${isHost && r.status === 'playing' ? '<button id="reopen-game">再次进入对局</button>' : ''}
-        ${!isHost && r.status === 'playing' ? '<button id="join-game">进入对局</button>' : ''}
-        ${!isHost && r.status === 'open' ? '<span class="lob-muted">等待房主开始游戏…</span>' : ''}
-      </div>
-      <p class="lob-muted" style="margin-bottom:0">对局为 P2P（WebRTC）：房主浏览器是对局权威，房主关闭对局窗口则对局中断。你的座位：p${seat + 1}。</p>
-    </div>
-  </div>`;
-}
-
-async function refreshRoom() {
-  if (!currentRoom || !lobbyVisible()) return;
-  try {
-    const fresh = await getRoom(currentRoom.id);
-    // 数据签名未变化：跳过整页重建，保住按钮 focus/hover 等交互状态
-    if (roomSig(fresh) === lastRoomSig) { currentRoom = fresh; return; }
-    currentRoom = fresh;
-    render();
-  } catch (e: any) {
-    currentRoom = null; render(); showToast(e.message, 'error');
-  }
 }
 
 async function boot() {
@@ -256,5 +615,7 @@ async function boot() {
   if (token) {
     try { user = await me(); } catch { localStorage.removeItem('token'); }
   }
+  if (user) { wsWanted = true; openWs(); }
   render();
 }
+

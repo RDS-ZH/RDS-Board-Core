@@ -9,6 +9,8 @@ export const GAMES: HubGameInfo[] = [
     maxPlayers: 4,
     clientUrl: '/games/rds-board-core/',
     protocol: 'rds-room/1',
+    durationMin: 30,
+    accent: '#7ee787',
   },
   {
     id: 'catan',
@@ -17,6 +19,8 @@ export const GAMES: HubGameInfo[] = [
     maxPlayers: 4,
     clientUrl: '/games/rds-board-core/',
     protocol: 'rds-room/1',
+    durationMin: 60,
+    accent: '#e3b341',
   },
   {
     id: 'betrayal',
@@ -25,6 +29,9 @@ export const GAMES: HubGameInfo[] = [
     maxPlayers: 6,
     clientUrl: '/games/rds-board-core/',
     protocol: 'rds-room/1',
+    durationMin: 60,
+    accent: '#ff8b82',
+    variants: [{ id: 'exploration', label: '预铺探索（半开局）' }],
   },
 ];
 export const gameById = (id: string) => GAMES.find(g => g.id === id);

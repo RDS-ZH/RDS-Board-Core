@@ -28,14 +28,20 @@ async function hubAlive(): Promise<boolean> {
 }
 
 let gameStarted = false;
+let lobbyHandle: { destroy(): void } | null = null;
 
-async function enterGameView(query: string): Promise<void> {
+async function enterGameView(rawQuery: string): Promise<void> {
+  // 入参可能带前导 '?'（boot 直传 location.search）——统一剥掉再拼，避免 '??' 破坏参数解析
+  const query = rawQuery.replace(/^\?+/, '');
   if (gameStarted) {
     // 对局已在本页运行：带参数则整页重载以重建网络会话，否则忽略
     if (query) location.search = '?' + query;
     return;
   }
   gameStarted = true;
+  // 进入对局前销毁大厅（关闭其 WebSocket 与轮询），避免同用户双连接残留在信令房间内
+  lobbyHandle?.destroy();
+  lobbyHandle = null;
   const lobby = document.getElementById('lobby-root');
   if (lobby) lobby.hidden = true;
   const app = document.getElementById('app');
@@ -63,7 +69,7 @@ async function boot(): Promise<void> {
   const lobbyEl = document.getElementById('lobby-root')!;
   lobbyEl.hidden = false;
   const { startLobby } = await import('./lobby/lobby.ts');
-  await startLobby(lobbyEl, p => enterGameView(p.query));
+  lobbyHandle = await startLobby(lobbyEl, p => enterGameView(p.query));
 }
 
 boot();
