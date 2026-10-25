@@ -4129,3 +4129,204 @@ select.pf-control {
 [data-theme="gothic"] .scenario-switch .vs-label {
   color: #d6b26c;
 }
+
+/* ============================================================
+   Mansion Minimap (洋馆小地图)
+   ============================================================ */
+.mansion-minimap {
+  position: absolute;
+  top: 320px;
+  right: 20px;
+  width: 254px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid rgba(201, 162, 74, 0.28);
+  background:
+    radial-gradient(120% 90% at 15% 0%, rgba(120, 88, 40, 0.14), transparent 62%),
+    linear-gradient(180deg, rgba(22, 17, 13, 0.94), rgba(12, 10, 8, 0.97));
+  box-shadow: 0 16px 36px -18px #000, inset 0 1px 0 rgba(255, 226, 170, 0.06);
+  overflow: hidden;
+  pointer-events: auto;
+  z-index: 20;
+  transition: top 0.2s ease, opacity 0.2s ease;
+}
+
+#room-card[style*="none"] ~ .mansion-minimap {
+  top: 88px;
+}
+
+.mm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(201, 162, 74, 0.16);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mm-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+.mm-ico {
+  font-size: 13px;
+}
+
+.mm-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mm-btn-all {
+  border: 1px solid rgba(217, 180, 91, 0.3);
+  background: rgba(217, 180, 91, 0.08);
+  color: #d9b45b;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mm-btn-all:hover,
+.mm-btn-all.active {
+  background: #d9b45b;
+  color: #17120e;
+  font-weight: 700;
+  box-shadow: 0 0 10px rgba(217, 180, 91, 0.5);
+}
+
+.mm-btn-toggle {
+  background: transparent;
+  border: none;
+  color: rgba(217, 180, 91, 0.7);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.mm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+}
+
+.mansion-minimap.collapsed .mm-body {
+  display: none;
+}
+
+.mm-floor-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.mm-floor-card:hover {
+  border-color: rgba(217, 180, 91, 0.4);
+  background: rgba(217, 180, 91, 0.06);
+}
+
+.mm-floor-card.active {
+  border-color: #d9b45b;
+  background: rgba(217, 180, 91, 0.14);
+  box-shadow: 0 0 12px -2px rgba(217, 180, 91, 0.35), inset 0 0 0 1px rgba(217, 180, 91, 0.3);
+}
+
+.mm-floor-card.in-view {
+  border-color: rgba(217, 180, 91, 0.22);
+}
+
+.mm-card-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 82px;
+}
+
+.mm-level-tag {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #c9bda1;
+}
+
+.mm-level-tag.has-actor {
+  background: rgba(87, 192, 139, 0.25);
+  color: #57ffa8;
+  border: 1px solid rgba(87, 192, 139, 0.5);
+}
+
+.mm-card-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.mm-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #eeddbb;
+}
+
+.mm-count {
+  font-size: 9px;
+  color: var(--faint);
+}
+
+.mm-actor-pin {
+  font-size: 11px;
+  animation: pin-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pin-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.mm-card-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 1 auto;
+}
+
+.mm-floor-svg {
+  overflow: visible;
+}
+
+.mm-room-node {
+  cursor: pointer;
+}
+
+.mm-room-node:hover rect {
+  fill: rgba(217, 180, 91, 0.7);
+}
+
+.mm-empty-floor {
+  font-size: 9.5px;
+  color: var(--faint);
+  font-style: italic;
+  padding: 4px 10px;
+}
+
+[data-theme="gothic"] .mansion-minimap {
+  border-color: rgba(214, 178, 108, 0.28);
+}
