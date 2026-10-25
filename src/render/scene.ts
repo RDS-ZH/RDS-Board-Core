@@ -1265,16 +1265,35 @@ export class BoardGameScene {
       metadata: Record<string, unknown>;
     }[] = [];
 
+    const seenTargets = new Set<string>();
+
     for (const edge of edges) {
       const from = String((edge as { from?: string }).from ?? '');
       const to = String((edge as { to?: string }).to ?? '');
-      if (from !== nodeId) continue;
       const type = String((edge as { type?: string }).type ?? '');
-      const other = state.mapGraph.nodes[to];
+      const isDirected = !!(edge as { directed?: boolean }).directed;
+
+      let targetRoomId = '';
+      if (from === nodeId) {
+        targetRoomId = to;
+      } else if (to === nodeId && !isDirected) {
+        targetRoomId = from;
+      }
+      if (!targetRoomId || seenTargets.has(targetRoomId)) continue;
+
+      const other = state.mapGraph.nodes[targetRoomId];
       if (!other) continue;
 
       if (type === 'STAIRS' && canSpendMove) {
-        const up = String(other.props?.floor ?? '') === 'UPPER';
+        seenTargets.add(targetRoomId);
+        const FLOOR_LEVEL: Record<string, number> = {
+          BASEMENT: 0,
+          GROUND: 1,
+          UPPER: 2
+        };
+        const currentFloor = String(node.props?.floor ?? 'GROUND');
+        const targetFloor = String(other.props?.floor ?? 'GROUND');
+        const up = (FLOOR_LEVEL[targetFloor] ?? 1) > (FLOOR_LEVEL[currentFloor] ?? 1);
         badges.push({
           icon: up ? '⬆' : '⬇',
           label: up ? '上楼' : '下楼',
@@ -1282,12 +1301,13 @@ export class BoardGameScene {
           metadata: {
             type: 'ROOM_NAV',
             fromRoomId: nodeId,
-            targetRoomId: to,
+            targetRoomId,
             targetName: String(other.props?.name ?? '楼梯'),
             intent: 'interact'
           }
         });
-      } else if (type === 'DROP' && canSpendMove) {
+      } else if (type === 'DROP' && canSpendMove && from === nodeId) {
+        seenTargets.add(targetRoomId);
         badges.push({
           icon: '⬇',
           label: '跳下',
@@ -1402,9 +1422,15 @@ export class BoardGameScene {
       glyph.userData.floor = nodeFloor;
       this.boardObjectsGroup.add(glyph);
 
+      const interactiveId = `${nodeId}:special:${badge.metadata.action ?? 'nav'}:${String(badge.metadata.targetRoomId ?? '')}`;
       this.raycaster.registerInteractive(plate, {
         type: 'NODE',
-        id: `${nodeId}:special:${badge.metadata.action ?? 'nav'}:${String(badge.metadata.targetRoomId ?? '')}`,
+        id: interactiveId,
+        metadata: badge.metadata
+      });
+      this.raycaster.registerInteractive(glyph, {
+        type: 'NODE',
+        id: interactiveId,
         metadata: badge.metadata
       });
     });
