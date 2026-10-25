@@ -93,9 +93,12 @@ export class BoardGameHUD {
     this.unsubSnapshot?.();
     this.unsubNotice?.();
     this.closePayload();
+    this.container.querySelector('#card-sheet-layer')?.remove();
     // Switching fixtures must not treat the new board as "rooms discovered".
     this.knownRooms = undefined;
     this.pinnedRoomId = undefined;
+    const roomCard = this.container.querySelector('#room-card') as HTMLElement | null;
+    if (roomCard) roomCard.style.display = 'none';
     this.lastActorRoomId = undefined;
     this.lastHauntId = undefined;
     this.hauntArmed = false;

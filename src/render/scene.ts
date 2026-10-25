@@ -702,6 +702,20 @@ export class BoardGameScene {
   }
 
   /**
+   * Reset board caching and camera tracking state when switching games,
+   * guaranteeing that the incoming fixture is fully rendered and reframed.
+   */
+  public resetForNewGame(): void {
+    this.lastBoardKey = '';
+    this.lastFitSignature = '';
+    this.hasFitted = false;
+    this.lastActorRoomId = undefined;
+    this.visibleFloor = 'ALL';
+    this.prePlacementCamera = undefined;
+    this.cancelCameraTween();
+  }
+
+  /**
    * Floating `力量 -2` over a character's miniature.
    *
    * Anchored to the meeple so the number sits on the figure itself rather than
@@ -877,7 +891,7 @@ export class BoardGameScene {
     const placingSignature = displayPlacement
       ? `${displayPlacement.defId ?? displayPlacement.name}:${displayPlacement.floor}:${displayPlacement.col}:${displayPlacement.row}`
       : 'none';
-    const boardKey = `${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}:${[...this.highlightIds]
+    const boardKey = `${state.gameId}:${state.viewerId}:${state.actionLog.length}:${state.clock}:${placingSignature}:${[...this.highlightIds]
       .sort()
       .join(',')}`;
     const boardChanged = boardKey !== this.lastBoardKey;
@@ -2140,25 +2154,24 @@ export class BoardGameScene {
   private endPlacementCamera(state?: ProjectedGameState): void {
     const previous = this.prePlacementCamera;
     this.prePlacementCamera = undefined;
-    this.skipFitUntil = performance.now() + 850;
-    if (!previous) return;
-    // Restore with a cut, not a tween. This is the last thing between the
-    // player and the finished board, and a stalled frame loop (background tab,
-    // heavy rebuild) would strand the camera up in the air with orbit controls
-    // still disabled.
     this.cancelCameraTween();
-    this.camera.position.copy(previous.position);
-    this.controls.target.copy(previous.target);
-    this.controls.enabled = true;
-    this.controls.update();
+    if (!previous) {
+      this.controls.enabled = true;
+      return;
+    }
 
-    // The placed tile usually moves the actor into the new room, so follow up
-    // with a pan that re-centres on them while keeping the restored bearing and
-    // distance — the board never appears to teleport, it just drifts over.
+    // Rather than jumping back to the old pre-placement room and panning from there,
+    // transition directly from the elevated placement view down to the actor
+    // in the new room, smoothly restoring the normal playing distance and eye height.
     const focus = state ? this.actorFocusPoint(state) : undefined;
-    if (!focus) return;
-    // Short enough that orbit control comes back quickly after confirming.
-    this.panToKeepBearing(focus, 420);
+    const targetCenter = focus ?? previous.target;
+
+    // Normal playing offset vector (restores pre-placement eye height & distance)
+    const normalOffset = previous.position.clone().sub(previous.target);
+    const targetCamPos = targetCenter.clone().add(normalOffset);
+
+    this.skipFitUntil = performance.now() + 650;
+    this.startCameraTween(targetCamPos, targetCenter, 460);
   }
 
   /**
