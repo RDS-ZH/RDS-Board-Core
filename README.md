@@ -315,52 +315,54 @@ scripts/test-core.mjs     # Vite SSR 测试运行器
 
 ## 10. 部署方案
 
-项目前端与可视化调试器构建后为静态单页应用（SPA + Three.js + Rapier 3D 物理引擎），提供以下三种适合不同场景的生产部署方案。
+RDS-Board-Core 在 Monorepo 重组后，由单一服务同时承载：
+- **联机大厅与信令服务端 (Hub Server)**：基于 Hono + ws，提供 `/healthz`、`/api/*`、`/ws` 信令；
+- **前端静态外壳与 3D 游戏调试器**：构建产物位于 `dist/`，由 Hub 服务端直接内嵌托管（根路径承载统一外壳 SPA，`/games/rds-board-core/` 承载子应用）。
 
-### 10.1 方案一：Docker 独立容器部署（Nginx 静态加速）
+提供以下三种标准化生产部署方案。
 
-采用多阶段构建（Stage 1: Node.js 22 编译静态资源；Stage 2: Nginx Alpine 托管），镜像体积小（约 20MB），内置 Gzip 压缩、SPA 路由重写、WASM MIME 支持与长效缓存。
+### 10.1 方案一：Docker 独立容器部署
+
+Dockerfile 采用多阶段构建（Stage 1: Node 22 + pnpm 编译静态资源；Stage 2: 极简 Node 22 镜像运行 `tsx apps/server/src/index.ts`），单容器同时提供 Web、API 与 WebSocket 信令服务。
 
 #### 1. 构建镜像
 
 ```bash
-docker build -t rds-board-core .
+docker build -t rds-board .
 ```
 
 #### 2. 运行容器
 
 ```bash
 docker run -d \
-  --name rds-board-core \
-  -p 8080:80 \
+  --name rds-board \
+  -p 8787:8787 \
+  -e HUB_SECRET="your-production-secret-token" \
+  -v rds-data:/repo/apps/server/data \
   --restart unless-stopped \
-  rds-board-core
+  rds-board
 ```
 
-容器启动后，访问 `http://localhost:8080/` 即可进入可视化调试界面；健康检查端点为 `http://localhost:8080/healthz`。
-
-> **Node.js 运行时容器（可选）**：如需在容器中直接运行 Node.js / Vite 预览环境，可通过目标构建：  
-> `docker build --target node-runner -t rds-board-core:node .`  
-> `docker run -d --name rds-board-node -p 3000:3000 --restart unless-stopped rds-board-core:node`
+容器启动后，访问 `http://localhost:8787/` 即可进入联机大厅与游戏界面；健康检查端点为 `http://localhost:8787/healthz`（返回 `{"ok":true}`）。
 
 ---
 
-### 10.2 方案二：Docker Compose 一键容器编排部署
+### 10.2 方案二：Docker Compose 一键容器编排部署（推荐）
 
-适合快速部署与生产运维管理，配置文件 `docker-compose.yml` 已配置健康检查、重启策略、端口绑定以及日志大小轮转限制。
+适合快速部署与生产运维管理，`docker-compose.yml` 已配置健康检查（打 `/healthz`）、自动重启、端口绑定及数据卷持久化。
 
 #### 1. 一键启动
 
 ```bash
-# 默认端口 8080 启动生产 Nginx 容器
+# 默认端口 8788 映射至容器 8787 端口
 docker compose up -d
 ```
 
 #### 2. 自定义端口与常用命令
 
 ```bash
-# 指定宿主机端口启动（例如 3000）
-PORT=3000 docker compose up -d
+# 指定宿主机端口与会话密钥启动
+PORT=8787 HUB_SECRET="your-production-secret-token" docker compose up -d
 
 # 查看容器运行状态与健康检查结果
 docker compose ps
@@ -372,14 +374,11 @@ docker compose logs -f
 docker compose down
 ```
 
-> **运行 Node.js 运行时服务**：若需启动包含 Node.js 运行时的预览服务，可以使用预置 Profile：  
-> `docker compose --profile node up -d`（默认映射至宿主机 `3000` 端口，可通过 `NODE_PORT=xxxx` 自定义）。
-
 ---
 
 ### 10.3 方案三：Node.js 运行时与 PM2 进程守护部署（原生服务器部署）
 
-适合拥有 Node.js 环境的 Linux VPS 或独立物理机，无需依赖 Docker 守护进程。
+适合拥有 Node.js 环境的 Linux VPS 或独立物理机，使用 PM2 守护完整的 Hub 服务端。
 
 #### 1. 安装依赖并执行生产构建
 
@@ -390,14 +389,14 @@ pnpm run build
 
 #### 2. 使用 PM2 进行守护运行
 
-仓库内已预置 `ecosystem.config.cjs` 配置文件，开箱即用：
+仓库内已预置 `ecosystem.config.cjs` 配置文件，运行 `apps/server/src/index.ts`：
 
 ```bash
 # 全局安装 PM2（如未安装）
 npm install -g pm2
 
-# 启动服务
-pm2 start ecosystem.config.cjs
+# 启动服务（支持环境变量覆盖端口和密钥）
+PORT=8787 HUB_SECRET="your-production-secret-token" pm2 start ecosystem.config.cjs
 
 # 管理服务
 pm2 status                  # 查看运行状态
@@ -410,62 +409,39 @@ pm2 save
 pm2 startup
 ```
 
-#### 3. （备选）Systemd 系统服务管理
-
-如果不使用 PM2，也可以使用 Linux Systemd 系统服务守护。新建 `/etc/systemd/system/rds-board-core.service`：
-
-```ini
-[Unit]
-Description=RDS Board Core Visualizer Service
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/var/www/RDS-Board-Core
-ExecStart=/usr/bin/pnpm run preview -- --host 0.0.0.0 --port 3000
-Restart=always
-RestartSec=5
-Environment=NODE_ENV=production
-
-[Install]
-WantedBy=multi-user.target
-```
-
-执行以下命令启用并运行：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rds-board-core
-```
-
 ---
 
-### 10.4 补充：宿主机原生 Nginx / Caddy 静态托管
+### 10.4 补充：Caddy / Nginx 反向代理配置（必须支持 WebSocket）
 
-如果已有 Web 服务器（如 Nginx 或 Caddy），执行 `pnpm run build` 后直接将 `dist/` 目录指向网站根目录即可。
+由于 Hub 服务端包含 `/ws` WebSocket 信令以及 `/healthz`、`/api`，反向代理必须正确转发并支持 HTTP Upgrade。
 
-**Nginx 站点配置参考：**
+#### Caddy 配置示例：
+
+```caddy
+rdsbg.example.com {
+	encode zstd gzip
+
+	# 转发全部流量到 Hub 服务端（8787），Caddy 默认原生支持 WebSocket
+	reverse_proxy http://127.0.0.1:8787
+}
+```
+
+#### Nginx 配置示例：
 
 ```nginx
 server {
     listen 80;
-    server_name board.example.com;
-    root /var/www/RDS-Board-Core/dist;
-    index index.html;
-
-    # Gzip 压缩与静态资源缓存
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript application/wasm;
-
-    location /assets/ {
-        expires 1y;
-        add_header Cache-Control "public, max-age=31536000, immutable";
-        try_files $uri =404;
-    }
+    server_name rdsbg.example.com;
 
     location / {
-        try_files $uri $uri/ /index.html;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```

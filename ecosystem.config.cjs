@@ -2,10 +2,12 @@ module.exports = {
   apps: [
     {
       name: 'rds-board-core',
-      script: 'node_modules/vite/bin/vite.js',
-      args: 'preview --host 0.0.0.0 --port 3000',
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'apps/server/src/index.ts',
       env: {
-        NODE_ENV: 'production'
+        NODE_ENV: 'production',
+        PORT: process.env.PORT || '8787',
+        HUB_SECRET: process.env.HUB_SECRET || 'dev-secret-do-not-use-in-prod'
       },
       instances: 1,
       autorestart: true,
