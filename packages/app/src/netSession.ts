@@ -225,8 +225,29 @@ export class NetSession implements GamePresenter {
     if (!this.options.hostId) throw new Error('guest role requires hostId');
     const signaling = new HubSignaling(this.options.hub, this.options.token);
     this.signaling = signaling;
-    await signaling.connect(this.options.roomId);
-    const { channel, pc } = await openGuestChannel(signaling, this.options.hostId);
+    const hello = await signaling.connect(this.options.roomId);
+    // 开局全员同时进入（自动跳转）时，房主的游戏信令连接可能尚未 join-room；
+    // 此时拨号 SDP 会被 hub 静默丢弃。先等房主出现在房间里再拨号。
+    if (!hello.peers.includes(this.options.hostId)) {
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, 30000); // 兜底放行，交给拨号重试
+        signaling.on({
+          onPeerJoin: id => { if (id === this.options.hostId) { clearTimeout(timer); resolve(); } }
+        });
+      });
+    }
+    // 拨号重试：WebRTC 偶发失败（ICE/超时）时重拨最多 3 次
+    let channel: RTCDataChannel | null = null;
+    let pc: RTCPeerConnection | null = null;
+    let lastError: unknown = new Error('guest channel failed');
+    for (let attempt = 0; attempt < 3 && !channel; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+      try {
+        const dialed = await openGuestChannel(signaling, this.options.hostId);
+        channel = dialed.channel; pc = dialed.pc;
+      } catch (err) { lastError = err; }
+    }
+    if (!channel || !pc) throw lastError;
     this.pc = pc;
     this.channel = channel as unknown as GuestChannel;
     const transport = new WebRtcGuestTransport(text => this.sendToHost(text));
