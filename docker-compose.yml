@@ -2,11 +2,22 @@ services:
   rds-board:
     build: .
     ports:
-      - "8788:8787"
+      - "${PORT:-8788}:8787"
     environment:
       - HUB_SECRET=${HUB_SECRET:-dev-secret-do-not-use-in-prod}
+      - PORT=8787
     volumes:
       - rds-data:/repo/apps/server/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q -O - http://127.0.0.1:8787/healthz |
+          grep -q '"ok":true' || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
 volumes:
   rds-data:
