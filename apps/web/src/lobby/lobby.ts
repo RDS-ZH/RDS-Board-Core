@@ -82,6 +82,14 @@ function onRoomUpdated(room: HubRoomInfo): void {
   const uid = user?.sub;
   if (!uid) return;
   if (currentRoom && room.id === currentRoom.id) {
+    // 开局瞬间（open→playing）房内非房主玩家自动进对局；房主由开局按钮自己导航。
+    // 仅在状态「跃迁」时触发，轮询/重进的 playing 不自动跳，避免回大厅即被弹回。
+    if (currentRoom.status === 'open' && room.status === 'playing'
+        && room.hostId !== uid && room.players.some(p => p.id === uid) && onEnterGame) {
+      showToast('全员已就绪，对局开始！', 'success');
+      onEnterGame({ query: gameQuery(room, 'guest') });
+      return;
+    }
     if (room.status === 'closed' || !room.players.some(p => p.id === uid)) {
       currentRoom = null;
       showToast('你已不在该房间', 'info');

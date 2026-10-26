@@ -450,6 +450,11 @@ class BoardGameSimulatorApp {
       boot?.classList.add('hidden');
       this.hud.showAnnouncement('欢迎 · 点击底部动作栏开始推演');
     });
+    // 联机会话：开局流程已由大厅完成（创建/就绪/等待），跳过欢迎页直达牌局
+    if (this.netOptions) {
+      boot?.classList.add('hidden');
+      this.hud.showAnnouncement('联机对局 · 正在同步牌局状态…');
+    }
   }
 
   private wireKeyboard(): void {
