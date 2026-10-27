@@ -371,7 +371,18 @@ class BoardGameSimulatorApp {
 
     const reason = document.createElement('p');
     reason.textContent = snapshot.winnerReason ?? '';
-    reason.style.cssText = 'margin:0 0 20px;color:#8b94a3;font-size:13px;line-height:1.5';
+    reason.style.cssText = 'margin:0 0 14px;color:#8b94a3;font-size:13px;line-height:1.5';
+
+    // Enumerate who is actually still standing, so "还有一个英雄存活吗" never
+    // has to be guessed from dimmed cards.
+    const alive = snapshot.players.filter(player => player.alive);
+    const roster = document.createElement('div');
+    roster.style.cssText = 'margin:0 0 18px;text-align:left;font-size:12px;line-height:1.7';
+    roster.innerHTML =
+      `<div style="color:#57ffa8">存活：${alive.length ? alive.map(p => `${p.avatar} ${p.name}`).join('、') : '无'}</div>` +
+      `<div style="color:#8b94a3">已退场：${
+        snapshot.players.filter(p => !p.alive).map(p => `${p.avatar} ${p.name}`).join('、') || '无'
+      }</div>`;
 
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:10px;justify-content:center';
@@ -395,7 +406,7 @@ class BoardGameSimulatorApp {
     close.addEventListener('click', () => overlay.remove());
 
     row.append(replay, close);
-    card.append(title, winner, reason, row);
+    card.append(title, winner, reason, roster, row);
     overlay.appendChild(card);
     document.body.appendChild(overlay);
   }

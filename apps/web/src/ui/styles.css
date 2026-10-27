@@ -4330,3 +4330,16 @@ select.pf-control {
 [data-theme="gothic"] .mansion-minimap {
   border-color: rgba(214, 178, 108, 0.28);
 }
+
+/* Dead explorers: dimming alone read as "still playing"; make it explicit. */
+.pc.dead {
+  opacity: 0.45;
+  filter: grayscale(0.85);
+}
+
+.pc-role.dead-chip {
+  border-color: rgba(255, 96, 96, 0.45);
+  color: #ff8f8f;
+  background: rgba(255, 96, 96, 0.12);
+  font-weight: 700;
+}
