@@ -4,7 +4,7 @@
 > [SIMULATOR-AUDIT.md](SIMULATOR-AUDIT.md)（SA-xx）与
 > [ARCHITECTURE-ISSUES.md](ARCHITECTURE-ISSUES.md)（AI-xx）里，不要在这里重复。
 >
-> 最近一次核对：2026-10-27。核对手法见 §8，**任何一条待办在动手前都应先按 §8 复核一次**——
+> 最近一次核对：2026-10-28。核对手法见 §7，**任何一条待办在动手前都应先按 §7 复核一次**——
 > 本文件历史上出现过把已修问题挂成待办的情况。
 
 ---
@@ -46,43 +46,38 @@ __boardGameApp.scene.getRenderStats()
 
 ---
 
-## 2. 两阶段检定窗口（AI-24）
-
-目前掷骰是一次性决定，无法表达"掷前声明修正 / 掷后响应"。
-
-要做：引入 `RollWindow`——修正声明 → 掷骰 → 掷后响应。参考三国杀响应栈的既有实现，不要为山屋写特例。
-
-## 3. 内核表达力 Wave 3（AI-25 / K8·K9·K12·K14）
+## 2. 内核表达力 Wave 3（AI-25 / K8·K9·K12·K14）
 
 按 [KERNEL-EXPRESSION.md](KERNEL-EXPRESSION.md) 推进。**不要和表现层改造混在一个 PR 里。**
 
 ---
 
-## 4. i18n TODO
+## 3. i18n TODO
 
 - `actionText` + `app/i18n` 已覆盖动作标签；
 - 静态 HUD/chrome 文案仍为中文硬编码；
 - 后续若做多语言：把 HUD 固定文案抽 key、为 `phaseLabel`/任务目标/物品与房间名准备内容字典；
 - **不要把翻译表放进 core / game state。**
 
-## 5. 网络 TODO
+## 4. 网络 TODO
 
 - `RoomTransport` 接口与 `RoomHttpAdapter` 已就绪；
 - 真实 WebSocket/HTTP server、连接管理、重连、背压不在当前范围；
 - 部署时需补：鉴权 token 生命周期、多客户端广播、断线重连的 `revision/delta` 恢复；
 - 浏览器侧 P2P 见 [LOBBY-INTEGRATION.md](LOBBY-INTEGRATION.md)（另一位贡献者的 `src/net/webrtc-transport.ts`）。
 
-## 6. 游戏夹具可选项（不影响内核/UI 兼容性）
+## 5. 游戏夹具可选项（不影响内核/UI 兼容性）
 
 - Catan 官方版图与全部规则细节；
 - 更多山屋剧本、完整 50 个 haunt（当前 5 个：HAUNT #1/#3/#5/#6/#10）；
 - 三国杀/沙丘/璀璨宝石的完整卡表与规则；
 - 房间/卡牌官方美术。
 
-## 7. 已明确不做（won't fix / 已结案）
+## 6. 已明确不做（won't fix / 已结案）
 
 | 项 | 结论 |
 | --- | --- |
+| AI-24 两阶段检定窗口 | 已实现（SA-104）：内核新增 `RollWindow` 原语（DECLARE → ROLL → REACT → RESOLVED），金库检定在拥有幸运道具时走通两阶段；无道具时保持单次结算，旧行为与回放哈希不变 |
 | AI-23 山屋效果生命周期迁到 `EffectInstance` | 已实现（SA-100）：持续诅咒（DRIP/POSSESSION/CHILL/HAUNTING_MELODY/MARK_OF_FEAR）改由 `GameState.effects` 承载，模块只解释 `payload.effect`；`addEffect`/`removeEffects`/`effectsOn`/`ongoingEffectKinds` 统一入口，旧 `customProps.effects` 保留只读兼容 |
 | 测试环境 502 噪音 | 已修：`test-ui-matrix` / `probe-overlap` 过滤 `/healthz` dev 代理噪音（仅白名单该条，真实错误仍报红） |
 | `rotation-flow` 采样时机 | 已修：改用 `waitForFunction(controls.enabled)` 确定性等待补间结束 |
@@ -90,11 +85,11 @@ __boardGameApp.scene.getRenderStats()
 | AI-20 `placementRotation` 持久化 | 已实现：`session.ts` 用 `sessionStorage`（键含 game/seed/scenario/defId），无需再做 |
 | AI-22 3D 卡面长描述截断 | 观点已定：DOM 卡牌详情为主，3D 只做摘要，不做长文渲染 |
 | AI-26 全量重建改 diff | §1 实测未超预算，暂不做 |
-| `BACKLOG` 旧 §5 的 4 个 P0 | 全部已修（见 §8 复核记录），从待办移除 |
+| `BACKLOG` 旧 §5 的 4 个 P0 | 全部已修（见 §7 复核记录），从待办移除 |
 
 ---
 
-## 8. 如何复核一条待办是否仍然成立
+## 7. 如何复核一条待办是否仍然成立
 
 文档会漂移，**动手前先复核**。典型手法：
 
@@ -128,4 +123,4 @@ node node_modules/typescript/bin/tsc --noEmit && pnpm build
 | P1 动作栏 24 条上限截断 | 已修 | 取消截断，`END_TURN` 固定最后 |
 | P1 手牌 >7 张 3D 重叠 | 已修 | 手牌自适应 `cardScale` + step |
 | P1 无目标模式点击 node/edge 直接执行 | 已修 | 改 inspect-first |
-| P2 超长布局没有小地图/视口框 | **仍缺** | 见 §2 |
+| P2 超长布局没有小地图/视口框 | 已修 | 见 SA-93：3D 楼层隔离 + 洋馆小地图 |

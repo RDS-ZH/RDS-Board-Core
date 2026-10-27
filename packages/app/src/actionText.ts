@@ -69,6 +69,25 @@ function describeActionZh(
           : { icon: '✦', label: '使用房间特性', hint: '触发当前房间的特殊效果', tone: 'normal' };
       case 'MOVE_NPC':
         return { icon: '👹', label: '怪物移动', hint: '在弹窗中选择目标房间', tone: 'danger' };
+      /* ---- two-phase check window (K4) -------------------------------- */
+      case 'DECLARE_CHECK':
+        return {
+          icon: '✧',
+          label: `声明修正 · ${String(action.payload?.label ?? action.payload?.option ?? '')}`,
+          hint: '掷骰前使用，影响本次检定的骰数或结果',
+          tone: 'normal'
+        };
+      case 'ROLL_CHECK':
+        return { icon: '🎲', label: '掷骰检定', hint: '掷出骰子后再决定是否使用幸运道具', tone: 'primary' };
+      case 'CHECK_REACTION':
+        return {
+          icon: '🍀',
+          label: `检定响应 · ${String(action.payload?.label ?? action.payload?.option ?? '')}`,
+          hint: '掷骰后使用，可重掷最低骰或追加修正',
+          tone: 'normal'
+        };
+      case 'RESOLVE_CHECK':
+        return { icon: '✓', label: '结算检定', hint: '按当前结果结算，不再使用道具', tone: 'normal' };
       case 'ROLL_HAUNT_CHECK':
         return { icon: '🕯️', label: '进行作祟检定', hint: '6 颗 0/1/2 骰 · 总和低于预兆数则作祟', tone: 'danger' };
       case 'ATTACK_COMBAT':

@@ -12,6 +12,7 @@ import { ECSManager } from '@rds/kernel/ecs';
 import { OccupancyIndex } from '@rds/kernel/occupancy';
 import { ReduceContext } from '@rds/kernel/module';
 import { DeterministicPRNG } from '@rds/kernel/prng';
+import { RollWindowManager } from '@rds/kernel/rollWindow';
 import { InterruptStackManager } from '@rds/kernel/stack';
 import { Action, DecisionWindow, Entity, GameState, PlayerId, StackFrame } from '@rds/kernel/types';
 import {
@@ -116,6 +117,17 @@ function activeRoom(state: GameState, playerId: PlayerId): string {
   return String(state.players[playerId]?.customProps.currentRoomId ?? '');
 }
 
+/**
+ * Human label for a check-window option id.
+ *
+ * The kernel only carries opaque ids; the presentation layer must not import
+ * game content, so the module ships the display name inside the action payload.
+ */
+function checkOptionLabel(option: string): string {
+  const def = ITEM_DEFS[option as keyof typeof ITEM_DEFS];
+  return def?.name ?? option;
+}
+
 function roomTags(state: GameState, roomId: string): string[] {
   const tags = state.mapGraph.nodes[roomId]?.props?.tags;
   return Array.isArray(tags) ? tags : [];
@@ -165,6 +177,31 @@ function cardName(state: GameState, entityId: string): string {
 export class BetrayalRules {
   public static getLegalActions(state: GameState, actorId: PlayerId): Action[] {
     if (state.gameOver) return [];
+
+    // 0a. A two-phase check window gates everything else: whoever is entitled
+    //     to declare/re-act must finish it before the table moves on.
+    const rollWindow = RollWindowManager.current(state);
+    if (rollWindow) {
+      const inPhase = RollWindowManager.actorsFor(rollWindow).includes(actorId);
+      const acts: Action[] = [];
+      if (inPhase) {
+        for (const option of RollWindowManager.optionsFor(rollWindow, actorId)) {
+          acts.push({
+            type: rollWindow.phase === 'DECLARE' ? 'DECLARE_CHECK' : 'CHECK_REACTION',
+            playerId: actorId,
+            payload: { windowId: rollWindow.id, option, label: checkOptionLabel(option) }
+          });
+        }
+      }
+      // Rolling is only offered while the declare phase is open.
+      if (rollWindow.phase === 'DECLARE') {
+        acts.push({ type: 'ROLL_CHECK', playerId: rollWindow.actorId, payload: { windowId: rollWindow.id } });
+      }
+      // Resolving is always legal so a window can never deadlock the table.
+      acts.push({ type: 'RESOLVE_CHECK', playerId: rollWindow.actorId, payload: { windowId: rollWindow.id } });
+      return acts;
+    }
+
     const npc = state.npcs?.[actorId];
     if (npc) return this.getNpcLegalActions(state, npc);
     const player = state.players[actorId];
@@ -777,6 +814,34 @@ export class BetrayalRules {
       case 'ROOM_FEATURE':
         this.useRoomFeature(s, pid, String(action.payload?.feature ?? ''), ctx);
         break;
+      /* ---- two-phase check window (K4) -------------------------------- */
+      case 'DECLARE_CHECK': {
+        const picked = RollWindowManager.pick(s, pid, String(action.payload?.option ?? ''));
+        if (!picked.ok) {
+          trace(ctx, 'ANNOUNCEMENT', picked.error ?? '无法声明该修正', 300);
+          break;
+        }
+        s.rollWindows = picked.state.rollWindows;
+        trace(ctx, 'ANNOUNCEMENT', `已声明修正：${String(action.payload?.option ?? '')}`, 400);
+        break;
+      }
+      case 'ROLL_CHECK':
+        this.rollOpenWindow(s, String(action.payload?.windowId ?? ''), ctx);
+        break;
+      case 'CHECK_REACTION': {
+        const option = String(action.payload?.option ?? '');
+        const picked = RollWindowManager.pick(s, pid, option);
+        if (!picked.ok) {
+          trace(ctx, 'ANNOUNCEMENT', picked.error ?? '无法使用该道具', 300);
+          break;
+        }
+        s.rollWindows = picked.state.rollWindows;
+        this.applyReaction(s, pid, option, ctx);
+        break;
+      }
+      case 'RESOLVE_CHECK':
+        this.resolveOpenWindow(s, ctx);
+        break;
       case 'PROPOSE_ITEM_TRADE':
         this.proposeTrade(s, pid, action, ctx);
         break;
@@ -1045,18 +1110,166 @@ export class BetrayalRules {
   ): void {
     const room = state.mapGraph.nodes[activeRoom(state, pid)];
     if (!room || room.props?.opened) return;
-    const auto = ownsDef(state, pid, 'skeleton_key');
-    const check = auto ? null : rollTraitCheck(state, pid, 'knowledge', { threshold: 6, reason: 'vault' });
-    if (!auto && check) {
-      trace(ctx, 'DICE_ROLL', `金库 · 知识检定 ${check.total} vs 6`, 600);
-    }
-    if (auto || check?.success) {
+
+    if (ownsDef(state, pid, 'skeleton_key')) {
       room.props.opened = true;
       this.drawItems(state, pid, 2, ctx);
       trace(ctx, 'CARD_DRAW', `${player.name} 打开了金库`, 600);
-    } else {
-      trace(ctx, 'ANNOUNCEMENT', '锁芯纹丝不动，这次没能撬开金库', 500);
+      return;
     }
+
+    const declares = this.checkDeclareOptions(state, pid);
+    const reacts = this.checkReactOptions(state, pid);
+
+    // Nothing to decide: keep the single-dispatch path so ordinary play is
+    // unchanged and no extra clicks are forced.
+    if (declares.length === 0 && reacts.length === 0) {
+      const check = rollTraitCheck(state, pid, 'knowledge', { threshold: 6, reason: 'vault' });
+      trace(ctx, 'DICE_ROLL', `金库 · 知识检定 ${check.total} vs 6`, 600);
+      this.settleVault(state, pid, ctx, player, check.success === true, check.total);
+      return;
+    }
+
+    // Two-phase: declare modifiers, throw, then react to the result.
+    const opened = RollWindowManager.open(state, {
+      id: `roll_vault_${pid}_${state.turn}_${state.seq}`,
+      label: '金库 · 知识检定',
+      actorId: pid,
+      phase: 'DECLARE',
+      declares: [{ actorId: pid, options: declares, picked: [] }],
+      reacts: [{ actorId: pid, options: reacts, picked: [] }],
+      payload: { kind: 'VAULT', roomId: room.id, threshold: 6, trait: 'knowledge' }
+    });
+    state.rollWindows = opened.rollWindows;
+    trace(ctx, 'ANNOUNCEMENT', `🔐 ${player.name} 开始撬金库：可先声明修正，掷骰后再决定是否用幸运道具`, 600);
+  }
+
+  /** Pre-roll modifiers the explorer may declare before the dice are thrown. */
+  private static checkDeclareOptions(state: GameState, pid: PlayerId): string[] {
+    const options: string[] = [];
+    if (ownsDef(state, pid, 'angel_feather')) options.push('angel_feather');
+    return options;
+  }
+
+  /** Post-roll responses offered once the result is known. */
+  private static checkReactOptions(state: GameState, pid: PlayerId): string[] {
+    const options: string[] = [];
+    if (ownsDef(state, pid, 'rabbits_foot') && !usedThisTurn(state, pid, 'rabbits_foot')) {
+      options.push('rabbits_foot');
+    }
+    if (ownsDef(state, pid, 'lucky_stone') && !usedThisTurn(state, pid, 'lucky_stone')) {
+      options.push('lucky_stone');
+    }
+    return options;
+  }
+
+  /** Throw the dice for an open window and move it into the REACT phase. */
+  private static rollOpenWindow(state: GameState, windowId: string, ctx: ReduceContext): void {
+    const window = RollWindowManager.current(state);
+    if (!window || window.id !== windowId) return;
+
+    const pid = window.actorId as PlayerId;
+    const payload = (window.payload ?? {}) as { trait?: TraitKey; threshold?: number };
+    const trait = (payload.trait ?? 'knowledge') as TraitKey;
+    const threshold = Number(payload.threshold ?? 6);
+
+    // Declared modifiers are applied before the throw (angel feather pins it).
+    const declared = window.declares.flatMap(slot => slot.picked);
+    if (declared.includes('angel_feather')) {
+      state.players[pid].customProps.forcedRoll = { value: 8 };
+      this.consumeDef(state, pid, 'angel_feather', ctx);
+    }
+
+    const check = rollTraitCheck(state, pid, trait, { threshold, reason: window.label, allowLuck: false });
+    trace(ctx, 'DICE_ROLL', `${window.label} ${check.total} vs ${threshold}`, 600);
+
+    const recorded = RollWindowManager.record(state, {
+      dice: check.dice,
+      total: check.total,
+      threshold,
+      success: check.total >= threshold
+    });
+    state.rollWindows = recorded.state.rollWindows;
+  }
+
+  /** Spend a post-roll luck item and amend the stored result. */
+  private static applyReaction(
+    state: GameState,
+    pid: PlayerId,
+    option: string,
+    ctx: ReduceContext
+  ): void {
+    const window = RollWindowManager.current(state);
+    if (!window?.result) return;
+
+    let result = { ...window.result };
+    if (option === 'lucky_stone') {
+      result = { ...result, total: result.total + 1 };
+      markUsed(state, pid, 'lucky_stone');
+      trace(ctx, 'ANNOUNCEMENT', '幸运石让结果 +1', 400);
+    } else if (option === 'rabbits_foot') {
+      const lowest = result.dice.indexOf(Math.min(...result.dice));
+      const reroll = rollZeroDice(state.prngState, 1);
+      state.prngState = reroll.nextSeed;
+      const dice = [...result.dice];
+      dice[lowest] = reroll.rolls[0];
+      result = { ...result, dice, total: dice.reduce((sum, value) => sum + value, 0) };
+      markUsed(state, pid, 'rabbits_foot');
+      trace(ctx, 'DICE_ROLL', `幸运兔足重掷最低骰 → ${result.total}`, 500);
+    }
+    result.success = result.threshold === undefined ? undefined : result.total >= result.threshold;
+
+    const amended = RollWindowManager.amend(state, result);
+    state.rollWindows = amended.state.rollWindows;
+  }
+
+  /** Close the window and apply its outcome. */
+  private static resolveOpenWindow(state: GameState, ctx: ReduceContext): void {
+    const closed = RollWindowManager.resolve(state);
+    state.rollWindows = closed.state.rollWindows;
+    const window = closed.window;
+    if (!window) return;
+
+    const pid = window.actorId as PlayerId;
+    const player = state.players[pid];
+    if (!player) return;
+    const payload = (window.payload ?? {}) as { kind?: string };
+
+    if (payload.kind === 'VAULT') {
+      const success = window.result?.success === true;
+      const total = window.result?.total ?? 0;
+      if (!window.result) {
+        trace(ctx, 'ANNOUNCEMENT', `${player.name} 放弃了撬锁`, 400);
+        return;
+      }
+      this.settleVault(state, pid, ctx, player, success, total);
+    }
+  }
+
+  /** Shared vault payoff for the inline and windowed paths. */
+  private static settleVault(
+    state: GameState,
+    pid: PlayerId,
+    ctx: ReduceContext,
+    player: { name: string },
+    success: boolean,
+    total: number
+  ): void {
+    const room = state.mapGraph.nodes[activeRoom(state, pid)];
+    if (!room || room.props?.opened) return;
+    if (success) {
+      room.props.opened = true;
+      this.drawItems(state, pid, 2, ctx);
+      trace(ctx, 'CARD_DRAW', `${player.name} 打开了金库（检定 ${total}）`, 600);
+    } else {
+      trace(ctx, 'ANNOUNCEMENT', `锁芯纹丝不动（检定 ${total} vs 6），这次没能撬开金库`, 500);
+    }
+  }
+
+  /** Consume one copy of a definition from the explorer's hand. */
+  private static consumeDef(state: GameState, pid: PlayerId, defId: string, ctx: ReduceContext): void {
+    const entity = handEntities(state, pid).find(candidate => cardDef(candidate) === defId);
+    if (entity) this.consume(state, pid, entity.id, ctx);
   }
 
   /** Explicit "poke the room" action; currently only the vault opts in. */

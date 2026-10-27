@@ -141,6 +141,39 @@ export function checkInvariants(state: GameState, rules: RuleRegistry): Invarian
     }
   }
 
+  /* Two-phase roll windows (K4) ------------------------------------------ */
+  const rollWindowIds = new Set<string>();
+  for (const window of state.rollWindows ?? []) {
+    if (rollWindowIds.has(window.id)) {
+      push('ROLL_WINDOW_DUPLICATE_ID', `roll window ${window.id} is duplicated`);
+    }
+    rollWindowIds.add(window.id);
+
+    const actorKnown = (id: string) => !!state.players[id] || !!state.npcs?.[id];
+    if (!actorKnown(window.actorId)) {
+      push('ROLL_WINDOW_UNKNOWN_ACTOR', `roll window ${window.id} actor ${window.actorId} unknown`);
+    }
+    for (const slot of [...window.declares, ...window.reacts]) {
+      if (!actorKnown(slot.actorId)) {
+        push('ROLL_WINDOW_UNKNOWN_SLOT', `roll window ${window.id} slot actor ${slot.actorId} unknown`);
+      }
+      for (const picked of slot.picked) {
+        if (!slot.options.includes(picked)) {
+          push('ROLL_WINDOW_BAD_PICK', `roll window ${window.id} picked ${picked} not in its options`);
+        }
+      }
+      if (new Set(slot.picked).size !== slot.picked.length) {
+        push('ROLL_WINDOW_DUPLICATE_PICK', `roll window ${window.id} picked ${slot.actorId} twice`);
+      }
+    }
+    if (window.phase === 'DECLARE' && window.result) {
+      push('ROLL_WINDOW_PREMATURE_RESULT', `roll window ${window.id} has a result while still declaring`);
+    }
+    if (window.result && !Number.isFinite(window.result.total)) {
+      push('ROLL_WINDOW_BAD_RESULT', `roll window ${window.id} has a non-finite total`);
+    }
+  }
+
   /* Interrupt stack Σ ---------------------------------------------------- */
   const frameIds = new Set<string>();
   for (const frame of state.interruptStack) {
