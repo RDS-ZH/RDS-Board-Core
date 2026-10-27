@@ -18,7 +18,10 @@
     "dev:server": "tsx apps/server/src/index.ts",
     "test:server": "tsx apps/server/src/selftest.ts",
     "probe:ui": "node scripts/probe-ui-layout.mjs",
-    "probe:tokens": "node scripts/probe-design-tokens.mjs"
+    "probe:tokens": "node scripts/probe-design-tokens.mjs",
+    "probe:a11y": "node scripts/probe-a11y.mjs",
+    "tokens:export": "node scripts/export-design-tokens.mjs",
+    "tokens:check": "node scripts/export-design-tokens.mjs --check"
   },
   "keywords": [],
   "author": "",

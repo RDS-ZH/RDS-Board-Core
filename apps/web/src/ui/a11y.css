@@ -1,0 +1,98 @@
+/* ============================================================
+   Phase 4 · accessibility
+   ------------------------------------------------------------
+   Three things the probe (scripts/probe-a11y.mjs) actually asserts:
+
+   1. a visible focus ring on every keyboard-focused control;
+   2. `prefers-reduced-motion: reduce` stops animation instead of being ignored;
+   3. nothing relies on hover alone to convey state.
+
+   Contrast is handled in the token layer: the palette already clears WCAG AA
+   for body text, so no colour overrides live here.
+   ============================================================ */
+
+/* ---- focus ring --------------------------------------------------------
+   Several controls set `outline: none` to suppress the default ring. This
+   restores one that follows the accent, and it is `!important` because those
+   suppressions sit on more specific selectors. `:focus-visible` keeps the ring
+   off mouse clicks so the look does not change for pointer users. */
+
+:focus-visible {
+  outline: 2px solid var(--accent-bright) !important;
+  outline-offset: 2px !important;
+}
+
+/* Inside the dark chrome a bright ring is already high contrast; on the gold
+   primary buttons flip to the dark ink so it stays visible. */
+.act.primary:focus-visible,
+.dock-fan .act.primary:focus-visible,
+.pf-btn.primary:focus-visible {
+  outline-color: var(--text-on-accent) !important;
+  outline-offset: -3px !important;
+}
+
+/* ---- reduced motion ----------------------------------------------------
+   The HUD leans on animation for its feel (card lifts, label bursts, the haunt
+   cinematic). With the OS preference set, all of it collapses to an instant
+   state change rather than disappearing. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* A drawer that cannot animate must not sit mid-transform. */
+  .app-shell > .side-column,
+  .app-shell > .player-rail {
+    transition: none !important;
+  }
+
+  .dock-fan .act:hover,
+  .dock-fan .act:focus-visible {
+    transform: none !important;
+  }
+}
+
+/* ---- utilities --------------------------------------------------------- */
+
+/* Available to screen readers, invisible on screen. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The board is a canvas; the HUD is the accessible surface. Give keyboard users
+   a way to skip the topbar chrome. */
+.skip-link {
+  position: absolute;
+  left: var(--space-3);
+  top: -100px;
+  z-index: 90;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel-solid);
+  border: 1px solid var(--border-accent-strong);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--type-sm);
+  text-decoration: none;
+  transition: top var(--duration-base) var(--ease-standard);
+}
+
+.skip-link:focus-visible {
+  top: var(--space-3);
+}

@@ -221,6 +221,17 @@ export class BoardGameHUD {
     this.unsubNotice = presenter.onNotice(notice => this.renderNotice(notice));
   }
 
+  /** Mirror the slide-over state onto the toggles for assistive tech. */
+  private syncShellAria(): void {
+    for (const [attr, sel] of [
+      ['data-side', '[data-toggle="side"]'],
+      ['data-rail', '[data-toggle="rail"]']
+    ] as const) {
+      const button = this.container.querySelector(sel) as HTMLElement | null;
+      if (button) button.setAttribute('aria-expanded', this.container.getAttribute(attr) === 'open' ? 'true' : 'false');
+    }
+  }
+
   /**
    * Phone shell: the topbar cannot fit the scenario/viewer/camera controls, so
    * they are relocated into the side panel instead of being dropped. The same
@@ -772,9 +783,28 @@ export class BoardGameHUD {
     // Tablet/phone slide-overs. Only one panel is open at a time so the board
     // is never covered by two overlays.
     this.applyShellLayout();
+    this.syncShellAria();
     window.addEventListener('resize', () => this.applyShellLayout());
     this.shellMedia = window.matchMedia('(max-width: 767px)');
     this.shellMedia.addEventListener('change', () => this.applyShellLayout());
+
+    // Escape closes whatever slide-over is open, so keyboard users are never
+    // trapped behind a panel they cannot see past.
+    window.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      let closed = false;
+      for (const [attr, sel] of [
+        ['data-side', '[data-toggle="side"]'],
+        ['data-rail', '[data-toggle="rail"]']
+      ] as const) {
+        if (this.container.getAttribute(attr) === 'open') {
+          this.container.removeAttribute(attr);
+          (this.container.querySelector(sel) as HTMLElement | null)?.focus();
+          closed = true;
+        }
+      }
+      if (closed) event.preventDefault();
+    });
 
     this.container.querySelectorAll<HTMLElement>('[data-toggle]').forEach(button => {
       button.addEventListener('click', () => {
@@ -784,6 +814,7 @@ export class BoardGameHUD {
         this.container.removeAttribute(other);
         if (isOpen) this.container.removeAttribute(which);
         else this.container.setAttribute(which, 'open');
+        this.syncShellAria();
       });
     });
 
