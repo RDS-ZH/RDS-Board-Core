@@ -17,7 +17,8 @@
     "shots": "node scripts/shots.mjs",
     "dev:server": "tsx apps/server/src/index.ts",
     "test:server": "tsx apps/server/src/selftest.ts",
-    "probe:ui": "node scripts/probe-ui-layout.mjs"
+    "probe:ui": "node scripts/probe-ui-layout.mjs",
+    "probe:tokens": "node scripts/probe-design-tokens.mjs"
   },
   "keywords": [],
   "author": "",
