@@ -25,16 +25,43 @@ const failures = [];
 let screens = 0;
 let actions = 0;
 
+/**
+ * Benign environment noise, not a product defect.
+ *
+ * `vite.config.ts` proxies `/healthz`, `/api` and `/ws` to the Hub server on
+ * :8787 so the unified shell can detect the lobby in dev. When the UI matrix
+ * runs without `apps/server` up, every page load logs one 502 for that probe.
+ * Filter it (and only it) so real console errors still fail the run.
+ */
+const ENV_NOISE = [
+  /\/healthz/i,
+  /Failed to load resource: the server responded with a status of 502/i
+];
+
+function isEnvNoise(text) {
+  return ENV_NOISE.some(pattern => pattern.test(text));
+}
+
+/** Wire a page's console/page errors into `errors`, ignoring env noise. */
+function collectErrors(page, errors) {
+  page.on('pageerror', error => {
+    if (!isEnvNoise(error.message)) errors.push(`pageerror: ${error.message}`);
+  });
+  page.on('console', message => {
+    if (message.type() !== 'error') return;
+    const text = message.text();
+    if (isEnvNoise(text)) return;
+    errors.push(`console: ${text}`);
+  });
+}
+
 for (const game of GAMES) {
   for (const scenario of [undefined, ...game.scenarios]) {
     screens++;
     const label = `${game.id}${scenario ? `:${scenario}` : ''}`;
     const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
     const errors = [];
-    page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
-    page.on('console', message => {
-      if (message.type() === 'error') errors.push(`console: ${message.text()}`);
-    });
+    collectErrors(page, errors);
 
     try {
       const url = `${BASE}?game=${game.id}${scenario ? `&scenario=${scenario}` : ''}`;
@@ -116,10 +143,7 @@ for (const game of GAMES) {
   const label = 'betrayal:rotation-flow';
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errors = [];
-  page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
-  page.on('console', message => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
-  });
+  collectErrors(page, errors);
   try {
     await page.goto(`${BASE}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(1400);
@@ -152,8 +176,13 @@ for (const game of GAMES) {
     }
 
     await page.locator('[data-place-confirm]').click();
-    // Confirming hands the camera back and then pans onto the actor.
-    await page.waitForTimeout(1100);
+    // Confirming restores the pose and then pans onto the actor. Wait for the
+    // tween to actually finish (controls re-enable) instead of guessing a wall
+    // clock delay — a throttled headless frame loop can still be mid-glide.
+    await page
+      .waitForFunction(() => window.__boardGameApp.scene.controls.enabled, null, { timeout: 8000 })
+      .catch(() => {});
+    await page.waitForTimeout(250);
     const after = await page.evaluate(() => {
       const app = window.__boardGameApp;
       const snap = app.session.getSnapshot();
@@ -193,10 +222,7 @@ for (const game of GAMES) {
   const label = 'betrayal:drag-settle-flow';
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errors = [];
-  page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
-  page.on('console', message => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
-  });
+  collectErrors(page, errors);
   try {
     await page.goto(`${BASE}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(1400);
@@ -278,10 +304,7 @@ for (const game of GAMES) {
   const label = 'betrayal:discard-settle';
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errors = [];
-  page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
-  page.on('console', message => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
-  });
+  collectErrors(page, errors);
   try {
     await page.goto(`${BASE}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(1400);
@@ -320,10 +343,7 @@ for (const game of GAMES) {
   const label = 'betrayal:card-sheet-actions';
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   const errors = [];
-  page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
-  page.on('console', message => {
-    if (message.type() === 'error') errors.push(`console: ${message.text()}`);
-  });
+  collectErrors(page, errors);
   try {
     await page.goto(`${BASE}?game=betrayal&scenario=omen_ready`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(1400);

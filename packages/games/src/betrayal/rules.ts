@@ -31,6 +31,7 @@ import { HAUNT_DEFS, resolveHauntId } from './haunts';
 import { BETRAYAL_SPATIAL } from './spatial';
 import {
   actionLogLine,
+  addEffect,
   addFrost,
   applyItemGain,
   applyItemLoss,
@@ -65,6 +66,7 @@ import {
   movementCost,
   nextEligiblePlayer,
   nodeGrid,
+  ongoingEffectKinds,
   ownsDef,
   placeRoomCandidate,
   resetTurnResources,
@@ -1230,10 +1232,15 @@ export class BetrayalRules {
           break;
         }
         case 'ONGOING': {
-          const player = state.players[pid];
-          const effects = new Set<string>(player.customProps.effects ?? []);
-          effects.add(effect.effect);
-          player.customProps.effects = [...effects];
+          // Kernel-owned lifecycle: the module only names the curse, the kernel
+          // stores id/expiry/visibility so it survives replay and projection.
+          addEffect(state, {
+            kind: 'ONGOING',
+            source: pid,
+            target: pid,
+            payload: { effect: effect.effect },
+            tags: ['ongoing', effect.effect]
+          });
           break;
         }
         case 'NOTHING':
@@ -2503,8 +2510,9 @@ export class BetrayalRules {
     const player = state.players[pid];
     if (!player) return;
 
-    const effects = (player.customProps.effects ?? []) as string[];
-    for (const effect of [...effects]) {
+    // Ongoing curses live on the kernel effect list; `ongoingEffectKinds` also
+    // folds in the legacy `customProps.effects` array so old logs still replay.
+    for (const effect of ongoingEffectKinds(state, pid)) {
       if (effect === 'DRIP') {
         const check = rollTraitCheck(state, pid, 'sanity', { threshold: 5, reason: '滴血之声' });
         if (!check.success) damagePlayer(state, pid, 'MENTAL', 1);

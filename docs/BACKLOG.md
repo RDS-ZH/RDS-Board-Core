@@ -4,7 +4,7 @@
 > [SIMULATOR-AUDIT.md](SIMULATOR-AUDIT.md)（SA-xx）与
 > [ARCHITECTURE-ISSUES.md](ARCHITECTURE-ISSUES.md)（AI-xx）里，不要在这里重复。
 >
-> 最近一次核对：2026-10-24。核对手法见 §5，**任何一条待办在动手前都应先按 §5 复核一次**——
+> 最近一次核对：2026-10-27。核对手法见 §8，**任何一条待办在动手前都应先按 §8 复核一次**——
 > 本文件历史上出现过把已修问题挂成待办的情况。
 
 ---
@@ -46,60 +46,55 @@ __boardGameApp.scene.getRenderStats()
 
 ---
 
-## 2. 山屋效果生命周期（AI-23）
-
-`GameState.effects: EffectInstance[]` 槽位与投影已存在（`types.ts:331/606`、`observer.ts:238`、`engine.ts:764`），但**山屋的物品增益与击晕状态仍是模块自己手写的 `customProps`**。
-
-要做：把山屋的临时修正（护甲减伤、面具控制、怪物击晕等）迁到 `EffectInstance`，保留对旧字段的兼容读取。
-
-判据：山屋不再新增 `customProps` 里的散装效果字段；回放哈希保持一致。
-
-## 3. 两阶段检定窗口（AI-24）
+## 2. 两阶段检定窗口（AI-24）
 
 目前掷骰是一次性决定，无法表达"掷前声明修正 / 掷后响应"。
 
 要做：引入 `RollWindow`——修正声明 → 掷骰 → 掷后响应。参考三国杀响应栈的既有实现，不要为山屋写特例。
 
-## 4. 内核表达力 Wave 3（AI-25 / K8·K9·K12·K14）
+## 3. 内核表达力 Wave 3（AI-25 / K8·K9·K12·K14）
 
 按 [KERNEL-EXPRESSION.md](KERNEL-EXPRESSION.md) 推进。**不要和表现层改造混在一个 PR 里。**
 
 ---
 
-## 5. i18n TODO
+## 4. i18n TODO
 
 - `actionText` + `app/i18n` 已覆盖动作标签；
 - 静态 HUD/chrome 文案仍为中文硬编码；
 - 后续若做多语言：把 HUD 固定文案抽 key、为 `phaseLabel`/任务目标/物品与房间名准备内容字典；
 - **不要把翻译表放进 core / game state。**
 
-## 6. 网络 TODO
+## 5. 网络 TODO
 
 - `RoomTransport` 接口与 `RoomHttpAdapter` 已就绪；
 - 真实 WebSocket/HTTP server、连接管理、重连、背压不在当前范围；
 - 部署时需补：鉴权 token 生命周期、多客户端广播、断线重连的 `revision/delta` 恢复；
 - 浏览器侧 P2P 见 [LOBBY-INTEGRATION.md](LOBBY-INTEGRATION.md)（另一位贡献者的 `src/net/webrtc-transport.ts`）。
 
-## 7. 游戏夹具可选项（不影响内核/UI 兼容性）
+## 6. 游戏夹具可选项（不影响内核/UI 兼容性）
 
 - Catan 官方版图与全部规则细节；
 - 更多山屋剧本、完整 50 个 haunt（当前 5 个：HAUNT #1/#3/#5/#6/#10）；
 - 三国杀/沙丘/璀璨宝石的完整卡表与规则；
 - 房间/卡牌官方美术。
 
-## 8. 已明确不做（won't fix / 已结案）
+## 7. 已明确不做（won't fix / 已结案）
 
 | 项 | 结论 |
 | --- | --- |
+| AI-23 山屋效果生命周期迁到 `EffectInstance` | 已实现（SA-100）：持续诅咒（DRIP/POSSESSION/CHILL/HAUNTING_MELODY/MARK_OF_FEAR）改由 `GameState.effects` 承载，模块只解释 `payload.effect`；`addEffect`/`removeEffects`/`effectsOn`/`ongoingEffectKinds` 统一入口，旧 `customProps.effects` 保留只读兼容 |
+| 测试环境 502 噪音 | 已修：`test-ui-matrix` / `probe-overlap` 过滤 `/healthz` dev 代理噪音（仅白名单该条，真实错误仍报红） |
+| `rotation-flow` 采样时机 | 已修：改用 `waitForFunction(controls.enabled)` 确定性等待补间结束 |
 | AI-21 / AI-27 楼层隔离与小地图 | 已实现（SA-93）：3D 楼层过滤（draw call -56%~-74%）、raycaster 排除隐藏层、HUD 建筑切片小地图全联动 |
 | AI-20 `placementRotation` 持久化 | 已实现：`session.ts` 用 `sessionStorage`（键含 game/seed/scenario/defId），无需再做 |
 | AI-22 3D 卡面长描述截断 | 观点已定：DOM 卡牌详情为主，3D 只做摘要，不做长文渲染 |
 | AI-26 全量重建改 diff | §1 实测未超预算，暂不做 |
-| `BACKLOG` 旧 §5 的 4 个 P0 | 全部已修（见 §5 复核记录），从待办移除 |
+| `BACKLOG` 旧 §5 的 4 个 P0 | 全部已修（见 §8 复核记录），从待办移除 |
 
 ---
 
-## 9. 如何复核一条待办是否仍然成立
+## 8. 如何复核一条待办是否仍然成立
 
 文档会漂移，**动手前先复核**。典型手法：
 
@@ -118,7 +113,7 @@ pnpm probe:layout && pnpm probe:overlap
 node node_modules/typescript/bin/tsc --noEmit && pnpm build
 ```
 
-### 2026-10-24 的复核记录
+### 2026-10-24 的复核记录（旧「优先修复」整节 → 现已全部结案）
 
 旧 §5 曾列出这些"待修复的框架性问题"，逐条核对结果：
 

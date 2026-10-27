@@ -8,7 +8,19 @@ import { ECSManager } from '@rds/kernel/ecs';
 import { OccupancyIndex } from '@rds/kernel/occupancy';
 import { ReduceContext } from '@rds/kernel/module';
 import { DeterministicPRNG } from '@rds/kernel/prng';
-import { Action, Entity, GameState, MapGraphNode, PlayerId, Zone } from '@rds/kernel/types';
+import {
+  Action,
+  ActorId,
+  EffectExpiry,
+  EffectInstance,
+  Entity,
+  GameState,
+  JsonRecord,
+  MapGraphNode,
+  PlayerId,
+  VisibilityRule,
+  Zone
+} from '@rds/kernel/types';
 import {
   CardType,
   DoorDir,
@@ -25,6 +37,116 @@ import {
   TRAIT_KEYS,
   WEAPON_SPECS
 } from './cards';
+
+/* -------------------------------------------------------------------------- */
+/* Effects (kernel-owned lifecycle)                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Ongoing curses an event card can leave on an explorer.
+ *
+ * These are the module's *timed modifiers*: the kernel stores them in
+ * `GameState.effects` (owning id/expiry/visibility) and the module only
+ * interprets `payload.effect` at its own `startOfTurn` hook.
+ */
+export const ONGOING_EFFECT_KINDS = [
+  'DRIP',
+  'POSSESSION',
+  'CHILL',
+  'HAUNTING_MELODY',
+  'MARK_OF_FEAR'
+] as const;
+
+export type OngoingEffectKind = (typeof ONGOING_EFFECT_KINDS)[number];
+
+export interface EffectSpec {
+  kind: string;
+  source: ActorId;
+  /** PlayerId, NpcId or EntityId. */
+  target: string;
+  payload?: JsonRecord;
+  tags?: string[];
+  expiresAt?: EffectExpiry;
+  visibility?: VisibilityRule;
+}
+
+/**
+ * Register (or refresh) a module effect on the kernel-owned effect list.
+ *
+ * The id is derived from `kind` + `target` (plus `payload.effect` when present),
+ * so re-applying the same curse to the same explorer is idempotent while two
+ * *different* curses on one explorer stay separate instances.
+ */
+export function addEffect(state: GameState, spec: EffectSpec): EffectInstance {
+  const variant = String((spec.payload as { effect?: unknown } | undefined)?.effect ?? '');
+  const id = `eff_${spec.kind}${variant ? `_${variant}` : ''}_${spec.target}`;
+  const instance: EffectInstance = {
+    id,
+    kind: spec.kind,
+    source: spec.source,
+    target: spec.target,
+    ...(spec.payload ? { payload: spec.payload } : {}),
+    ...(spec.tags ? { tags: spec.tags } : {}),
+    ...(spec.expiresAt ? { expiresAt: spec.expiresAt } : {}),
+    visibility: spec.visibility ?? { type: 'PUBLIC' }
+  };
+  const list = state.effects ?? [];
+  const existing = list.findIndex(effect => effect.id === id);
+  state.effects = existing >= 0
+    ? list.map((effect, index) => (index === existing ? instance : effect))
+    : [...list, instance];
+  return instance;
+}
+
+/** Drop every effect matching the predicate; returns how many were removed. */
+export function removeEffects(
+  state: GameState,
+  predicate: (effect: EffectInstance) => boolean
+): number {
+  const list = state.effects ?? [];
+  const kept = list.filter(effect => !predicate(effect));
+  const removed = list.length - kept.length;
+  if (removed > 0) state.effects = kept;
+  return removed;
+}
+
+/**
+ * Every effect currently targeting `targetId`.
+ *
+ * Reads the kernel list first, then folds in the legacy
+ * `customProps.effects: string[]` so logs produced before the migration still
+ * replay identically. Legacy entries are surfaced as synthetic instances with
+ * `id: 'legacy_<KIND>'` and `payload.effect = KIND`.
+ */
+export function effectsOn(state: GameState, targetId: string): EffectInstance[] {
+  const modern = (state.effects ?? []).filter(effect => effect.target === targetId);
+
+  const legacyKinds = (state.players[targetId]?.customProps?.effects ?? []) as string[];
+  if (!Array.isArray(legacyKinds) || legacyKinds.length === 0) return modern;
+
+  const seen = new Set(
+    modern.map(effect => String((effect.payload as { effect?: string } | undefined)?.effect ?? effect.kind))
+  );
+  const legacy: EffectInstance[] = legacyKinds
+    .filter(kind => !seen.has(kind))
+    .map(kind => ({
+      id: `legacy_${kind}_${targetId}`,
+      kind: 'ONGOING',
+      source: targetId as ActorId,
+      target: targetId,
+      payload: { effect: kind, legacy: true },
+      visibility: { type: 'PUBLIC' as const }
+    }));
+  return [...modern, ...legacy];
+}
+
+/** Ongoing-curse kinds active on `targetId`, merged modern + legacy. */
+export function ongoingEffectKinds(state: GameState, targetId: string): string[] {
+  return effectsOn(state, targetId)
+    .filter(effect => effect.kind === 'ONGOING')
+    .map(effect => String((effect.payload as { effect?: string } | undefined)?.effect ?? ''))
+    .filter((kind): kind is string => kind.length > 0);
+}
 
 /* -------------------------------------------------------------------------- */
 /* Layout                                                                      */

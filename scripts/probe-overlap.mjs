@@ -18,9 +18,18 @@ const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 const errors = [];
-page.on('pageerror', err => errors.push(err.message));
+// `vite.config.ts` proxies `/healthz` to the Hub server on :8787. Without it up,
+// each load logs one benign 502 for that probe; ignore it so real errors surface.
+const isEnvNoise = text =>
+  /\/healthz/i.test(text) ||
+  /Failed to load resource: the server responded with a status of 502/i.test(text);
+page.on('pageerror', err => {
+  if (!isEnvNoise(err.message)) errors.push(err.message);
+});
 page.on('console', msg => {
-  if (msg.type() === 'error') errors.push(msg.text());
+  if (msg.type() !== 'error') return;
+  if (isEnvNoise(msg.text())) return;
+  errors.push(msg.text());
 });
 
 try {
