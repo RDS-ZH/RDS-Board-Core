@@ -288,7 +288,9 @@ apps/web/src/ui/
 
 **探针升级**：`pnpm probe:ui` 现在测 **12 个状态**（7 档视口的默认态 + 窄屏的抽屉展开态），因为关闭的抽屉对探针不可见——只测默认态等于没测里面那些面板。
 
-### Phase 3 · 组件化（3–5 天，可分多次）
+### Phase 3 · 组件化（3–5 天，可分多次）⏸ 待评审
+
+> 需要引入 Lit 依赖（~5KB），属用户评审项。Phase 4 已完成并先行合并；Phase 3 在评审通过后开始。
 
 按「收益/风险」排序逐个迁移到 Lit：
 
@@ -301,12 +303,27 @@ apps/web/src/ui/
 
 验收：`hud.ts` 中 `innerHTML =` 数量为 0；快照更新时不再重建未变化的 DOM。
 
-### Phase 4 · 可访问性与多端收口（2 天）
+### Phase 4 · 可访问性与多端收口 ✅ 已完成（2026-10-28）
 
 - 键盘全流程可达 + `focus-visible` 样式；
 - 对比度达 WCAG AA；
 - `prefers-reduced-motion` 时关闭动效；
 - 令牌导出为 DTCG JSON，为未来原生端/桌面端（Electron/Tauri）预留。
+
+**实际落地**：
+
+- 新增 `apps/web/src/ui/a11y.css`：全局 `:focus-visible` 焦点环（用 `!important` 覆盖此前 5 处 `outline: none`；金色主按钮改用深色环以免看不见）、`prefers-reduced-motion: reduce` 下把动画/过渡压到 0.01ms 并移除抽屉位移、`.sr-only` 与 `.skip-link` 工具类。
+- `hud.ts`：**Escape** 关闭任何打开的滑出面板并把焦点还给对应切换按钮；切换按钮同步 `aria-expanded`（此前只有 CSS 属性，读屏软件看不到状态）。
+- 新增 `scripts/probe-a11y.mjs`（`pnpm probe:a11y`），**18 项断言**：
+  - 对比度：9 类正文元素 × 2 档视口，正文 ≥4.5:1、大字 ≥3:1，背景用**图层合成**计算（渐变首色标按 alpha 叠加，而非直接当作不透明色）；
+  - 可访问名称：所有可见 `button`/`select` 必须有 `aria-label`/`title`/文本；
+  - 键盘可达：所有可交互元素 `tabIndex ≥ 0`；
+  - 焦点环：**用真实 Tab 键**检测（`:focus-visible` 对程序化 `.focus()` 不一定匹配，这一点最初写成 `.focus()` 会假失败）；
+  - Escape 关闭滑出面板；
+  - `prefers-reduced-motion` 下**没有任何元素**仍有动画或过渡。
+- 新增 `scripts/export-design-tokens.mjs`（`pnpm tokens:export` / `tokens:check`）：把三层 CSS 令牌导出为 **W3C DTCG** JSON（76 primitives / 50 semantic / 1 theme），供未来原生或桌面端复用同一份真值。`--check` 模式可放进 CI 防漂移。
+
+**踩到的坑**：`--surface-panel` 与 `--surface-panel-solid` 会拆进同一个分组路径，朴素嵌套写入会**丢掉其中一个**（导出数从 41 变 50 才暴露）。已按 DTCG 的 `$root` 约定处理"既是叶子又是分组"的节点。
 
 ---
 
