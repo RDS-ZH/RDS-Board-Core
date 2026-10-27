@@ -341,6 +341,50 @@ export interface EffectInstance {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Two-phase check window (K4)                                                 */
+/* -------------------------------------------------------------------------- */
+
+export type RollWindowPhase = 'DECLARE' | 'REACT' | 'RESOLVED';
+
+/** One participant's choices in one phase. */
+export interface RollWindowSlot {
+  actorId: ActorId;
+  /** Module-defined option ids this actor may pick (empty = phase is a no-op). */
+  options: string[];
+  /** Option ids actually picked, in pick order (deterministic). */
+  picked: string[];
+}
+
+export interface RollWindowResult {
+  dice: number[];
+  total: number;
+  threshold?: number;
+  success?: boolean;
+}
+
+/**
+ * A check split into the two moments the tabletop actually has: modifiers are
+ * declared before the dice are thrown, responses are chosen after the result is
+ * known. The kernel owns the lifecycle; option ids stay module-defined.
+ */
+export interface RollWindow {
+  id: string;
+  /** Module label, e.g. '金库 · 知识检定'. */
+  label: string;
+  /** Whose check this is. */
+  actorId: ActorId;
+  phase: RollWindowPhase;
+  /** Pre-roll modifiers. */
+  declares: RollWindowSlot[];
+  /** Post-roll responses. */
+  reacts: RollWindowSlot[];
+  /** Filled once the dice are thrown (never present during DECLARE). */
+  result?: RollWindowResult;
+  /** Opaque module payload (room id, feature name, …). */
+  payload?: JsonRecord;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Interrupt stack Σ_stack                                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -609,6 +653,11 @@ export interface GameState {
   interruptStack: StackFrame[];
   pendingDecisions: DecisionWindow[];
   activeHooks: ActiveRuleHook[];
+  /**
+   * Two-phase check windows (declare → roll → react → resolve). The kernel owns
+   * only the lifecycle and bookkeeping; option ids stay module-defined.
+   */
+  rollWindows?: RollWindow[];
 
   /** Current PRNG state (deterministic chance node c). */
   prngState: number;
