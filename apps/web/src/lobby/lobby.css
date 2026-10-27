@@ -170,3 +170,8 @@
   .lob-main { padding: 0 12px; margin: 14px auto; }
   .lob-shelf { grid-template-columns: 1fr; }
 }
+
+/* Phase 2: seat online dot */
+.lob-seat { position: relative; }
+.lob-online-dot { position:absolute; top:8px; right:10px; width:9px; height:9px; border-radius:50%; background:#4b5563; }
+.lob-online-dot.on { background:#2ea86f; box-shadow:0 0 6px rgba(46,168,111,.8); }

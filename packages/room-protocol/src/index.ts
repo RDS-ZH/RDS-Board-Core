@@ -39,7 +39,9 @@ export type SignalMessage =
   | { t: 'lobby-unsub' }
   /** 任意房间字段变化 → 推给 lobby 订阅者与房间组成员 */
   | { t: 'room-updated'; room: HubRoomInfo }
-  /** 房间内文字聊天（服务端只做群内转发，不落盘） */
+  /** Phase 2: room online presence (broadcast on room-group membership change; online = deduped userIds currently connected) */
+  | { t: 'presence'; roomId: string; online: string[] }
+  /** Room text chat (server relays in-group only, no persistence) */
   | { t: 'lobby-chat'; roomId: string; text: string }
   | { t: 'lobby-chat'; roomId: string; from: string; name: string; text: string; at: number };
 

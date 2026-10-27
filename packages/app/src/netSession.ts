@@ -75,6 +75,8 @@ export interface NetSessionOptions {
   seed?: number;
   /** 阶段一：座位 → hub 身份（昵称/头像）。房主开局时写进内核 Player，随 snapshot 同步全员。 */
   roster?: Partial<Record<PlayerId, { name: string; avatarUrl?: string }>>;
+  /** 阶段二：座位 → hub userId。把 presence 的 userId 反映射回玩家卡片。 */
+  seatOwners?: Partial<Record<PlayerId, string>>;
 }
 
 /** Minimal channel the guest transport needs (RTCDataChannel or loopback). */
@@ -108,6 +110,12 @@ class BridgedRoom extends GameRoom {
 export class NetSession implements GamePresenter {
   public readonly role: 'host' | 'guest';
   public readonly viewer: PlayerId;
+
+  // --- Phase 2 hooks (set by the web layer before/after start()) ---
+  /** Presence updates translated from hub userIds to playerIds (via seatOwners). */
+  public onPresence?: (onlinePlayerIds: string[]) => void;
+  /** Room was closed by the host (e.g. in-game exit): guests should leave. */
+  public onRoomClosed?: () => void;
 
   private readonly module: GameModule;
   private readonly options: NetSessionOptions;
@@ -202,6 +210,7 @@ export class NetSession implements GamePresenter {
     const signaling = new HubSignaling(this.options.hub, this.options.token);
     this.signaling = signaling;
     await signaling.connect(this.options.roomId);
+    this.wireSideChannel(signaling);
     const { transport } = this.buildHostRoom(signaling.selfId);
     startHostMesh(signaling, transport);
   }
@@ -244,6 +253,7 @@ export class NetSession implements GamePresenter {
     if (!this.options.hostId) throw new Error('guest role requires hostId');
     const signaling = new HubSignaling(this.options.hub, this.options.token);
     this.signaling = signaling;
+    this.wireSideChannel(signaling);
     const hello = await signaling.connect(this.options.roomId);
     // 开局全员同时进入（自动跳转）时，房主的游戏信令连接可能尚未 join-room；
     // 此时拨号 SDP 会被 hub 静默丢弃。先等房主出现在房间里再拨号。
@@ -520,6 +530,23 @@ export class NetSession implements GamePresenter {
       title: '时钟由房主推进',
       detail: '联机模式下逻辑时钟只在房主侧推进。',
       durationMs: 2600
+    });
+  }
+
+  /** Phase 2: presence + room lifecycle side channel (survives mesh handlers). */
+  private wireSideChannel(signaling: HubSignaling): void {
+    signaling.onSide({
+      onPresence: online => {
+        const owners = this.options.seatOwners;
+        if (!owners || !this.onPresence) return;
+        const seats = Object.entries(owners)
+          .filter(([, uid]) => uid !== undefined && online.includes(uid))
+          .map(([pid]) => pid);
+        this.onPresence(seats);
+      },
+      onRoomUpdate: room => {
+        if (room?.id === this.options.roomId && room.status === 'closed') this.onRoomClosed?.();
+      }
     });
   }
 

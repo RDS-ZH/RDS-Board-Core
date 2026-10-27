@@ -42,6 +42,8 @@ export class BoardGameHUD {
   private unsubNotice: (() => void) | null = null;
   private announceTimer: number | null = null;
   private latest: GameSnapshot | null = null;
+  /** 阶段二：在线玩家（联机对局 presence 映射后的 playerId 集合） */
+  private onlinePlayerIds = new Set<string>();
   /** Room the player last clicked; the dossier follows it until the turn moves. */
   private pinnedRoomId?: string;
   private lastActorRoomId?: string;
@@ -682,6 +684,12 @@ export class BoardGameHUD {
     button.textContent = on ? '♪' : '✕';
   }
 
+  /** 阶段二：设置在线玩家并刷新玩家卡在线点（未知 playerId 视为离线）。 */
+  public setOnlinePlayers(playerIds: string[]): void {
+    this.onlinePlayerIds = new Set(playerIds);
+    if (this.latest) this.renderPlayers(this.latest);
+  }
+
   private renderSkeleton(): void {
     this.container.innerHTML = `
       <header class="topbar">
@@ -721,6 +729,7 @@ export class BoardGameHUD {
           </div>
 
           <button class="icon-btn" id="btn-undo" aria-label="撤销上一步">↶<span class="tip">撤销上一步动作</span></button>
+          <button class="icon-btn danger" id="btn-exit-net" aria-label="退出对局" hidden>⎋<span class="tip">退出对局</span></button>
           <button class="icon-btn" id="btn-audio" aria-label="音效">♪<span class="tip">音效开关</span></button>
           <button class="icon-btn" id="btn-inspector" aria-label="数学模型">𝒢<span class="tip">内核检查器 · I</span></button>
         </div>
@@ -1257,7 +1266,7 @@ export class BoardGameHUD {
         return `
           <article class="pc ${player.isFocus ? 'active' : ''} ${player.alive ? '' : 'dead'}" data-player-id="${player.id}" style="--pc-color:${player.color}">
             <div class="pc-head">
-              <div class="pc-avatar">${player.avatarUrl ? `<img src="${player.avatarUrl}" alt="" loading="lazy" />` : player.avatar}</div>
+              <div class="pc-avatar"><span class="pc-online${this.onlinePlayerIds.has(player.id) ? ' on' : ''}" title="在线状态"></span>${player.avatarUrl ? `<img src="${player.avatarUrl}" alt="" loading="lazy" />` : player.avatar}</div>
               <div class="pc-id">
                 <div class="pc-name">${player.name}</div>
                 <div class="pc-tags">

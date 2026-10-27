@@ -26,11 +26,18 @@ export type SignalHandler = {
   onIce?(from: string, candidate: unknown): void;
 };
 
+/** Phase 2 side-channel handlers: these survive signaling.on() overrides. */
+export type SignalSideHandler = {
+  onPresence?(online: string[]): void;
+  onRoomUpdate?(room: { id: string; status: string }): void;
+};
+
 export class HubSignaling {
   private ws!: WebSocket;
   readonly selfId!: string;
   private peers = new Set<string>();
   private handlers: SignalHandler = {};
+  private sideHandlers: SignalSideHandler = {};
 
   constructor(private readonly hubOrigin: string, private readonly token: string) {}
 
@@ -53,6 +60,8 @@ export class HubSignaling {
           case 'peer-leave': this.peers.delete(msg.peerId); this.handlers.onPeerLeave?.(msg.peerId); break;
           case 'sdp': this.handlers.onSdp?.(msg.from, msg.sdp); break;
           case 'ice': this.handlers.onIce?.(msg.from, msg.candidate); break;
+          case 'presence': this.sideHandlers.onPresence?.(msg.online ?? []); break;
+          case 'room-updated': this.sideHandlers.onRoomUpdate?.(msg.room); break;
           default: break; // forward compatibility: ignore unknown
         }
       };
@@ -62,6 +71,8 @@ export class HubSignaling {
   }
 
   public on(h: SignalHandler): void { this.handlers = h; }
+  /** Phase 2 side handlers (presence / room-updated); not replaced by on(). */
+  public onSide(h: SignalSideHandler): void { this.sideHandlers = { ...this.sideHandlers, ...h }; }
   public sendSdp(to: string, sdp: unknown): void { this.ws.send(JSON.stringify({ t: 'sdp', to, sdp })); }
   public sendIce(to: string, candidate: unknown): void { this.ws.send(JSON.stringify({ t: 'ice', to, candidate })); }
   public close(): void { try { this.ws.send(JSON.stringify({ t: 'leave-room' })); this.ws.close(); } catch { /* already closed */ } }

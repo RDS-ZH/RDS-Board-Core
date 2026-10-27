@@ -48,6 +48,8 @@ let games: HubGameInfo[] = [];
 let currentRoom: HubRoomInfo | null = null;
 let roomsCache: HubRoomInfo[] = [];
 let roomsCacheSig = '';
+/** 阶段二：当前房间在线的 userId 列表（信令 presence 推送） */
+let onlineIds: string[] = [];
 let roomTimer: ReturnType<typeof setInterval> | null = null;
 let roomsTimer: ReturnType<typeof setInterval> | null = null;
 let rootEl: HTMLElement | null = null;
@@ -88,6 +90,7 @@ function openWs(): void {
     let msg: any;
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.t === 'room-updated') onRoomUpdated(msg.room as HubRoomInfo);
+    else if (msg.t === 'presence') onPresence(String(msg.roomId), Array.isArray(msg.online) ? msg.online.map(String) : []);
     else if (msg.t === 'lobby-chat' && user) onChat(msg.roomId, { from: msg.from, name: msg.name, text: msg.text, at: msg.at, self: msg.from === user.sub });
     // hello/peer-join/peer-leave：游戏信令消息，大厅忽略
   };
@@ -120,6 +123,7 @@ function onRoomUpdated(room: HubRoomInfo): void {
     }
     if (room.status === 'closed' || !room.players.some(p => p.id === uid)) {
       currentRoom = null;
+      onlineIds = [];
       showToast('你已不在该房间', 'info');
       render();
       void refreshRooms();
@@ -131,6 +135,17 @@ function onRoomUpdated(room: HubRoomInfo): void {
   }
   roomsCacheSig = '';
   void refreshRooms();
+}
+
+/** 阶段二：在线状态推送 → 座位卡在线点（轻量更新，不重建整页） */
+function onPresence(roomId: string, ids: string[]): void {
+  if (!currentRoom || roomId !== currentRoom.id) return;
+  onlineIds = ids;
+  document.querySelectorAll<HTMLElement>('.lob-seat[data-seat]').forEach(el => {
+    const uid = el.dataset.seat ?? '';
+    const dot = el.querySelector<HTMLElement>('.lob-online-dot');
+    if (dot) dot.classList.toggle('on', ids.includes(uid));
+  });
 }
 
 function onChat(roomId: string, m: ChatMsg): void {
@@ -177,7 +192,7 @@ export async function startLobby(container: HTMLElement, enterGame: (p: EnterGam
       closeWs();
       if (visibilityHandler) document.removeEventListener('visibilitychange', visibilityHandler);
       if (rootEl) rootEl.innerHTML = '';
-      rootEl = null; onEnterGame = null; currentRoom = null; lastRoomSig = ''; roomsCacheSig = '';
+      rootEl = null; onEnterGame = null; currentRoom = null; lastRoomSig = ''; roomsCacheSig = ''; onlineIds = [];
     }
   };
 }
@@ -199,7 +214,7 @@ function render(): void {
 function roomSig(r: HubRoomInfo): string {
   return [r.id, r.status, r.name, r.gameId, r.hostId, r.maxPlayers, r.isPrivate ? 1 : 0, r.code ?? '', r.scenarioId ?? '',
     r.players.map(p => p.id + ':' + ((p as any).displayName || p.name) + ':' + ((p as any).avatarUrl ?? '')).join(','),
-    (r.readyPlayers ?? []).join(',')].join('|');
+    (r.readyPlayers ?? []).join(','), onlineIds.join(',')].join('|');
 }
 
 const accentOf = (g?: HubGameInfo): string => g?.accent ?? '#6ea8fe';
@@ -304,13 +319,17 @@ async function refreshRooms() {
     roomsCache = rooms;
     if (sig !== roomsCacheSig) {
       roomsCacheSig = sig;
-      const joinable = rooms.filter(r => r.status === 'open' && r.players.length < r.maxPlayers)
+      // 阶段二：列表同时展示对局中的房间（不可加入，仅展示状态）
+      const openRooms = rooms.filter(r => r.status === 'open' && r.players.length < r.maxPlayers)
         .sort((a, b) => b.players.length - a.players.length);
-      el.innerHTML = joinable.length
-        ? joinable.map(quickRow).join('')
+      const playingRooms = rooms.filter(r => r.status === 'playing')
+        .sort((a, b) => b.createdAt - a.createdAt);
+      const rows = openRooms.map(quickRow).join('') + playingRooms.map(quickRow).join('');
+      el.innerHTML = rows
+        ? rows
         : '<div class="lob-empty">暂无可加入的房间——从上面选个游戏开一桌吧。</div>';
       const hint = document.getElementById('rooms-hint');
-      if (hint) hint.textContent = rooms.length ? '（' + joinable.length + '/' + rooms.length + ' 个可加入）' : '';
+      if (hint) hint.textContent = rooms.length ? '（' + openRooms.length + ' 个可加入' + (playingRooms.length ? '，' + playingRooms.length + ' 个对局中' : '') + '）' : '';
       const shelf = document.getElementById('shelf');
       if (shelf) shelf.innerHTML = games.map(shelfCard).join('');
     }
@@ -461,8 +480,10 @@ function seatCard(r: HubRoomInfo, p: { id: string; name: string; displayName?: s
   const hostCtl = isHost && !me
     ? '<div class="lob-seat-ctl"><button data-kick="' + esc(p.id) + '" class="lob-mini lob-danger">请离</button><button data-host="' + esc(p.id) + '" class="lob-mini">转房主</button></div>'
     : '';
+  const online = onlineIds.includes(p.id);
   return `
-  <div class="lob-seat${ready ? ' ready' : ''}">
+  <div class="lob-seat${ready ? ' ready' : ''}" data-seat="${esc(p.id)}">
+    <span class="lob-online-dot${online ? ' on' : ''}" title="${online ? '在线' : '离线'}"></span>
     <span class="lob-seat-avatar">${p.avatarUrl ? '<img src="' + esc(p.avatarUrl) + '" alt="" loading="lazy" />' : esc(displayNameOf(p).slice(0, 1).toUpperCase())}</span>
     <span class="lob-seat-name">${esc(displayNameOf(p))}${isRoomHost ? ' <span title="房主">👑</span>' : ''}${me ? '<span class="lob-muted">（你）</span>' : ''}</span>
     <span class="lob-seat-sub">座位 p${i + 1}${r.status === 'open' ? (ready ? ' · <span class="lob-ready-tag">已就绪</span>' : ' · 未就绪') : ''}</span>
@@ -653,7 +674,7 @@ function bindRoom() {
   $('exit-room')?.addEventListener('click', async () => {
     try { await leaveRoom(r0.id); } catch (e: any) { showToast(e.message, 'error'); return; }
     wsSend({ t: 'leave-room' });
-    currentRoom = null; render();
+    currentRoom = null; onlineIds = []; render();
   });
   $('copy-invite')?.addEventListener('click', async () => {
     const text = 'RDS Board 房间号 ' + r0.id + (r0.code ? '，房间码 ' + r0.code : '') + '，来一局 ' + (games.find(g => g.id === r0.gameId)?.name ?? '');
@@ -722,6 +743,10 @@ function gameQuery(r: HubRoomInfo, role: 'host' | 'guest'): string {
     roster['p' + (i + 1)] = avatarUrl ? { name, avatarUrl } : { name };
   });
   q.set('roster', JSON.stringify(roster));
+  // 阶段二：座位 → hub userId，presence 反映射回玩家卡片在线点用。
+  const owners: Record<string, string> = {};
+  r.players.forEach((pl, i) => { owners['p' + (i + 1)] = pl.id; });
+  q.set('owners', JSON.stringify(owners));
   return q.toString();
 }
 

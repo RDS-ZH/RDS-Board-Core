@@ -17,7 +17,10 @@ export class SignalHub {
     for (const c of [...this.clients]) {
       if (c.userId === client.userId && c.ws !== ws) {
         this.clients.delete(c);
-        if (c.roomId) this.broadcastRoom(c.roomId, { t: 'peer-leave', peerId: c.userId });
+        if (c.roomId) {
+          this.broadcastRoom(c.roomId, { t: 'peer-leave', peerId: c.userId });
+          this.broadcastPresence(c.roomId);
+        }
         c.ws.terminate();
       }
     }
@@ -29,7 +32,11 @@ export class SignalHub {
 
   private drop(client: Client) {
     this.clients.delete(client);
-    if (client.roomId) this.broadcastRoom(client.roomId, { t: 'peer-leave', peerId: client.userId }, client.userId);
+    if (client.roomId) {
+      const roomId = client.roomId;
+      this.broadcastRoom(roomId, { t: 'peer-leave', peerId: client.userId }, client.userId);
+      this.broadcastPresence(roomId);
+    }
   }
 
   private onMessage(client: Client, text: string) {
@@ -44,6 +51,7 @@ export class SignalHub {
           .map(c => c.userId);
         this.send(client, { t: 'hello', selfId: client.userId, peers });
         this.broadcastRoom(msg.roomId, { t: 'peer-join', peerId: client.userId }, client.userId);
+        this.broadcastPresence(msg.roomId);
         break;
       }
       case 'leave-room':
@@ -74,11 +82,11 @@ export class SignalHub {
     }
   }
 
-  /** 房间字段变化 → 房间组成员 + 大厅订阅者。closed 房间只推给大厅（刷新列表）。 */
+  /** 房间字段变化 → 房间组成员 + 大厅订阅者。阶段二：closed 也推给房内成员，让对局中的玩家知道对局已结束。 */
   broadcastRoomUpdate(room: HubRoomInfo): void {
     const msg: SignalMessage = { t: 'room-updated', room };
     for (const c of this.clients) {
-      if (c.lobby || (room.status !== 'closed' && c.roomId === room.id)) this.send(c, msg);
+      if (c.lobby || c.roomId === room.id) this.send(c, msg);
     }
   }
 
@@ -87,6 +95,13 @@ export class SignalHub {
     const roomId = client.roomId;
     client.roomId = undefined;
     this.broadcastRoom(roomId, { t: 'peer-leave', peerId: client.userId }, client.userId);
+    this.broadcastPresence(roomId);
+  }
+
+  /** Phase 2: deduped online userIds of a room group, pushed to every member. */
+  private broadcastPresence(roomId: string): void {
+    const online = [...new Set([...this.clients].filter(c => c.roomId === roomId).map(c => c.userId))];
+    this.broadcastRoom(roomId, { t: 'presence', roomId, online });
   }
 
   private peerInRoom(roomId: string | undefined, userId: string) {

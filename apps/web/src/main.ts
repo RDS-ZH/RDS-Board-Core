@@ -94,6 +94,29 @@ class BoardGameSimulatorApp {
       onClose: () => this.hud.setInspectorActive(false)
     });
 
+    // 阶段二：联机对局顶栏「退出对局」——房主退出=结束全局（关房+全员回大厅），房客退出=仅自己离开，对局继续。
+    if (this.netOptions) {
+      const exitBtn = document.getElementById('btn-exit-net');
+      if (exitBtn) exitBtn.hidden = false;
+      exitBtn?.addEventListener('click', async () => {
+        const opts = this.netOptions!;
+        const isHost = opts.role === 'host';
+        const msg = isHost ? '确定结束对局吗？全员将被送回大厅。' : '确定退出对局吗？对局将继续进行。';
+        if (!window.confirm(msg)) return;
+        try { (this.session as NetSession).dispose?.(); } catch { /* 尽力断开 */ }
+        if (isHost) {
+          try {
+            await fetch('/api/rooms/' + opts.roomId + '/status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + opts.token },
+              body: JSON.stringify({ status: 'closed' })
+            });
+          } catch { /* 关房失败也允许返回，大厅轮询兑底 */ }
+        }
+        location.href = location.pathname;
+      });
+    }
+
     document.addEventListener('click', event => {
       const target = event.target as HTMLElement | null;
       const floor = target?.closest<HTMLElement>('[data-floor]')?.dataset.floor;
@@ -265,6 +288,12 @@ class BoardGameSimulatorApp {
     if (!module) throw new Error(`Unknown game module: ${gameId}`);
     if (this.netOptions) {
       const net = new NetSession(module, this.netOptions);
+      // 阶段二：presence → HUD 在线点；房主关闭房间 → 提示后回大厅。
+      net.onPresence = ids => this.hud?.setOnlinePlayers(ids);
+      net.onRoomClosed = () => {
+        this.hud?.showAnnouncement('房主已结束对局');
+        setTimeout(() => { location.href = location.pathname; }, 1200);
+      };
       // Async connect; failures surface as onNotice toasts, not boot crashes.
       void net.start();
       return net;
@@ -626,6 +655,12 @@ function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | un
     const raw = params.get('roster');
     if (raw) roster = JSON.parse(raw);
   } catch { /* 忽略坏 roster，退回内核默认名 */ }
+  // 阶段二：座位 → hub userId（JSON），presence 反映射回玩家卡在线点。
+  let seatOwners: NetSessionOptions['seatOwners'];
+  try {
+    const raw = params.get('owners');
+    if (raw) seatOwners = JSON.parse(raw);
+  } catch { /* 忽略坏 owners，在线点不显示 */ }
   return {
     hub,
     roomId: room,
@@ -634,7 +669,8 @@ function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | un
     playerId: player,
     hostId,
     scenario: params.get('scenario') ?? undefined,
-    roster
+    roster,
+    seatOwners
   };
 }
 
