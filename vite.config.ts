@@ -1,10 +1,22 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 
 const pkg = (name: string) =>
   fileURLToPath(new URL(`./packages/${name}/src`, import.meta.url));
 
+const commitHash = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', { encoding: 'utf-8' }).trim();
+  } catch {
+    return 'dev';
+  }
+})();
+
 export default defineConfig({
+  define: {
+    __COMMIT_HASH__: JSON.stringify(commitHash)
+  },
   resolve: {
     alias: [
       { find: '@rds/kernel', replacement: pkg('kernel') },
