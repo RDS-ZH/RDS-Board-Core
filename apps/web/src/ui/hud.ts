@@ -1483,6 +1483,10 @@ export class BoardGameHUD {
               ? placementPanel
               : snapshot.actions.length > 0
               ? buttons
+              : snapshot.gameOver
+              ? `<div class="empty-hint"><span class="e-ico">🏁</span><span>对局已结束${
+                  snapshot.winnerLabel ? ` — 胜者：${snapshot.winnerLabel}` : ''
+                }${snapshot.winnerReason ? ` · ${snapshot.winnerReason}` : ''}</span></div>`
               : `<div class="empty-hint"><span class="e-ico">◌</span><span>暂无可执行的合法动作 — 等待其他玩家，或正在结算响应栈。</span></div>`
           }
         </div>

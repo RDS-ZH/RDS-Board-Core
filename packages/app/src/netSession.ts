@@ -910,7 +910,8 @@ export class NetSession implements GamePresenter {
           : state.winner
           ? actorName(state.winner)
           : ''
-        : ''
+        : '',
+      winnerReason: state.gameOver ? state.winnerReason : undefined
     };
   }
 

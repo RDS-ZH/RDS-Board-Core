@@ -979,7 +979,8 @@ export class UniversalSession implements GamePresenter {
           : state.winner
           ? this.engine.getActorName(state.winner)
           : ''
-        : ''
+        : '',
+      winnerReason: state.gameOver ? state.winnerReason : undefined
     };
 
     // Diff trait ladders last: the snapshot above already carries the new

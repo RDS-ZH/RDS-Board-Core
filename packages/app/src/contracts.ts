@@ -323,6 +323,8 @@ export interface GameSnapshot {
 
   gameOver: boolean;
   winnerLabel: string;
+  /** Why the outcome fired, shown in the end-of-game overlay. */
+  winnerReason?: string;
 }
 
 export type NoticeKind = 'announce' | 'event' | 'error';

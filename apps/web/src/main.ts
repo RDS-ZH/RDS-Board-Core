@@ -31,6 +31,10 @@ class BoardGameSimulatorApp {
   private lastPlacementKey = '';
   /** Net sessions: show the game-over overlay exactly once per session. */
   private netGameOverShown = false;
+  /** Local sessions: same guard, so the end-of-game overlay appears once. */
+  private localGameOverShown = false;
+  /** Scenario the current session started from, so "再来一局" can replay it. */
+  private activeScenario?: string;
   private lastRoomId = '';
   private freeDragEntityId?: string;
   private readonly initialScenario?: string;
@@ -45,6 +49,7 @@ class BoardGameSimulatorApp {
 
     const params = new URLSearchParams(window.location.search);
     this.initialScenario = params.get('scenario') ?? undefined;
+    this.activeScenario = this.initialScenario;
     this.currentGameId = params.get('game') ?? 'catan';
     this.netOptions = parseNetSessionOptions(params);
 
@@ -331,7 +336,68 @@ class BoardGameSimulatorApp {
         this.netGameOverShown = true;
         showNetGameOverOverlay(this.netOptions);
       }
+
+      // Local sessions used to end with nothing but an empty action dock, which
+      // reads like a hang. Announce the outcome and offer a replay.
+      if (snapshot.gameOver && !this.netOptions && !this.localGameOverShown) {
+        this.localGameOverShown = true;
+        this.showLocalGameOverOverlay(snapshot);
+      }
     });
+  }
+
+  /** End-of-game card for single-machine play: winner, reason, replay. */
+  private showLocalGameOverOverlay(snapshot: GameSnapshot): void {
+    document.getElementById('local-gameover-overlay')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'local-gameover-overlay';
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:900;display:flex;align-items:center;justify-content:center;background:rgba(13,17,23,.78)';
+
+    const card = document.createElement('div');
+    card.style.cssText =
+      'min-width:320px;max-width:460px;background:#161d29;border:1px solid #2b3442;border-radius:12px;' +
+      'padding:26px 32px;text-align:center;font-family:system-ui,sans-serif;color:#e6e1d5;' +
+      'box-shadow:0 12px 48px rgba(0,0,0,.55)';
+
+    const title = document.createElement('h2');
+    title.textContent = '对局结束';
+    title.style.cssText = 'margin:0 0 10px;color:#d9b45b;letter-spacing:1px;font-size:20px';
+
+    const winner = document.createElement('p');
+    winner.textContent = snapshot.winnerLabel ? `胜者：${snapshot.winnerLabel}` : '无人获胜';
+    winner.style.cssText = 'margin:0 0 6px;font-size:15px;font-weight:600;color:#f0e4c4';
+
+    const reason = document.createElement('p');
+    reason.textContent = snapshot.winnerReason ?? '';
+    reason.style.cssText = 'margin:0 0 20px;color:#8b94a3;font-size:13px;line-height:1.5';
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;justify-content:center';
+
+    const replay = document.createElement('button');
+    replay.textContent = '↻ 再来一局';
+    replay.style.cssText =
+      'background:#d9b45b;color:#17130a;border:none;border-radius:6px;padding:9px 20px;' +
+      'font-size:14px;font-weight:600;cursor:pointer';
+    replay.addEventListener('click', () => {
+      overlay.remove();
+      this.localGameOverShown = false;
+      this.restartScenario(this.activeScenario ?? '');
+    });
+
+    const close = document.createElement('button');
+    close.textContent = '关闭';
+    close.style.cssText =
+      'background:transparent;color:#c9c1b1;border:1px solid #2b3442;border-radius:6px;' +
+      'padding:9px 20px;font-size:14px;cursor:pointer';
+    close.addEventListener('click', () => overlay.remove());
+
+    row.append(replay, close);
+    card.append(title, winner, reason, row);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
   }
 
   private switchGame(gameId: string): void {
@@ -344,6 +410,9 @@ class BoardGameSimulatorApp {
 
     this.session.dispose();
     this.currentGameId = gameId;
+    this.activeScenario = undefined;
+    this.localGameOverShown = false;
+    document.getElementById('local-gameover-overlay')?.remove();
     this.session = this.createSession(gameId);
 
     this.scene.resetForNewGame();
@@ -384,6 +453,9 @@ class BoardGameSimulatorApp {
     const scenario = scenarioId === '' ? undefined : scenarioId;
 
     this.session.dispose();
+    this.activeScenario = scenario;
+    this.localGameOverShown = false;
+    document.getElementById('local-gameover-overlay')?.remove();
     this.session = this.createSession(this.currentGameId, scenario);
 
     this.scene.resetForNewGame();

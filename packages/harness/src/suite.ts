@@ -2140,6 +2140,123 @@ test('fixture betrayal: equipment use respects once-per-turn and restores green 
   );
 });
 
+test('fixture betrayal: NPC movement actually relocates the monster and spends a move', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 11, { scenario: 'haunt_zombie' });
+
+  // Walk turns until a zombie NPC has movement available.
+  let npcId = '';
+  for (let i = 0; i < 10 && !npcId; i++) {
+    const s = engine.getRawState();
+    const active = s.activeActorId ?? s.activePlayerId;
+    const legal = engine.getLegalActions(active);
+    if (s.npcs?.[active] && legal.some(action => action.type === 'MOVE_NPC')) {
+      npcId = active;
+      break;
+    }
+    const advance = legal.find(a => a.type === 'END_TURN') ?? legal.find(a => a.type === 'END_NPC_TURN');
+    assert(!!advance, 'a turn-ending action exists while walking to the NPC turn');
+    engine.dispatch(advance!);
+  }
+  assert(!!npcId, 'reached an NPC turn with movement');
+
+  const before = engine.getRawState();
+  const npc = before.npcs![npcId];
+  const entityId = npc.entityId!;
+  const fromRoom = String(before.entities[entityId].components.custom?.roomId ?? '');
+  const movesBefore = Number(npc.customProps.movesLeft);
+  assert(fromRoom.length > 0, 'monster starts in a real room');
+
+  const move = engine.getLegalActions(npcId).find(action => action.type === 'MOVE_NPC')!;
+  const target = String(move.targetNodeId);
+  assert(engine.dispatch(move).ok, 'NPC move dispatch is accepted');
+
+  const after = engine.getRawState();
+  assertEqual(
+    String(after.entities[entityId].components.custom?.roomId ?? ''),
+    target,
+    'the monster actually relocated to the target room'
+  );
+  assertEqual(
+    Number(after.npcs![npcId].customProps.movesLeft),
+    movesBefore - 1,
+    'one movement point was spent'
+  );
+  assertEqual(
+    String(after.npcs![npcId].customProps.roomId ?? ''),
+    target,
+    'the NPC record mirrors the entity room so the renderer can frame it'
+  );
+});
+
+test('fixture betrayal: medical kit lets the healer choose which physical trait to restore', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'trade_ready' });
+  const raw = engine.getRawState();
+  const kit = grantItem(raw, 'p1', 'medical_kit');
+
+  // Wound only the speed track; might keeps its green index.
+  damagePlayer(raw, 'p1', 'PHYSICAL', 2, 'speed');
+  const speedIdxBefore = raw.players.p1.customProps.traitIndex.speed;
+  const mightIdxBefore = raw.players.p1.customProps.traitIndex.might;
+  const greenIdx = raw.players.p1.customProps.startIndex.speed;
+  assert(speedIdxBefore < greenIdx, 'speed is below its green value');
+  assertEqual(mightIdxBefore, raw.players.p1.customProps.startIndex.might, 'might is untouched');
+
+  raw.activePlayerId = 'p1';
+  raw.activeActorId = 'p1';
+  raw.players.p1.customProps.forcedRoll = { value: 8 }; // knowledge 8 → heal 3 steps
+
+  const use = engine.getLegalActions('p1').find(
+    action => action.type === 'USE_ITEM' && action.entityId === kit.id
+  );
+  assert(!!use, 'medical kit is usable');
+  const traitField = use!.fields?.find(field => field.key === 'trait');
+  assert(!!traitField, 'the medical kit exposes a trait choice');
+  assertEqual(
+    (traitField!.options ?? []).map(option => option.value).join(','),
+    'might,speed',
+    'both physical tracks are offered'
+  );
+
+  assert(engine.dispatch({ ...use!, payload: { target: 'p1', trait: 'speed' } }).ok, 'kit used on speed');
+
+  const after = engine.getRawState().players.p1.customProps;
+  assertEqual(after.traitIndex.speed, greenIdx, 'the chosen track (speed) was restored to green');
+  assertEqual(
+    after.traitIndex.might,
+    mightIdxBefore,
+    'the previously hardcoded might track was left alone'
+  );
+});
+
+test('fixture betrayal: a finished haunt reports the reason so the UI can end the game', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 11, { scenario: 'haunt_zombie' });
+  const raw = engine.getRawState();
+
+  // Take every hero out of the haunt.
+  const heroes = Object.values(raw.players).filter(player => player.role !== 'TRAITOR');
+  assert(heroes.length > 0, 'the haunt starts with heroes');
+  for (const hero of heroes) {
+    hero.alive = false;
+    hero.customProps.banished = true;
+  }
+
+  // The outcome is evaluated on the next kernel transition.
+  const active = raw.activeActorId ?? raw.activePlayerId;
+  const advance = engine
+    .getLegalActions(active)
+    .find(action => action.type === 'END_TURN' || action.type === 'END_NPC_TURN');
+  assert(!!advance, 'a turn-ending action is available');
+  engine.dispatch(advance!);
+
+  const state = engine.getRawState();
+  assert(state.gameOver, 'the game reports gameOver once every hero is out');
+  assert(!!state.winnerReason, 'a human-readable reason lands on the state');
+  assert(
+    String(state.winnerReason).includes('所有英雄'),
+    `the reason names the condition (got ${state.winnerReason})`
+  );
+});
+
 test('fixture betrayal: ongoing curses live on the kernel effect list', () => {
   const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'trade_ready' });
   const raw = engine.getRawState();
