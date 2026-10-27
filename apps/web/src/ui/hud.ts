@@ -59,6 +59,9 @@ export class BoardGameHUD {
   private historyCollapsed = false;
   /** Active isolated floor in the 3D scene ('ALL' displays all floors). */
   private selectedFloor = 'ALL';
+  /** Phone shell: whether the action drawer is expanded. */
+  private dockOpen = false;
+  private shellMedia?: MediaQueryList;
   /** Minimap can be collapsed to conserve screen space. */
   private minimapCollapsed = false;
 
@@ -216,6 +219,32 @@ export class BoardGameHUD {
   private bindPresenter(presenter: GamePresenter): void {
     this.unsubSnapshot = presenter.subscribe(snapshot => this.render(snapshot));
     this.unsubNotice = presenter.onNotice(notice => this.renderNotice(notice));
+  }
+
+  /**
+   * Phone shell: the topbar cannot fit the scenario/viewer/camera controls, so
+   * they are relocated into the side panel instead of being dropped. The same
+   * DOM nodes move, so their listeners and values survive.
+   */
+  private applyShellLayout(): void {
+    const slot = this.container.querySelector('#side-panel-extras') as HTMLElement | null;
+    const actions = this.container.querySelector('.topbar-actions') as HTMLElement | null;
+    if (!slot || !actions) return;
+
+    const movers = ['.scenario-switch', '.viewer-switch', '.cam-switch']
+      .map(sel => this.container.querySelector(sel) as HTMLElement | null)
+      .filter((el): el is HTMLElement => !!el);
+
+    const phone = window.matchMedia('(max-width: 767px)').matches;
+    for (const el of movers) {
+      if (phone) {
+        if (el.parentElement !== slot) slot.append(el);
+      } else if (el.parentElement !== actions) {
+        // Restore the original order: before the first icon button.
+        const anchor = actions.querySelector('.icon-btn');
+        actions.insertBefore(el, anchor);
+      }
+    }
   }
 
   private openPayloadForm(action: UiAction): void {
@@ -677,6 +706,7 @@ export class BoardGameHUD {
   }
 
   private renderSkeleton(): void {
+    this.container.classList.add('app-shell');
     this.container.innerHTML = `
       <header class="topbar">
         <div class="brand">
@@ -696,6 +726,8 @@ export class BoardGameHUD {
           `
           ).join('')}
         </nav>
+
+        <button class="shell-toggle" data-toggle="rail" aria-label="显示角色栏">☰ 角色</button>
 
         <div class="topbar-actions">
           <div class="scenario-switch" id="scenario-switch" style="display:none" title="切换起始剧本 · 会重开牌局">
@@ -718,6 +750,7 @@ export class BoardGameHUD {
           <button class="icon-btn danger" id="btn-exit-net" aria-label="退出对局" hidden>⎋<span class="tip">退出对局</span></button>
           <button class="icon-btn" id="btn-audio" aria-label="音效">♪<span class="tip">音效开关</span></button>
           <button class="icon-btn" id="btn-inspector" aria-label="数学模型">𝒢<span class="tip">内核检查器 · I</span></button>
+          <button class="shell-toggle" data-toggle="side" aria-label="显示信息栏">▤ 信息</button>
         </div>
       </header>
 
@@ -726,6 +759,7 @@ export class BoardGameHUD {
            overlapping; each used to be absolutely positioned with a
            hand-computed top offset. -->
       <div class="side-column" id="side-column">
+        <div class="side-panel-extras" id="side-panel-extras"></div>
         <aside class="room-card" id="room-card" style="display:none"></aside>
         <aside class="mansion-minimap" id="mansion-minimap" style="display:none"></aside>
         <aside class="activity-feed" id="activity-feed"></aside>
@@ -734,6 +768,24 @@ export class BoardGameHUD {
       <div class="announcement-banner" id="announce" style="display:none"></div>
       <div class="payload-layer" id="payload-layer" style="display:none"></div>
     `;
+
+    // Tablet/phone slide-overs. Only one panel is open at a time so the board
+    // is never covered by two overlays.
+    this.applyShellLayout();
+    window.addEventListener('resize', () => this.applyShellLayout());
+    this.shellMedia = window.matchMedia('(max-width: 767px)');
+    this.shellMedia.addEventListener('change', () => this.applyShellLayout());
+
+    this.container.querySelectorAll<HTMLElement>('[data-toggle]').forEach(button => {
+      button.addEventListener('click', () => {
+        const which = button.dataset.toggle === 'rail' ? 'data-rail' : 'data-side';
+        const other = which === 'data-rail' ? 'data-side' : 'data-rail';
+        const isOpen = this.container.getAttribute(which) === 'open';
+        this.container.removeAttribute(other);
+        if (isOpen) this.container.removeAttribute(which);
+        else this.container.setAttribute(which, 'open');
+      });
+    });
 
     this.container.querySelectorAll<HTMLElement>('.game-pill').forEach(button => {
       button.addEventListener('click', () => {
@@ -1458,6 +1510,11 @@ export class BoardGameHUD {
       : '';
 
     dock.innerHTML = `
+      <button class="dock-handle" data-dock-toggle aria-expanded="${this.dockOpen ? 'true' : 'false'}">
+        <span class="dh-grip"></span>
+        <span class="dh-label">${this.dockOpen ? '收起动作' : '展开动作'}</span>
+        <span class="dh-count">${snapshot.actions.length} 个可选</span>
+      </button>
       ${alert}
       ${
         snapshot.mission
@@ -1508,6 +1565,12 @@ export class BoardGameHUD {
     dock.querySelector('[data-place-confirm]')?.addEventListener('click', () => {
       const result = this.presenter.confirmPlacement();
       if (!result.ok) this.pushToast('⚠️', result.error ?? '放置被拒绝');
+    });
+
+    dock.setAttribute('data-dock', this.dockOpen ? 'open' : 'closed');
+    dock.querySelector('[data-dock-toggle]')?.addEventListener('click', () => {
+      this.dockOpen = !this.dockOpen;
+      dock.setAttribute('data-dock', this.dockOpen ? 'open' : 'closed');
     });
 
     // Hovering a card surfaces its description in the fixed bar above the fan,

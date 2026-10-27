@@ -264,7 +264,7 @@ apps/web/src/ui/
 
 **新增 `scripts/probe-design-tokens.mjs`（`pnpm probe:tokens`）**：断言无硬编码 px 字号、无「别名指向主题可覆盖令牌」、无无 fallback 的未定义引用。已用注入法验证该守卫**确实会报错**（不是空转）。
 
-### Phase 2 · 外壳与布局（2–3 天）
+### Phase 2 · 外壳与布局 ✅ 已完成（2026-10-28）
 
 - 实现 `app-shell` Grid 骨架 + 三种 shell；
 - 右侧面板迁入 `side` 区域（消除重叠的结构性来源）；
@@ -272,6 +272,21 @@ apps/web/src/ui/
 - 加 `@container` 到玩家卡与行动扇形（按自身宽度重排，而非看视口）。
 
 验收：390 / 820 / 1440 三档 `overlaps: none` 且无溢出；触控目标 ≥ 44px。
+
+**实际落地**：
+
+- 新增 `apps/web/src/ui/layout-shell.css`：`.ui-layer.app-shell` 用命名区域 `topbar / rail / board / side` 布局，**面板成为网格项**，重叠从"需要人工避免"变为结构上不可能。
+- `styles.css` 中 6 条面板定位（`.topbar`/`.player-rail`/`.room-card`/`.mansion-minimap`/`.activity-feed`/`.action-dock`）的 `position:absolute` 与 `top/left/right/bottom` **直接删除**——不是覆盖，是移除死代码。absolute 从 **41 → 34**，剩余 34 条全部是浮层、伪元素与提示框，**无一条用于面板定位**。
+- 三种 shell：桌面（≥1200 三栏）、平板（768–1199 两栏 + 信息栏改为右侧滑出）、手机（<768 单栏 + 角色栏滑出 + 行动坞改为**底部抽屉**，默认只露 44px 手柄）。
+- `@container` 用于角色栏与信息栏（`container-name: rail / side`），按**自身宽度**而非视口重排。
+- 顶栏响应式：`scenario-switch`(260px) 与 `viewer-switch`(168px) 是溢出主因，窄屏收起标签并限宽；手机端这两个控件**迁移进信息面板**（`applyShellLayout()` 移动同一批 DOM 节点，监听器与取值都保留），不是删功能。
+
+**踩到的两个坑**：
+
+1. **抽屉关闭态让外壳变成横向滚动容器**：滑出面板用 `translateX(100%)` 停在视口外，使 `.ui-layer` 出现 `scrollWidth 1052 > clientWidth 820`；点开抽屉时浏览器把它横向滚动，**整个网格左移 398px**。用 `overflow: clip` 修掉。
+2. **抽屉本就该覆盖棋盘**：探针原先对所有面板两两断言"不重叠"，滑出面板必然失败。已改为**只对静态面板**断言不重叠，浮层单独断言"在视口内"。
+
+**探针升级**：`pnpm probe:ui` 现在测 **12 个状态**（7 档视口的默认态 + 窄屏的抽屉展开态），因为关闭的抽屉对探针不可见——只测默认态等于没测里面那些面板。
 
 ### Phase 3 · 组件化（3–5 天，可分多次）
 

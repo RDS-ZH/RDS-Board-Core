@@ -297,23 +297,4 @@
 
 /* The fan is narrower than the old grid, so let the dock shrink to content
    instead of reserving 859px. */
-.action-dock:has(> .dock-fan, > .dock-actions .dock-fan) {
-  width: max-content;
-  max-width: min(920px, calc(100vw - 840px));
-  min-width: 0;
-}
 
-.action-dock .dock-actions:has(> .dock-fan) {
-  min-width: 340px;
-}
-
-/* Shrink-to-content width while a fan is present. */
-.action-dock:has(.dock-fan) {
-  width: max-content;
-  max-width: min(920px, calc(100vw - 840px));
-  min-width: 0;
-}
-
-.dock-actions:has(> .dock-fan) {
-  min-width: 340px;
-}
