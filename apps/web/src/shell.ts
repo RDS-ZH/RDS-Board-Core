@@ -1,4 +1,5 @@
 import './lobby/lobby.css';
+import { showGameLoading } from './gameLoading';
 
 /**
  * 统一外壳（unified shell）：单一 SPA 同时承载「联机大厅」与「游戏本体」。
@@ -39,6 +40,8 @@ async function enterGameView(rawQuery: string): Promise<void> {
     return;
   }
   gameStarted = true;
+  // 联机开局：立即盖全屏加载动效，掩盖 main chunk 加载/字体解码/场景首绘的中间态
+  if (query) showGameLoading();
   // 进入对局前销毁大厅（关闭其 WebSocket 与轮询），避免同用户双连接残留在信令房间内
   lobbyHandle?.destroy();
   lobbyHandle = null;

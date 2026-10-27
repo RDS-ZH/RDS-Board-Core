@@ -3,6 +3,7 @@ import { BoardGameScene, CameraPreset } from './render/scene';
 import { BoardGameAudio } from './render/audio';
 import { ensureCanvasFontsReady } from './render/fonts';
 import { checkWebGLSupport, renderWebGLErrorModal } from './render/webglSupport';
+import { hideGameLoading } from './gameLoading';
 import { BoardGameHUD } from './ui/hud';
 import { MathematicalInspectorUI } from './ui/mathInspector';
 import { CameraView, GameSnapshot, PresentationPorts } from '@rds/app/contracts';
@@ -240,7 +241,11 @@ class BoardGameSimulatorApp {
         ? `${snapshot.placement.defId}:${snapshot.placement.rotation}`
         : '';
       this.scene.syncState(snapshot.board, snapshot.placement, layoutForGame(this.currentGameId));
+      // 首帧桌面已可绘制：撤掉开局加载遮罩（若存在）
+      hideGameLoading();
     });
+    // 兜底：字体探测异常卡死时也别把遮罩留成黑屏
+    setTimeout(hideGameLoading, 15000);
 
     this.wireBootScreen();
     this.wireKeyboard();
@@ -490,6 +495,7 @@ function bootApp(): void {
   const check = checkWebGLSupport();
   if (!check.supported) {
     console.error('[RDS-Board] WebGL is not available:', check.error, check.detail);
+    hideGameLoading();
     renderWebGLErrorModal(check.detail || check.error);
     return;
   }
