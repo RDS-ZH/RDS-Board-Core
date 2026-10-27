@@ -1,0 +1,305 @@
+# UI 架构升级方案
+
+> 目标：从「一堆绝对定位的面板 + 手算偏移」升级为**可多端复用的分层设计系统**，
+> 同时解决当前的字号过小与面板重叠。
+>
+> 本文是**方案**，不含实现。每个 Phase 都可独立合并、独立验收。
+> 最近核对：2026-10-28。
+
+---
+
+## 1. 现状诊断（实测，非估算）
+
+### 1.1 结构性问题：面板靠绝对定位 + 魔法偏移
+
+右侧三块面板（房间档案、洋馆小地图、近期动态）全部 `position: absolute`，彼此不参与文档流，位置由**手写常数**决定：
+
+```css
+.room-card       { top: 88px; }
+.mansion-minimap { top: 320px; }
+#room-card[style*="none"] ~ .mansion-minimap { top: 88px; }
+```
+
+`top: 320px` 隐含假设「房间卡永远不超过 212px 高」。一旦房间卡内容变多（房间描述 + 在场者 + 物品/预兆行），高度越界就直接**压到小地图上**——这正是截图里看到的重叠。
+
+> 用兄弟选择器 `[style*="none"]` 去猜一个面板的可见性，本身就是不可维护的写法：
+> 任何内联样式写法变化都会静默失效。
+
+### 1.2 字号低于可读下限
+
+实测生效字号：
+
+| 元素 | 当前 | 建议最小 |
+| --- | --- | --- |
+| 玩家名 `.pc-name` | 12.5px | 14px |
+| 属性值 `.pc-row .v` | **10.5px** | 13px |
+| 属性键 `.trait-key` | **10px** | 12px |
+| 小地图房间名 `.mm-name` | 11px | 12.5px |
+| 动态条目 `.af-text` | **10.5px** | 13px |
+| 扇形说明条 `.fh-detail` | **10.5px** | 12.5px |
+| 任务描述 `.al-desc` | 11px | 13px |
+
+`styles.css` 里 **167 处硬编码 px 字号**，只有 **1 处** `clamp()`/`rem`。没有任何字号阶梯，改一处不知道会连带影响哪里。
+
+### 1.3 移动端实际不可用
+
+| 视口 | 行动坞 | 重叠 |
+| --- | --- | --- |
+| 1440×900 | 511×196 ✅ | 无 |
+| 820×1180 | **0×495** ❌ | 无 |
+| 390×844 | **0×495** ❌ | rail × 小地图 98px、rail × 动态 11px |
+
+根因：
+
+```css
+.action-dock {
+  width: min(920px, calc(100vw - 840px));  /* 390px 时算出 -450px */
+  min-width: 470px;
+}
+```
+
+视口窄于 840px 时宽度表达式为**负数**，被浏览器钳成 0，同时 `min-width` 又把内部卡片撑成竖排 → 高度 495px。
+
+### 1.4 代码规模与技术债指标
+
+| 指标 | 数值 | 含义 |
+| --- | --- | --- |
+| `styles.css` | 3818 行 | 单文件样式，无分层 |
+| `hud.ts` | 1461 行 / 11 个 `render*` / **23 处 `innerHTML =`** | 手写字符串模板，全量重建 |
+| `position: absolute` 规则 | **41 条** | 布局不参与文档流 |
+| 硬编码 px 字号 | **167 处** | 无字号阶梯 |
+| `clamp()` / `rem` | 1 处 | 无流体排版 |
+| `@media` | 5 处 | 断点不成体系 |
+| `@container` | **0 处** | 无组件级响应式 |
+
+每次快照变化都整段重建 `innerHTML`，焦点/滚动/悬停状态因此反复丢失——这也是之前「轮询重置按钮焦点」那类问题的同源病根。
+
+---
+
+## 2. 业界方案调研
+
+### 2.1 设计令牌（Design Tokens）是分层的基础
+
+主流做法是把「颜色/间距/字号/圆角/阴影」抽成**三层令牌**，而不是散落的字面量：
+
+- **primitive（原始层）**：`--gray-900`、`--space-2`、`--font-13`
+- **semantic（语义层）**：`--surface-panel`、`--text-muted`、`--gap-panel`
+- **component（组件层）**：`--dock-pad-y`、`--card-radius`
+
+组件只消费 semantic/component 层，改主题只动 primitive。W3C DTCG 已把令牌格式标准化，可导出多端（Web / iOS / Android）。
+参考：[Compound Design System · Naming Approach](https://compound.thephoenixgroup.com/latest/guidelines/foundations/tokens/naming-approach-sMf2dkF9)、[Design tokens and theming](https://github.com/sujeet-pro/sujeet.pro/blob/main/content/articles/design-tokens-and-theming/README.md)、[现代 CSS 颜色特性在设计系统中的用法](https://zeroheight.com/blog/leveraging-modern-css-color-features-in-your-design-system/)
+
+### 2.2 响应式：容器查询为主，媒体查询定义外壳形态
+
+2025 年的共识是**组件用容器查询、页面用媒体查询**：
+
+- 面板宽度受侧栏影响而变，媒体查询只看视口会判断错；`@container` 让组件按**自身可用宽度**重排；
+- 视口级断点只用来决定「外壳形态」（桌面三栏 / 平板两栏 / 手机单栏 + 底部抽屉）。
+
+参考：[Intrinsic Responsiveness](https://github.com/digital-gravy/etch-docs/blob/f3e684e3cfe72e7d852ae854951ac7705c34fd7b/docs/docs/responsive-development/intrinsic-responsiveness.md)、[Responsive patterns（容器查询实践）](https://github.com/yonatangross/orchestkit/blob/main/src/skills/responsive-patterns/SKILL.md)
+
+### 2.3 流体排版
+
+用 `clamp()` 让字号随视口平滑变化，并设**下限**保证可读：
+
+```css
+--font-body: clamp(0.8125rem, 0.78rem + 0.16vw, 0.875rem); /* 13 → 14px */
+```
+
+这是替代「167 处固定 px」的标准手段，也是移动端不必再写一套字号的唯一办法。
+
+### 2.4 组件化：Lit 而非重写为 React
+
+| 方案 | 适配度 | 判断 |
+| --- | --- | --- |
+| **Lit 3** | 高 | 原生 Web Components、~5KB、纯 TS、可与现有 CSS 共存、**可逐个组件迁移** |
+| React / Vue | 低 | 需引入虚拟 DOM + 构建链改造，1461 行手写模板要整体重写，风险最大 |
+| 纯手写 vanilla | 中 | 无需新依赖，但要自己造响应式与生命周期，等于重造轮子 |
+
+推荐 **Lit**，理由是可**渐进迁移**：先让 `hud.ts` 里的一个面板变成 Lit 元素，其余保持原样，两者可共存。它也不违反仓库的 `src/ui` 只 import `app/contracts` 的分层约束。
+参考：[alien-lit — Lit 的响应式状态方案](https://saman-taghavi.github.io/alien-lit/examples/theming)
+
+### 2.5 桌游/游戏 HUD 的既有经验
+
+Board Game Arena 的 UX 指南给出的可迁移要点：**主要操作区不可被遮挡**、**触控目标要足够大**、**信息层级靠区域划分而非字号堆叠**。
+参考：[BGA Studio Guidelines](https://en.doc.boardgamearena.com/BGA_Studio_Guidelines)、[BGA UX Use Case](http://en.doc.boardgamearena.com/images/5/57/Guidelines_UX_new_compressed.pdf)
+
+### 2.6 触控与可访问性硬指标
+
+- 触控目标 **≥ 44×44 CSS px**；
+- 正文对比度 **≥ 4.5:1**（WCAG AA）；
+- 移动端必须处理 `env(safe-area-inset-*)`（刘海/手势条）；
+- 键盘可达：`focus-visible` 必须可见，不依赖 `hover`。
+参考：[移动端设计规则](https://github.com/mrclrchtr/skills/blob/6062be05b8edef557a0cf7f8ff072e4fa1debb96/plugins/web-design-guidelines/references/core/mobile.md)、[觸控目標尺寸規則](https://law.moda.gov.tw/Download.ashx?FileID=244&id=FL096186&type=LAW)
+
+---
+
+## 3. 目标架构
+
+### 3.1 分层（自下而上）
+
+```
+apps/web/src/ui/
+├─ tokens/
+│   ├─ primitives.css      # 原始层：色阶/间距/字号/圆角/时长
+│   ├─ semantic.css        # 语义层：surface/text/border/gap/type
+│   └─ themes.css          # 主题：slate（默认）/ gothic（山屋）
+├─ primitives/             # 无业务语义的基础件
+│   ├─ panel.ts            # 面板容器（标题/折叠/滚动）
+│   ├─ chip.ts  meter.ts  button.ts  toast.ts
+├─ components/             # 有业务语义的复合件
+│   ├─ player-card.ts      # 角色卡（属性阶梯）
+│   ├─ action-fan.ts       # 行动扇形手牌
+│   ├─ minimap.ts          # 洋馆小地图
+│   ├─ activity-feed.ts    # 近期动态
+│   ├─ room-dossier.ts     # 房间档案
+│   └─ action-detail.ts    # 动作详情弹层
+├─ shells/
+│   ├─ desktop-shell.ts    # 三栏：左角色 / 中棋盘 / 右信息
+│   ├─ tablet-shell.ts     # 两栏：棋盘 + 可切换侧栏
+│   └─ mobile-shell.ts     # 单栏：棋盘 + 底部抽屉
+└─ hud.ts                  # 只剩「编排」：订阅快照 → 分发给组件
+```
+
+**关键约束**：`hud.ts` 不再产生任何 `innerHTML` 模板字符串，只做数据分发。组件各自负责自己的渲染与生命周期。
+
+### 3.2 布局模型：CSS Grid 外壳 + 区域分配
+
+用 Grid 的命名区域取代 41 条绝对定位：
+
+```css
+.app-shell {
+  display: grid;
+  height: 100dvh;
+  grid-template-columns: var(--rail-w) 1fr var(--side-w);
+  grid-template-rows: var(--topbar-h) 1fr auto;
+  grid-template-areas:
+    "topbar topbar topbar"
+    "rail   board  side"
+    "rail   dock   side";
+  gap: var(--gap-shell);
+}
+```
+
+好处：
+
+- 面板高度由**内容**决定，彼此**不可能重叠**——重叠从「需要人工避免」变成「结构上不可能」；
+- 侧栏可滚动（`overflow: auto` + `min-height: 0`），不再溢出压住别的面板；
+- 换端只改 `grid-template-areas`，组件本身不动。
+
+### 3.3 排版阶梯（流体 + 下限）
+
+| 令牌 | 用途 | 值 |
+| --- | --- | --- |
+| `--font-xs` | 角标/键位 | `clamp(0.6875rem, 0.66rem + 0.1vw, 0.75rem)` → 11–12px |
+| `--font-sm` | 次要说明 | `clamp(0.75rem, 0.72rem + 0.12vw, 0.8125rem)` → 12–13px |
+| `--font-body` | 正文 | `clamp(0.8125rem, 0.78rem + 0.16vw, 0.875rem)` → 13–14px |
+| `--font-title` | 面板标题 | `clamp(0.9375rem, 0.9rem + 0.2vw, 1.0625rem)` → 15–17px |
+
+**硬性下限**：任何可见文字不低于 **12px**；正文不低于 **13px**。这条进 lint/回归。
+
+### 3.4 间距与触控
+
+- 间距阶梯 `--space-1..8`（4/6/8/12/16/20/24/32）；
+- 所有可点元素 `min-height: 44px`（移动端），桌面端可降到 36px 但**只能靠断点降，不能默认小**；
+- 移动端外壳加 `padding-bottom: env(safe-area-inset-bottom)`。
+
+### 3.5 三端外壳形态
+
+| 形态 | 断点 | 布局 | 行动栏 |
+| --- | --- | --- | --- |
+| 桌面 | ≥ 1200px | 左角色栏 / 中棋盘 / 右信息栏 | 底部横向扇形 |
+| 平板 | 768–1199px | 中棋盘 + 右侧栏可折叠 | 底部横向扇形 |
+| 手机 | < 768px | 单栏棋盘 | **底部抽屉**（上滑展开扇形，默认只露一行） |
+
+手机端的行动栏从「常驻横条」改为「可上滑抽屉」，是因为 390px 宽放不下 10 张扇形卡——抽屉展开时占用棋盘空间，收起时只留一条手柄。
+
+---
+
+## 4. 迁移路线（每阶段可独立合并）
+
+### Phase 0 · 止血（0.5 天）— 无需架构改动
+
+先修两个当下可见的缺陷，为后续争取时间：
+
+1. **面板重叠**：把右侧三块面板从「绝对定位 + 魔法偏移」改为**单一侧栏列**（`flex column` + `gap`），高度自然堆叠；
+2. **移动端行动坞宽度归零**：`width: min(920px, calc(100vw - 840px))` 改为 `width: min(920px, max(320px, calc(100vw - 840px)))`，并给 `<768px` 一个兜底宽度；
+3. **字号下限**：把实测 < 12px 的 7 处先提到 12–13px（不动全局）。
+
+验收：三种视口下 `overlaps: none`、`dock width > 0`、无 < 12px 文字。
+
+### Phase 1 · 设计令牌（1–2 天）
+
+- 建 `tokens/primitives.css` + `semantic.css` + `themes.css`；
+- 把 `styles.css` 里 167 处硬编码字号**机械替换**为令牌（可写脚本半自动）；
+- 现有 `--gold/--muted/--faint` 等并入 semantic 层，保留别名避免一次性改完；
+- 主题切换从 `[data-theme="gothic"]` 覆盖改为**主题只覆盖 semantic 层**。
+
+验收：`styles.css` 中 `font-size: <数字>px` 数量为 0；gothic 主题视觉无回归。
+
+### Phase 2 · 外壳与布局（2–3 天）
+
+- 实现 `app-shell` Grid 骨架 + 三种 shell；
+- 右侧面板迁入 `side` 区域（消除重叠的结构性来源）；
+- 移动端底部抽屉行动栏；
+- 加 `@container` 到玩家卡与行动扇形（按自身宽度重排，而非看视口）。
+
+验收：390 / 820 / 1440 三档 `overlaps: none` 且无溢出；触控目标 ≥ 44px。
+
+### Phase 3 · 组件化（3–5 天，可分多次）
+
+按「收益/风险」排序逐个迁移到 Lit：
+
+1. `action-fan`（交互最复杂，先啃硬骨头）
+2. `player-card`
+3. `activity-feed`（顺带解决全量重建导致的滚动/焦点丢失）
+4. `minimap` / `room-dossier`
+
+每迁一个，`hud.ts` 少一段 `innerHTML`。全部迁完后 `hud.ts` 只保留订阅与分发。
+
+验收：`hud.ts` 中 `innerHTML =` 数量为 0；快照更新时不再重建未变化的 DOM。
+
+### Phase 4 · 可访问性与多端收口（2 天）
+
+- 键盘全流程可达 + `focus-visible` 样式；
+- 对比度达 WCAG AA；
+- `prefers-reduced-motion` 时关闭动效；
+- 令牌导出为 DTCG JSON，为未来原生端/桌面端（Electron/Tauri）预留。
+
+---
+
+## 5. 测试策略调整
+
+现有 `test-ui-matrix` 只验证「页面能开、点得动」，不足以守住布局。新增一个**布局探针**（`scripts/probe-ui-layout.mjs`），对 3–4 档视口断言：
+
+| 断言 | 判据 |
+| --- | --- |
+| 面板互不重叠 | 任意两面板 AABB 交集 ≤ 4px |
+| 无溢出 | 所有面板在视口内 |
+| 字号下限 | 所有文本节点 computed font-size ≥ 12px |
+| 触控目标 | 所有 `button`/`[role=button]` 尺寸 ≥ 44×44（移动档） |
+| 对比度 | 正文前景/背景 ≥ 4.5:1 |
+
+这套断言能**在 CI 里拦住**本次这类回归（重叠、宽度归零、字号过小），而不依赖人眼。
+
+---
+
+## 6. 取舍与风险
+
+| 取舍 | 说明 |
+| --- | --- |
+| **不整体重写为 React** | 1461 行手写模板整体重写的回归面太大；Lit 可增量替换，任一时刻都能停在可用状态 |
+| **Phase 0 先止血** | 重叠与移动端宽度归零是**当前可用性缺陷**，不应等架构改造完成 |
+| **容器查询优先** | 面板宽度受侧栏影响，媒体查询会判断错；但外壳形态仍用媒体查询，两者分工明确 |
+| **Lit 引入需评审** | 新增运行时依赖（~5KB）。若不接受，退路是「vanilla + 极小响应式工具」，Phase 0–2 完全不受影响 |
+| **不追求像素级复刻现有外观** | 字号上调会改变密度，局部需要重新调间距；这是可读性的必要代价 |
+
+---
+
+## 7. 建议的下一步
+
+1. **先做 Phase 0**（半天，纯修缺陷，风险最低，立刻可见效果）；
+2. Phase 1 与 Phase 2 可以并行开工，但**令牌必须先落地**，否则 Grid 改造时又要硬编码一遍；
+3. Phase 3 的框架选型（Lit vs vanilla）建议在 Phase 1 结束前定，因为它决定组件写法。
+
+若认可本方案，我可以按 Phase 0 → 1 → 2 的顺序逐段提交 PR，每段都带对应的布局探针断言。
