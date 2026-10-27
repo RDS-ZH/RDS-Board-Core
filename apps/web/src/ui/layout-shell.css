@@ -1,0 +1,510 @@
+/* ============================================================
+   Phase 2 · app shell
+   ------------------------------------------------------------
+   Replaces the absolute-positioning layout with a CSS Grid whose named areas
+   describe the product structure. Panels are grid items, so "two panels
+   overlap" stops being something a developer has to remember and becomes
+   structurally impossible.
+
+   Three shells, chosen by viewport *shape* as well as width, because the
+   product targets 16:10 / 16:9 / 3:2 / 4:3 and 4:3 leaves much less horizontal
+   room at the same height:
+
+     desktop  >= 1200px   topbar / rail / board / side
+     tablet   768-1199px  topbar / rail / board, side is a slide-over
+     phone    < 768px     topbar / board, rail and side are slide-overs,
+                          the action dock becomes a bottom drawer
+
+   The 3D canvas lives behind this layer; the `board` cell is deliberately empty
+   so the scene shows through it.
+   ============================================================ */
+
+:root {
+  --topbar-h: 68px;
+  --rail-w: clamp(180px, 15vw, 216px);
+  --side-w: clamp(196px, 16vw, 254px);
+  --shell-edge: var(--space-6);
+  --shell-gap: var(--space-3);
+  /* Horizontal room the dock must leave for the rail and the side column. */
+  --dock-reserve: calc(var(--rail-w) + var(--side-w) + 48px);
+}
+
+.ui-layer.app-shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--side-w);
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  grid-template-areas:
+    'topbar topbar topbar'
+    'rail   board  side';
+  column-gap: var(--shell-gap);
+  /* The layer stays click-through; only the panels below take the pointer. */
+  pointer-events: none;
+}
+
+/* ---- panels become grid items ----------------------------------------- */
+
+.app-shell > .topbar {
+  grid-area: topbar;
+  position: static;
+  height: auto;
+  min-height: var(--topbar-h);
+  align-self: stretch;
+}
+
+.app-shell > .player-rail {
+  grid-area: rail;
+  position: static;
+  width: auto;
+  top: auto;
+  left: auto;
+  max-height: none;
+  min-height: 0;
+  margin: 0 0 var(--shell-edge) var(--shell-edge);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.app-shell > .side-column {
+  grid-area: side;
+  position: static;
+  width: auto;
+  top: auto;
+  right: auto;
+  max-height: none;
+  min-height: 0;
+  margin: 0 var(--shell-edge) var(--shell-edge) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The dock floats at the bottom of the board cell rather than reserving a row,
+   so the 3D scene keeps the full height behind it. */
+.app-shell > .action-dock {
+  grid-area: board;
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  justify-self: center;
+  align-self: end;
+  width: min(920px, 100%);
+  margin: 0 var(--shell-edge) var(--shell-edge);
+  max-height: min(52dvh, 340px);
+  overflow-y: auto;
+}
+
+/* Modals and the announcement banner are genuine overlays, not panels. */
+.app-shell > .announcement-banner,
+.app-shell > .payload-layer {
+  grid-area: 1 / 1 / -1 / -1;
+  z-index: 60;
+}
+
+.app-shell > .payload-layer {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---- slide-over controls ---------------------------------------------- */
+
+.shell-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-control);
+  color: var(--text-primary);
+  font-size: var(--type-xs);
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+
+.shell-toggle:hover {
+  border-color: var(--border-accent-soft);
+  background: var(--surface-control-hover);
+}
+
+/* ---- tablet: 768-1199px ------------------------------------------------
+   The rail keeps its column; the side panels become a slide-over so the board
+   is not squeezed by two permanent columns. */
+
+@media (max-width: 1199px) {
+  :root {
+    --rail-w: clamp(160px, 18vw, 190px);
+    --side-w: min(300px, 34vw);
+  }
+
+  .ui-layer.app-shell {
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    grid-template-areas:
+      'topbar topbar'
+      'rail   board';
+  }
+
+  .app-shell > .side-column {
+    position: fixed;
+    top: var(--topbar-h);
+    right: 0;
+    bottom: 0;
+    width: var(--side-w);
+    max-height: none;
+    margin: 0;
+    padding: var(--shell-edge);
+    background: var(--surface-panel);
+    backdrop-filter: blur(24px) saturate(140%);
+    border-left: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-3);
+    transform: translateX(100%);
+    transition: transform var(--duration-base) var(--ease-standard);
+    z-index: 45;
+  }
+
+  .app-shell[data-side='open'] > .side-column {
+    transform: translateX(0);
+  }
+
+  .shell-toggle[data-toggle='side'] {
+    display: inline-flex;
+  }
+}
+
+/* ---- phone: < 768px ----------------------------------------------------
+   Single column. The rail and the side panels are both slide-overs, and the
+   action dock collapses into a bottom drawer that only shows a handle until it
+   is opened. */
+
+@media (max-width: 767px) {
+  :root {
+    --rail-w: 0px;
+    --side-w: min(320px, 86vw);
+    --topbar-h: 56px;
+    --shell-edge: var(--space-3);
+  }
+
+  .ui-layer.app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'topbar'
+      'board';
+  }
+
+  .app-shell > .player-rail {
+    position: fixed;
+    top: var(--topbar-h);
+    left: 0;
+    bottom: 0;
+    width: min(280px, 84vw);
+    margin: 0;
+    padding: var(--shell-edge);
+    background: var(--surface-panel);
+    backdrop-filter: blur(24px) saturate(140%);
+    border-right: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-3);
+    transform: translateX(-100%);
+    transition: transform var(--duration-base) var(--ease-standard);
+    z-index: 45;
+  }
+
+  .app-shell[data-rail='open'] > .player-rail {
+    transform: translateX(0);
+  }
+
+  .app-shell > .side-column {
+    top: var(--topbar-h);
+  }
+
+  .shell-toggle[data-toggle='rail'] {
+    display: inline-flex;
+  }
+
+  .shell-toggle[data-toggle='side'] {
+    display: inline-flex;
+  }
+
+  /* ---- dock as a bottom drawer ---- */
+  .app-shell > .action-dock {
+    width: 100%;
+    margin: 0;
+    max-height: 60dvh;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--surface-panel);
+    backdrop-filter: blur(24px) saturate(140%);
+    border-top: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    box-shadow: var(--shadow-3);
+    z-index: 40;
+  }
+
+  /* Collapsed: only the handle and the one-line hint stay visible. */
+  .app-shell > .action-dock:not([data-dock='open']) > .dock-shell > .dock-actions > .dock-fan {
+    display: none;
+  }
+
+  .app-shell > .action-dock:not([data-dock='open']) {
+    max-height: 96px;
+  }
+
+  .dock-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-3);
+    width: 100%;
+    min-height: 44px;
+    padding: var(--space-2) var(--space-4);
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: var(--type-xs);
+    cursor: pointer;
+  }
+
+  .dock-handle .dh-grip {
+    width: 44px;
+    height: 4px;
+    border-radius: var(--radius-pill);
+    background: var(--border-strong);
+  }
+
+  .dock-handle .dh-count {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* The handle only exists in the phone shell. */
+.dock-handle {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .dock-handle {
+    display: flex;
+  }
+}
+
+/* ---- container queries -------------------------------------------------
+   Panels react to their own width, not the viewport's: the rail and the side
+   column are different widths in each shell, so a media query would guess
+   wrong. */
+
+.player-rail {
+  container-type: inline-size;
+  container-name: rail;
+}
+
+.side-column {
+  container-type: inline-size;
+  container-name: side;
+}
+
+@container rail (max-width: 190px) {
+  .pc {
+    padding: var(--space-2) var(--space-3);
+  }
+  .pc-row .k {
+    display: none;
+  }
+  .pc-score span {
+    display: none;
+  }
+}
+
+@container side (max-width: 230px) {
+  .af-row {
+    gap: var(--space-2);
+  }
+  .mm-floor-card {
+    padding: 3px var(--space-2);
+  }
+}
+
+/* ---- squarer viewports -------------------------------------------------
+   4:3 (1.333) and 3:2 (1.5) leave far less horizontal room than 16:9 at the
+   same height. Narrow the bands before the board shrinks. */
+
+@media (min-width: 1200px) and (max-aspect-ratio: 3/2) {
+  :root {
+    --rail-w: clamp(160px, 13vw, 190px);
+    --side-w: clamp(176px, 14vw, 216px);
+  }
+}
+
+@media (min-width: 1200px) and (max-aspect-ratio: 4/3) {
+  :root {
+    --rail-w: 158px;
+    --side-w: 184px;
+  }
+}
+
+/* Short viewports (e.g. 1366x768 at 16:9) need the panels to scroll rather
+   than push the dock off-screen. */
+@media (max-height: 800px) {
+  .app-shell > .player-rail,
+  .app-shell > .side-column {
+    margin-bottom: var(--space-3);
+  }
+}
+
+/* ---- panel children ---------------------------------------------------
+   The panels themselves were absolutely positioned before the grid existed;
+   inside the column they are plain stacked blocks. Without this they keep
+   their old `position: absolute` and pile up on top of each other. */
+
+.app-shell > .side-column > .room-card,
+.app-shell > .side-column > .mansion-minimap,
+.app-shell > .side-column > .activity-feed {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+}
+
+.app-shell > .player-rail > * {
+  position: static;
+  width: 100%;
+}
+
+/* ---- closed slide-overs -----------------------------------------------
+   A closed drawer must not be reachable by tab, and must not be measured as an
+   on-screen panel. */
+
+@media (max-width: 1199px) {
+  .app-shell:not([data-side='open']) > .side-column {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell:not([data-rail='open']) > .player-rail {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+/* The shell must never scroll. A closed slide-over sticks out past the viewport
+   edge; without this the layer becomes a horizontal scroll container and the
+   browser scrolls it when a drawer opens, shifting the whole grid sideways. */
+.ui-layer.app-shell {
+  overflow: clip;
+}
+
+/* ---- topbar responsiveness --------------------------------------------
+   The action cluster is ~850px wide with every control visible, so it has to
+   shed pieces as the shell narrows or it pushes the toggles off-screen. */
+
+@media (max-width: 1199px) {
+  .app-shell > .topbar {
+    gap: var(--space-3);
+    padding: 0 var(--space-3);
+  }
+
+  .app-shell > .topbar .brand-text {
+    display: none;
+  }
+
+  .app-shell > .topbar .cam-btn {
+    padding: 0 var(--space-2);
+  }
+
+  .app-shell > .topbar .topbar-actions {
+    gap: var(--space-2);
+  }
+}
+
+@media (max-width: 767px) {
+  /* Phone: brand mark, toggles and the icon buttons only. The camera switch
+     needs a touch-sized row of its own and does not fit; it is surfaced in the
+     side panel instead (see `.cam-switch` placement below). */
+  .app-shell > .topbar {
+    padding: 0 var(--space-2);
+    gap: var(--space-2);
+  }
+
+  .app-shell > .topbar .cam-switch {
+    display: none;
+  }
+
+  .app-shell > .topbar .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Keep the camera controls reachable: they render inside the side panel on
+     the phone shell. */
+  .app-shell[data-side='open'] > .side-column::after {
+    content: '';
+  }
+}
+
+/* The side panel hosts the camera switch on phones. It is the same DOM node, so
+   this is a layout move rather than a duplicate control. */
+@media (max-width: 767px) {
+  .app-shell > .side-column > .phone-cam {
+    display: flex;
+    gap: var(--space-2);
+    padding: var(--space-2) 0;
+  }
+}
+
+.phone-cam {
+  display: none;
+}
+
+/* ---- topbar: compact the wide switches --------------------------------
+   `.scenario-switch` (260px) and `.viewer-switch` (168px) dominate the cluster.
+   Shrink them on narrow shells, and on the phone shell move them into the side
+   panel (see `applyShellLayout` in hud.ts) so nothing is lost. */
+
+@media (max-width: 1199px) {
+  .app-shell > .topbar .scenario-switch .vs-label,
+  .app-shell > .topbar .viewer-switch .vs-label {
+    display: none;
+  }
+
+  .app-shell > .topbar .scenario-switch select,
+  .app-shell > .topbar .viewer-switch select {
+    max-width: 132px;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-shell > .topbar .scenario-switch,
+  .app-shell > .topbar .viewer-switch {
+    display: none;
+  }
+
+  /* Relocated copies rendered into the side panel by hud.ts. */
+  .side-panel-extras {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding-bottom: var(--space-3);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .side-panel-extras .scenario-switch,
+  .side-panel-extras .viewer-switch,
+  .side-panel-extras .cam-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .side-panel-extras select {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.side-panel-extras {
+  display: none;
+}

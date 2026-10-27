@@ -82,11 +82,6 @@ body {
    ============================================================ */
 
 .topbar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 68px;
   display: flex;
   align-items: center;
   gap: 22px;
@@ -341,10 +336,6 @@ body {
    ============================================================ */
 
 .player-rail {
-  position: absolute;
-  top: 88px;
-  left: 20px;
-  width: 272px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -357,10 +348,6 @@ body {
 
 /* ---- Room dossier: the current room's identity and occupants ------------- */
 .room-card {
-  position: absolute;
-  top: 88px;
-  right: 20px;
-  width: 254px;
   z-index: 20;
   padding: 12px 13px 13px;
   border-radius: 12px;
@@ -929,12 +916,6 @@ body {
    ============================================================ */
 
 .action-dock {
-  position: absolute;
-  bottom: 22px;
-  left: calc(50% - 96px);
-  transform: translateX(-50%);
-  width: min(920px, calc(100vw - 840px));
-  min-width: 470px;
   display: flex;
   flex-direction: column;
   gap: 9px;
@@ -3593,10 +3574,6 @@ select.pf-control {
    Recent activity feed
    ============================================================ */
 .activity-feed {
-  position: absolute;
-  right: 20px;
-  bottom: 100px;
-  width: 300px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -4105,10 +4082,6 @@ select.pf-control {
    Mansion Minimap (洋馆小地图)
    ============================================================ */
 .mansion-minimap {
-  position: absolute;
-  top: 320px;
-  right: 20px;
-  width: 254px;
   display: flex;
   flex-direction: column;
   border-radius: 12px;
