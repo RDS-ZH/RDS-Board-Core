@@ -71,7 +71,24 @@ const npcTurn = await page.evaluate(async () => {
     if (m && m.fromRoomId === npcRoom && (m.type === 'ROOM_NAV' || m.type === 'DOOR')) navHotspots += 1;
   }
 
-  return { reached: true, npcId, entityRoom, npcRoom, navHotspots, movesLeft: npc.customProps.movesLeft };
+  // Registered hotspots are not enough (door probes are invisible); the monster
+  // must also get the visible floor chevrons that players get.
+  const roomMesh = app.scene.nodeMeshes.get(npcRoom);
+  const roomPos = roomMesh ? [roomMesh.position.x, roomMesh.position.z] : null;
+  const chevrons = (app.scene.navArrowMeshes ?? [])
+    .map(entry => entry.group)
+    .filter(group => {
+      if (!group.visible) return false;
+      let parent = group.parent;
+      while (parent) {
+        if (!parent.visible) return false;
+        parent = parent.parent;
+      }
+      if (!roomPos) return false;
+      return Math.abs(group.position.x - roomPos[0]) <= 1.1 && Math.abs(group.position.z - roomPos[1]) <= 1.1;
+    }).length;
+
+  return { reached: true, npcId, entityRoom, npcRoom, navHotspots, chevrons, movesLeft: npc.customProps.movesLeft };
 });
 
 console.log('NPC turn:', JSON.stringify(npcTurn));
@@ -83,6 +100,9 @@ if (!npcTurn.reached) {
   }
   if (npcTurn.navHotspots === 0) {
     failures.push('NPC room has no in-world nav hotspots (monsters get no arrows)');
+  if (npcTurn.chevrons === 0) {
+    failures.push('NPC turn drew no visible floor chevrons (players get them, monsters must too)');
+  }
   }
 }
 

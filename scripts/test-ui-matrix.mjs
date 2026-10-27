@@ -84,6 +84,12 @@ for (const game of GAMES) {
         actions++;
         await page.waitForTimeout(500);
 
+        // A fan card opens its detail panel first; the run button carries the
+        // action through. Keyed entries (number keys) stay the fast path.
+        if (await page.locator('.payload-card.action-detail').count()) {
+          await page.locator('#ad-run').click().catch(() => {});
+          await page.waitForTimeout(500);
+        }
         if (await page.locator('.payload-card').count()) {
           await page.locator('.payload-card button[type="submit"]').first().click().catch(() => {});
           await page.waitForTimeout(500);
@@ -153,9 +159,12 @@ for (const game of GAMES) {
       rooms: Object.keys(window.__boardGameApp.session.getSnapshot().board.mapGraph.nodes).length,
       camera: window.__boardGameApp.scene.camera.position.toArray()
     }));
-    const explore = page.locator('.dock-actions .act', { hasText: '探索' }).first();
+    const explore = page.locator('.dock-actions .act[data-fan-label*="探索"]').first();
     if (!(await explore.count())) throw new Error('explore action missing');
     await explore.click();
+    // The fan card opens its detail panel first; run it explicitly.
+    await page.waitForTimeout(300);
+    await page.locator('#ad-run').click();
     await page.waitForTimeout(800);
     if (!(await page.locator('.placement-panel').count())) throw new Error('placement panel missing after explore');
     const raised = await page.evaluate(() => window.__boardGameApp.scene.camera.position.toArray());
@@ -311,9 +320,12 @@ for (const game of GAMES) {
     if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
     await page.waitForTimeout(600);
     const cameraBefore = await page.evaluate(() => window.__boardGameApp.scene.camera.position.toArray());
-    const drop = page.locator('.dock-actions .act', { hasText: '丢下' }).first();
+    const drop = page.locator('.dock-actions .act[data-fan-label*="丢下"]').first();
     if (!(await drop.count())) throw new Error('discard action missing');
     await drop.click();
+    // The fan card opens its detail panel first; run it explicitly.
+    await page.waitForTimeout(300);
+    await page.locator('#ad-run').click();
     await page.waitForTimeout(900);
     const cameraAfter = await page.evaluate(() => window.__boardGameApp.scene.camera.position.toArray());
     if (JSON.stringify(cameraBefore) !== JSON.stringify(cameraAfter)) {
