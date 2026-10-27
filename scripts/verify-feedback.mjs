@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Verifies the two feedback surfaces added for Betrayal:
@@ -7,7 +7,7 @@ import { ensureDevServer } from './lib/devserver.mjs';
  *   2. a trait movement paints a screen tint, shakes the sheet, flashes the
  *      ladder, floats a world-space number and lands a feed row.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -20,7 +20,7 @@ page.on('console', msg => {
 const failures = [];
 
 /* ---------------------------- activity feed ---------------------------- */
-await page.goto(`${BASE_URL}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2400);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(900);
@@ -62,7 +62,7 @@ await page.screenshot({ path: 'shots/activity-feed.png' });
 console.log(`feed: history=${feed.historyLen} rows=${feed.rows} top="${feed.top}"`);
 
 /* ------------------------ trait change feedback ------------------------ */
-await page.goto(`${BASE_URL}?game=betrayal&scenario=haunt_eye`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=haunt_eye`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2600);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(900);

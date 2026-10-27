@@ -1,7 +1,7 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -12,7 +12,7 @@ page.on('console', msg => {
 });
 
 console.log('1. Navigating to Betrayal exploration scenario …');
-await page.goto(`${BASE_URL}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(1400);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(600);

@@ -1,12 +1,12 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Placement camera hand-off: finishing a placement must first restore the pose
  * the player was holding, then pan the orbit target onto the actor who walked
  * into the new room — without a jump cut and without the auto-fit fighting it.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -41,7 +41,7 @@ const sample = () =>
     };
   });
 
-await page.goto(`${BASE_URL}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2500);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(900);

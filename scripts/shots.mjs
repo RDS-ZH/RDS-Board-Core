@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import process from 'node:process';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 const filter = process.argv[2];
 
@@ -43,7 +43,7 @@ if (!existsSync('shots')) mkdirSync('shots');
 let dev;
 
 try {
-  dev = await ensureDevServer();
+  dev = await ensureSoloServer();
 
   for (const suite of selected) {
     console.log(`\n=== ${suite.name} · ${suite.what} ===`);

@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Camera follows the active actor between rooms.
@@ -8,7 +8,7 @@ import { ensureDevServer } from './lib/devserver.mjs';
  * view. The follow must be a pan — bearing and camera-to-target distance are
  * preserved — and must not fire on the first paint or steal an in-flight tween.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -37,7 +37,7 @@ const sample = () =>
     };
   });
 
-await page.goto(`${BASE_URL}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2500);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(1000);

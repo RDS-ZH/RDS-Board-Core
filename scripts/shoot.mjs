@@ -1,6 +1,8 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
+const __solo = await ensureSoloServer();
 
-const URL = BASE_URL;
+const URL = __solo.url;
 
 const browser = await launchChromium();
 
