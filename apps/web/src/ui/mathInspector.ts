@@ -128,7 +128,7 @@ export class MathematicalInspectorUI {
           <span class="mip-h1">${TAB_META.find(t => t.id === this.tab)!.title}</span>
         </div>
         <div class="mip-head-actions">
-          <button class="icon-btn" id="mip-close" title="收起面板" style="width:30px;height:30px;font-size:12px">✕</button>
+          <button class="icon-btn" id="mip-close" title="收起面板" style="width:30px;height:30px;font-size:var(--type-xs)">✕</button>
         </div>
       </header>
 
@@ -651,7 +651,7 @@ export class MathematicalInspectorUI {
           <button class="tl-btn" id="tl-verify" title="重放全部动作并比对状态哈希">✓</button>
           <button class="tl-btn" data-clock="1" title="推进逻辑时钟 1 tick">⏱</button>
           <button class="tl-btn" data-clock="8" title="推进逻辑时钟 8 ticks">+8</button>
-          <span style="font-size:9.5px;color:var(--faint);font-family:var(--font-mono)">
+          <span style="font-size:var(--type-xs);color:var(--text-tertiary);font-family:var(--font-mono)">
             seed ${log.seed} · hash ${log.hash.slice(0, 12)}…
           </span>
         </div>

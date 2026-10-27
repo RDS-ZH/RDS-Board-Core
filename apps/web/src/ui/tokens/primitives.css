@@ -1,0 +1,110 @@
+/**
+ * Primitive tokens — the raw scales.
+ *
+ * Nothing here knows about the product. Components must not consume these
+ * directly; they use the semantic layer (`semantic.css`), which is the only
+ * thing a theme is allowed to override.
+ *
+ * Naming: --<category>-<step>. Values are the only place a literal appears.
+ */
+
+:root {
+  /* ---- neutral ramp (slate, used by the default theme) ------------------ */
+  --neutral-950: #05070a;
+  --neutral-900: #0a0d13;
+  --neutral-850: #0f131b;
+  --neutral-800: #12161f;
+  --neutral-750: #171c26;
+  --neutral-700: #1c212c;
+  --neutral-600: #2b3442;
+  --neutral-500: #4a5464;
+  --neutral-300: #8b93a1;
+  --neutral-200: #b6bfcc;
+  --neutral-100: #edeff3;
+  --neutral-50: #f6f8fb;
+
+  /* ---- warm ramp (parchment / brass, used by the gothic theme) ---------- */
+  --warm-950: #070504;
+  --warm-900: #0b0806;
+  --warm-850: #14100c;
+  --warm-800: #17120e;
+  --warm-750: #1b150f;
+  --warm-700: #281f16;
+  --warm-500: #6d4f1d;
+  --warm-400: #a8853a;
+  --warm-300: #cbbda1;
+  --warm-200: #d6b26c;
+  --warm-100: #efe6d4;
+  --warm-50: #f7e7c1;
+
+  /* ---- accent ramps ---------------------------------------------------- */
+  --gold-500: #d9b45b;
+  --gold-400: #f6dc9c;
+  --gold-600: #a8853a;
+
+  --red-500: #e0604e;
+  --red-400: #d9534a;
+  --green-500: #57c08b;
+  --green-400: #8fb87a;
+  --blue-500: #6aa6f5;
+  --blue-400: #86a8c4;
+  --violet-500: #b07bf0;
+  --violet-400: #a79bd0;
+
+  /* ---- alpha steps (used for washes, borders, glass panels) ------------ */
+  --alpha-4: 0.04;
+  --alpha-6: 0.06;
+  --alpha-8: 0.08;
+  --alpha-12: 0.12;
+  --alpha-16: 0.16;
+  --alpha-24: 0.24;
+
+  /* ---- spacing --------------------------------------------------------- */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-7: 24px;
+  --space-8: 32px;
+
+  /* ---- radius ---------------------------------------------------------- */
+  --radius-xs: 6px;
+  --radius-sm: 9px;
+  --radius-md: 13px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  /* ---- type scale ------------------------------------------------------
+     Fluid: each step has a floor that never drops below 12px, because the
+     layout probe rejects anything smaller. Body text bottoms out at 13px. */
+  --type-xs: clamp(0.75rem, 0.74rem + 0.05vw, 0.78125rem); /* 12 → 12.5 */
+  --type-sm: clamp(0.78125rem, 0.77rem + 0.06vw, 0.84375rem); /* 12.5 → 13.5 */
+  --type-base: clamp(0.875rem, 0.85rem + 0.1vw, 0.9375rem); /* 14 → 15 */
+  --type-md: clamp(0.9375rem, 0.91rem + 0.12vw, 1rem); /* 15 → 16 */
+  --type-lg: clamp(1.0625rem, 1.02rem + 0.2vw, 1.1875rem); /* 17 → 19 */
+  --type-xl: clamp(1.25rem, 1.18rem + 0.3vw, 1.375rem); /* 20 → 22 */
+  --type-2xl: clamp(1.5625rem, 1.5rem + 0.3vw, 1.625rem); /* 25 → 26 */
+  --type-3xl: clamp(2.125rem, 1.9rem + 1vw, 2.5rem); /* 34 → 40 */
+
+  /* ---- weights --------------------------------------------------------- */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-black: 800;
+
+  /* ---- motion ---------------------------------------------------------- */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 300ms;
+  --ease-standard: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-out: cubic-bezier(0.2, 0.9, 0.3, 1);
+
+  /* ---- elevation ------------------------------------------------------- */
+  --shadow-1: 0 10px 30px -12px rgba(0, 0, 0, 0.7);
+  --shadow-2: 0 18px 40px -22px rgba(0, 0, 0, 0.85);
+  --shadow-3: 0 24px 60px -12px rgba(0, 0, 0, 0.85);
+}

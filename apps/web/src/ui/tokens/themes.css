@@ -1,0 +1,65 @@
+/**
+ * Themes — semantic-layer overrides only.
+ *
+ * A theme may recolour surfaces, text, borders, accents and the few gradient
+ * pieces the chrome needs; it must never reach into a component selector. If a
+ * component needs to look different in a theme, that component is missing a
+ * semantic token — add one here rather than writing
+ * `[data-theme="gothic"] .some-component { … }` in the component sheet.
+ */
+
+/* ---- default: slate ---------------------------------------------------- */
+/* Nothing to declare: `semantic.css` already holds the slate mapping. */
+
+/* ---- gothic: candle-lit parchment / oxblood (Betrayal) ----------------- */
+[data-theme='gothic'] {
+  --surface-canvas: var(--warm-900);
+  --surface-sunken: var(--warm-950);
+  --surface-base: var(--warm-850);
+  --surface-panel: rgba(25, 19, 14, 0.84);
+  --surface-panel-solid: var(--warm-800);
+  --surface-raised: rgba(40, 31, 22, 0.74);
+  --surface-chrome: rgba(214, 178, 108, 0.05);
+  --surface-control: rgba(38, 29, 20, 0.86);
+  --surface-control-hover: rgba(214, 178, 108, 0.14);
+  --surface-accent-wash: rgba(214, 178, 108, 0.12);
+  --surface-accent-strong: rgba(214, 178, 108, 0.22);
+
+  --text-primary: var(--warm-100);
+  --text-secondary: var(--warm-300);
+  --text-tertiary: #a2937a;
+
+  --border-subtle: rgba(214, 178, 108, 0.11);
+  --border-strong: rgba(214, 178, 108, 0.22);
+  --border-accent-soft: rgba(214, 178, 108, 0.28);
+  --border-accent-strong: rgba(214, 178, 108, 0.55);
+
+  --accent: var(--warm-200);
+  --accent-bright: var(--warm-50);
+  --accent-deep: var(--warm-400);
+  --text-on-accent: #2a1b08;
+
+  --status-danger: var(--red-400);
+  --status-success: var(--green-400);
+  --status-info: var(--blue-400);
+  --status-special: var(--violet-400);
+
+  --gradient-chrome: linear-gradient(180deg, rgba(20, 15, 11, 0.96), rgba(12, 9, 7, 0.9));
+  --gradient-brand-mark: radial-gradient(circle at 32% 26%, #f0d79a, #b9893a 62%, #6d4f1d);
+  --gradient-pill-active: linear-gradient(
+    180deg,
+    rgba(214, 178, 108, 0.22),
+    rgba(214, 178, 108, 0.08)
+  );
+  --gradient-card: radial-gradient(140% 90% at 12% 0%, rgba(120, 88, 40, 0.14), transparent 60%),
+    linear-gradient(180deg, rgba(27, 21, 15, 0.9), rgba(15, 12, 9, 0.94));
+  --gradient-control: linear-gradient(180deg, rgba(38, 29, 20, 0.86), rgba(22, 17, 12, 0.9));
+  --gradient-control-primary: linear-gradient(
+    180deg,
+    rgba(214, 178, 108, 0.26),
+    rgba(150, 116, 51, 0.16)
+  );
+
+  --shadow-1: 0 18px 40px -26px #000;
+  --shadow-2: 0 18px 40px -26px #000;
+}

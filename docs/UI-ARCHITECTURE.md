@@ -243,7 +243,7 @@ apps/web/src/ui/
 > 已新增 `scripts/lib/soloserver.mjs` + `scripts/lib/vite-solo.config.mjs`（无 Hub 代理），
 > 并把 17 个浏览器脚本统一切换过去；探针另加「必须真正进入游戏视图」的硬断言。
 
-### Phase 1 · 设计令牌（1–2 天）
+### Phase 1 · 设计令牌 ✅ 已完成（2026-10-28）
 
 - 建 `tokens/primitives.css` + `semantic.css` + `themes.css`；
 - 把 `styles.css` 里 167 处硬编码字号**机械替换**为令牌（可写脚本半自动）；
@@ -251,6 +251,18 @@ apps/web/src/ui/
 - 主题切换从 `[data-theme="gothic"]` 覆盖改为**主题只覆盖 semantic 层**。
 
 验收：`styles.css` 中 `font-size: <数字>px` 数量为 0；gothic 主题视觉无回归。
+
+**实际落地**：
+
+- 新建 `apps/web/src/ui/tokens/`：`primitives.css`（色阶/间距/圆角/8 级流体字号/字重/时长/阴影）、`semantic.css`（surface/text/border/accent/status/type-role/gap，共 135 个令牌）、`themes.css`（**只覆盖语义层**，34 个主题可覆盖令牌）。
+- **192 处** `font-size` 全部改为 `var(--type-*)`，CSS 中硬编码 px 字号归零。类型阶梯下限 12px、正文 14–15px。
+- **160 处**组件规则从旧别名（`--text`/`--muted`/`--gold`/`--panel`/`--r-*` …）迁移到语义名，并**删除了别名块**。
+- `theme-gothic.css` 从 70 行的组件级覆盖压缩到 6 行（只剩字体族）。顶栏/品牌标/角色卡/行动键/行动坞改为消费 `--gradient-chrome`/`--gradient-brand-mark`/`--gradient-card`/`--gradient-control`，**主题不再需要伸进组件选择器**。
+- 顺带修掉 3 个**从未定义过**的令牌引用（`--gold-mid`、`--mono`、`--text-dim`，无 fallback，声明实际无效）。
+
+**踩到的坑（重要）**：别名层 `--text: var(--text-primary)` 会**静默破坏主题切换** —— 自定义属性在声明它的作用域里只替换一次，主题在子元素覆盖 `--text-primary` 时别名仍持根作用域的值。实测 gothic 主题下 `.pc-name` 仍是 slate 色。这也是删除别名块的直接原因，而不是原计划的「保留别名慢慢改」。
+
+**新增 `scripts/probe-design-tokens.mjs`（`pnpm probe:tokens`）**：断言无硬编码 px 字号、无「别名指向主题可覆盖令牌」、无无 fallback 的未定义引用。已用注入法验证该守卫**确实会报错**（不是空转）。
 
 ### Phase 2 · 外壳与布局（2–3 天）
 

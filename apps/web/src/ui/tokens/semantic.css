@@ -1,0 +1,88 @@
+/**
+ * Semantic tokens — what components are allowed to reference.
+ *
+ * This is the only layer a theme overrides (`themes.css`). Every name answers
+ * "what is this for", not "what colour is it".
+ *
+ * The legacy names (`--gold`, `--muted`, `--panel`, …) are kept as aliases so
+ * existing rules keep working while they are migrated; new rules should use the
+ * semantic name.
+ */
+
+:root {
+  /* ---- surfaces -------------------------------------------------------- */
+  --surface-canvas: var(--neutral-950);
+  --surface-sunken: var(--neutral-900);
+  --surface-base: var(--neutral-850);
+  --surface-panel: rgba(17, 21, 29, 0.78);
+  --surface-panel-solid: var(--neutral-800);
+  --surface-raised: rgba(28, 33, 44, 0.72);
+  --surface-chrome: rgba(255, 255, 255, 0.025);
+  --surface-control: rgba(255, 255, 255, 0.045);
+  --surface-control-hover: rgba(255, 255, 255, 0.08);
+  --surface-accent-wash: rgba(217, 180, 91, 0.12);
+  --surface-accent-strong: rgba(217, 180, 91, 0.22);
+
+  /* ---- text ------------------------------------------------------------ */
+  --text-primary: var(--neutral-100);
+  --text-secondary: var(--neutral-200);
+  --text-tertiary: var(--neutral-300);
+  --text-on-accent: #17130a;
+
+  /* ---- borders --------------------------------------------------------- */
+  --border-subtle: rgba(255, 255, 255, 0.075);
+  --border-strong: rgba(255, 255, 255, 0.13);
+  --border-accent-soft: rgba(217, 180, 91, 0.28);
+  --border-accent-strong: rgba(217, 180, 91, 0.55);
+
+  /* ---- accents / status ------------------------------------------------ */
+  --accent: var(--gold-500);
+  --accent-bright: var(--gold-400);
+  --accent-deep: var(--gold-600);
+
+  --status-danger: var(--red-500);
+  --status-danger-wash: rgba(224, 96, 78, 0.14);
+  --status-success: var(--green-500);
+  --status-success-wash: rgba(87, 192, 139, 0.14);
+  --status-info: var(--blue-500);
+  --status-info-wash: rgba(106, 166, 245, 0.14);
+  --status-special: var(--violet-500);
+
+  /* ---- chrome pieces that themes want to recolour ---------------------- */
+  --gradient-chrome: linear-gradient(180deg, rgba(21, 25, 34, 0.9), rgba(13, 16, 23, 0.94));
+  --gradient-brand-mark: radial-gradient(circle at 32% 26%, #f6dc9c, #a8853a 62%, #4a3618);
+  --gradient-pill-active: linear-gradient(180deg, rgba(217, 180, 91, 0.18), rgba(217, 180, 91, 0.06));
+  --gradient-card: radial-gradient(140% 90% at 12% 0%, rgba(120, 88, 40, 0.1), transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+  --gradient-control: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.022));
+  --gradient-control-primary: linear-gradient(
+    160deg,
+    rgba(246, 220, 156, 0.95),
+    rgba(217, 180, 91, 0.92) 55%,
+    rgba(180, 143, 60, 0.95)
+  );
+
+  /* ---- type roles ------------------------------------------------------ */
+  --font-caption: var(--type-xs);
+  --font-label: var(--type-sm);
+  --font-body: var(--type-base);
+  --font-subtitle: var(--type-md);
+  --font-title: var(--type-lg);
+  --font-heading: var(--type-xl);
+  --font-display-lg: var(--type-2xl);
+  --font-display-xl: var(--type-3xl);
+
+  /* ---- gaps ------------------------------------------------------------ */
+  --gap-inline: var(--space-2);
+  --gap-stack: var(--space-3);
+  --gap-panel: var(--space-4);
+  --gap-section: var(--space-5);
+
+  /* ---- typography families -------------------------------------------- */
+  --font-display: "AlibabaPuHuiTi", "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif SC",
+    Georgia, serif;
+  --font-ui: "AlibabaPuHuiTi", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, "Courier New", monospace;
+}
+

@@ -20,15 +20,15 @@
 }
 
 .fan-hint .fh-label {
-  font-size: 12.5px;
+  font-size: var(--type-xs);
   font-weight: 700;
-  color: var(--muted);
+  color: var(--text-secondary);
   transition: color 0.18s ease;
 }
 
 .fan-hint .fh-detail {
-  font-size: 12px;
-  color: var(--faint);
+  font-size: var(--type-xs);
+  color: var(--text-tertiary);
   text-overflow: ellipsis;
   overflow: hidden;
 }
@@ -38,7 +38,7 @@
 }
 
 .fan-hint.active .fh-detail {
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 /* Fanned hand: cards rotate around a pivot far below the dock, so the
@@ -67,7 +67,7 @@
   border-radius: 9px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025));
-  color: var(--text);
+  color: var(--text-primary);
   cursor: pointer;
   transform-origin: 50% 190%;
   transform: rotate(calc(var(--off) * var(--fan-spread)))
@@ -82,7 +82,7 @@
 }
 
 .dock-fan .act .act-ico {
-  font-size: 22px;
+  font-size: var(--type-xl);
   line-height: 1;
 }
 
@@ -90,9 +90,9 @@
   position: absolute;
   top: 3px;
   right: 5px;
-  font-size: 12px;
+  font-size: var(--type-xs);
   font-family: var(--font-mono);
-  color: var(--faint);
+  color: var(--text-tertiary);
   opacity: 0.75;
 }
 
@@ -136,25 +136,25 @@
   justify-content: space-between;
   gap: 12px;
   padding: 5px 0;
-  font-size: 12px;
+  font-size: var(--type-xs);
   border-bottom: 1px dashed rgba(255, 255, 255, 0.06);
 }
 
 .action-detail .ad-k {
-  color: var(--faint);
+  color: var(--text-tertiary);
 }
 
 .action-detail .ad-v {
-  color: var(--text);
+  color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: var(--type-xs);
 }
 
 .action-detail .ad-note {
   margin-top: 12px;
-  font-size: 12.5px;
+  font-size: var(--type-xs);
   line-height: 1.6;
-  color: var(--muted);
+  color: var(--text-secondary);
 }
 
 [data-theme='gothic'] .dock-fan .act:hover,
@@ -193,11 +193,11 @@
 
 .alert-strip.mission .al-title {
   flex: 0 0 auto;
-  font-size: 12.5px;
+  font-size: var(--type-xs);
 }
 
 .alert-strip.mission .al-desc {
-  font-size: 12.5px;
+  font-size: var(--type-xs);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -209,7 +209,7 @@
 }
 
 .fan-hint .fh-label {
-  font-size: 12px;
+  font-size: var(--type-xs);
 }
 
 .dock-actions .dock-fan {
@@ -226,7 +226,7 @@
 }
 
 .dock-fan .act .act-ico {
-  font-size: 19px;
+  font-size: var(--type-lg);
 }
 
 .dock-fan .act:hover,
@@ -249,7 +249,7 @@
 }
 
 .action-dock .alert-strip.mission .al-ico {
-  font-size: 14px;
+  font-size: var(--type-base);
 }
 
 .action-dock .floor-tabs {
@@ -259,7 +259,7 @@
 
 .action-dock .floor-tab {
   padding: 2px 9px;
-  font-size: 12px;
+  font-size: var(--type-xs);
 }
 
 .dock-actions .dock-fan {
@@ -273,7 +273,7 @@
 }
 
 .dock-fan .act .act-ico {
-  font-size: 17px;
+  font-size: var(--type-lg);
 }
 
 .dock-actions .fan-hint {
