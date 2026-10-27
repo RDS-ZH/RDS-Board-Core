@@ -32,14 +32,18 @@ import {
 } from '@rds/games/betrayal/cards';
 import { resolveHauntId } from '@rds/games/betrayal/haunts';
 import {
+  addEffect,
   connectAdjacentDoors,
   damagePlayer,
+  effectsOn,
   hostilesInRoom,
   itemSlotId,
   moveMonster,
   movePlayerTo,
   movementCost,
+  ongoingEffectKinds,
   ownsDef,
+  removeEffects,
   rollZeroDice
 } from '@rds/games/betrayal/helpers';
 import { addExploredRoom, grantItem, grantOmen } from '@rds/games/betrayal/scenarios';
@@ -2074,6 +2078,43 @@ test('fixture betrayal: event checks auto-resolve and the safe pays out two item
   assertEqual(state.zones.zone_hand_p1.orderedEntities.length, before + 2, 'locked safe granted two items');
 });
 
+test('fixture betrayal: an ONGOING event card registers a kernel effect instance', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 11);
+  const raw = engine.getRawState();
+  stackRoomTiles(raw, ['dining_room']);
+
+  // Force the "Drip... Drip... Drip..." event to the top of the deck.
+  const deck = raw.zones.zone_event_deck;
+  const dripId = deck.orderedEntities.find(id => raw.entities[id].components.custom?.defId === 'drip')!;
+  assert(!!dripId, 'drip event exists in the deck');
+  deck.orderedEntities = deck.orderedEntities.filter(id => id !== dripId);
+  deck.orderedEntities.push(dripId);
+
+  const explore = engine.getLegalActions('p1').find(
+    action => action.type === 'EXPLORE_DOOR' && action.payload?.direction === 'E'
+  );
+  assert(!!explore, 'dining room is reachable');
+  assert(engine.dispatch(explore!).ok, 'explore accepted');
+  assert(placePendingRoom(engine), 'room orientation resolved');
+
+  const state = engine.getRawState();
+  assertEqual(ongoingEffectKinds(state, 'p1').join(','), 'DRIP', 'DRIP became an active curse');
+  assertEqual(
+    (state.effects ?? []).filter(effect => effect.target === 'p1' && effect.kind === 'ONGOING').length,
+    1,
+    'one kernel effect instance carries the curse'
+  );
+  assertEqual(
+    (state.players.p1.customProps.effects ?? []).length,
+    0,
+    'the legacy customProps array stays untouched'
+  );
+  assert(
+    (state.effects ?? []).every(effect => effect.source === 'p1' || state.players[effect.source] || state.npcs?.[effect.source]),
+    'effect sources resolve to real actors'
+  );
+});
+
 test('fixture betrayal: equipment use respects once-per-turn and restores green values', () => {
   const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'trade_ready' });
   const raw = engine.getRawState();
@@ -2097,6 +2138,41 @@ test('fixture betrayal: equipment use respects once-per-turn and restores green 
     false,
     'item is exhausted for this turn'
   );
+});
+
+test('fixture betrayal: ongoing curses live on the kernel effect list', () => {
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'trade_ready' });
+  const raw = engine.getRawState();
+
+  // Two *different* curses on one explorer must coexist, not overwrite.
+  addEffect(raw, { kind: 'ONGOING', source: 'p1', target: 'p1', payload: { effect: 'DRIP' } });
+  addEffect(raw, { kind: 'ONGOING', source: 'p1', target: 'p1', payload: { effect: 'CHILL' } });
+  assertEqual(ongoingEffectKinds(raw, 'p1').sort().join(','), 'CHILL,DRIP', 'both curses are active');
+
+  // Re-applying the same curse is idempotent rather than stacking duplicates.
+  addEffect(raw, { kind: 'ONGOING', source: 'p1', target: 'p1', payload: { effect: 'DRIP' } });
+  assertEqual(ongoingEffectKinds(raw, 'p1').length, 2, 're-applying does not duplicate');
+
+  // Curses are stored on the kernel list, not in scattered customProps.
+  assertEqual(raw.effects?.length, 2, 'kernel effect list owns the instances');
+  assertEqual(
+    (raw.players.p1.customProps.effects ?? []).length,
+    0,
+    'no new entries land in customProps.effects'
+  );
+
+  // Effects survive canonical serialization (replay hash covers them).
+  const snapshot = JSON.stringify(raw.effects);
+  assert(snapshot.includes('DRIP') && snapshot.includes('CHILL'), 'effects are plain JSON');
+
+  // Removal is scoped and reports a count.
+  assertEqual(removeEffects(raw, effect => effect.target === 'p1' && effect.kind === 'ONGOING'), 2, 'both removed');
+  assertEqual(ongoingEffectKinds(raw, 'p1').length, 0, 'effect list drained');
+
+  // Legacy `customProps.effects` still reads, so pre-migration logs replay.
+  raw.players.p1.customProps.effects = ['MARK_OF_FEAR'];
+  assertEqual(ongoingEffectKinds(raw, 'p1').join(','), 'MARK_OF_FEAR', 'legacy field is folded in');
+  assertEqual(effectsOn(raw, 'p1').length, 1, 'legacy entry surfaces as an instance');
 });
 
 test('fixture betrayal: death drops the hand into an item pile', () => {
