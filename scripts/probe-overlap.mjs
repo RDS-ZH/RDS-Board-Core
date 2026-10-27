@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Room bleed / z-fighting probe.
@@ -10,10 +10,10 @@ import { ensureDevServer } from './lib/devserver.mjs';
  * the real merged bounds of every room mesh and reports the offenders.
  */
 
-const BASE = BASE_URL;
+const dev = await ensureSoloServer();
+const BASE = dev.url;
 const HALF = 2.84 / 2;
 
-const dev = await ensureDevServer();
 const browser = await launchChromium();
 
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });

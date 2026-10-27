@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Verifies two user-reported fixes:
@@ -14,7 +14,7 @@ import { ensureDevServer } from './lib/devserver.mjs';
  *    - NEVER jumps back to the old pre-placement room position
  *    - Restores normal playing eye-height and distance smoothly
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -30,7 +30,7 @@ const failures = [];
 // PART 1: GAME SWITCH AUTO REFRESH
 // ============================================================
 console.log('--- PART 1: GAME SWITCH REFRESH ---');
-await page.goto(`${BASE_URL}?game=catan`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=catan`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2000);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(1000);
@@ -109,7 +109,7 @@ if (!catanBackState.url.includes('game=catan')) failures.push(`URL did not sync 
 // PART 2: PLACEMENT CAMERA SMOOTH FORWARD TRANSITION
 // ============================================================
 console.log('\n--- PART 2: PLACEMENT CAMERA HAND-OFF ---');
-await page.goto(`${BASE_URL}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2000);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(900);

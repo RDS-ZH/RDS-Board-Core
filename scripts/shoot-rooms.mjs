@@ -1,11 +1,13 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
+const __solo = await ensureSoloServer();
 
 /**
  * Close-up room captures for modelling review.
  * Usage: node scripts/shoot-rooms.mjs [scenario] [roomId...]
  */
 
-const BASE = BASE_URL;
+const BASE = __solo.url;
 
 const scenario = process.argv[2] ?? 'exploration';
 const requested = process.argv.slice(3);

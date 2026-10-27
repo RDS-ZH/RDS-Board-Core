@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Regression for three 活死人 haunt bugs:
@@ -10,7 +10,7 @@ import { ensureDevServer } from './lib/devserver.mjs';
  *    and a local end-of-game overlay offers a replay.
  * 3. The medical kit must let the healer pick which physical track to restore.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -29,7 +29,7 @@ page.on('console', msg => {
 
 const failures = [];
 
-await page.goto(`${BASE_URL}?game=betrayal&scenario=haunt_zombie`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=haunt_zombie`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2400);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(1000);

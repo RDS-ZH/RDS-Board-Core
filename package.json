@@ -16,7 +16,8 @@
     "probe:overlap": "node scripts/probe-overlap.mjs",
     "shots": "node scripts/shots.mjs",
     "dev:server": "tsx apps/server/src/index.ts",
-    "test:server": "tsx apps/server/src/selftest.ts"
+    "test:server": "tsx apps/server/src/selftest.ts",
+    "probe:ui": "node scripts/probe-ui-layout.mjs"
   },
   "keywords": [],
   "author": "",

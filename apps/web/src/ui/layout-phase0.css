@@ -1,0 +1,226 @@
+
+/* ============================================================
+   Phase 0 · layout stopgap
+   ------------------------------------------------------------
+   Removes the two defects that are visible today, without touching the
+   component layer (that is Phase 1-3 in docs/UI-ARCHITECTURE.md):
+
+   1. the three right-hand panels used to be absolutely positioned with
+      hand-computed `top` offsets (the minimap assumed the room card never
+      exceeded 212px), so a taller room card overlapped the minimap;
+   2. the action dock's width was min(920px, calc(100vw - 840px)), which is
+      negative below 840px and collapsed to 0x495 on iPad/iPhone.
+
+   Layout also has to hold at 16:10 / 16:9 / 4:3 / 3:2, so the shell tokens
+   scale with the viewport and the side column narrows on squarer screens
+   instead of eating the board.
+   ============================================================ */
+
+:root {
+  /* Shell bands. `--side-w` shrinks on squarer viewports so 4:3 keeps board
+     area; `--rail-w` follows the same logic. */
+  --rail-w: clamp(180px, 15vw, 216px);
+  --side-w: clamp(196px, 16vw, 254px);
+  --shell-top: 88px;
+  --shell-edge: 20px;
+  --shell-gap: 10px;
+  /* Room the dock must leave for the top bar plus the side column. */
+  --dock-reserve: calc(var(--rail-w) + var(--side-w) + 48px);
+}
+
+/* ---- right-hand column ------------------------------------------------ */
+
+.side-column {
+  position: absolute;
+  top: var(--shell-top);
+  right: var(--shell-edge);
+  width: var(--side-w);
+  /* Never grow under the dock: the dock is ~200px tall at the bottom. */
+  max-height: calc(100dvh - var(--shell-top) - 210px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--shell-gap);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* The column itself must not swallow board clicks in its gaps. */
+  pointer-events: none;
+  z-index: 20;
+  scrollbar-width: thin;
+}
+
+.side-column > * {
+  pointer-events: auto;
+  flex: 0 0 auto;
+}
+
+/* Children no longer position themselves; the column does. */
+.side-column > .room-card,
+.side-column > .mansion-minimap,
+.side-column > .activity-feed {
+  position: static;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+}
+
+/* The old sibling-selector guess is gone with the absolute layout. */
+#room-card[style*='none'] ~ .mansion-minimap {
+  top: auto;
+}
+
+/* ---- action dock: no more negative width ------------------------------ */
+
+.action-dock {
+  width: min(920px, max(340px, calc(100vw - var(--dock-reserve))));
+  min-width: 0;
+  /* Centre on the board band rather than the whole viewport, so the dock
+     never slides under the side column on squarer screens. */
+  left: calc(var(--rail-w) + (100vw - var(--rail-w) - var(--side-w)) / 2);
+  transform: translateX(-50%);
+}
+
+/* ---- readable text floor ----------------------------------------------
+   These seven spots rendered below 12px, which is under any comfortable
+   reading threshold. Phase 1 replaces every hardcoded px with a token; this
+   pass only lifts the worst offenders. */
+
+.pc-name {
+  font-size: 14px;
+}
+
+.pc-row .v,
+.pc-row .k {
+  font-size: 12.5px;
+}
+
+.trait-key {
+  font-size: 12px;
+}
+
+.mm-name {
+  font-size: 12.5px;
+}
+
+.mm-count,
+.mm-level-tag {
+  font-size: 12px;
+}
+
+.af-text {
+  font-size: 13px;
+}
+
+.af-detail,
+.af-stamp,
+.af-delta {
+  font-size: 11.5px;
+}
+
+.fan-hint .fh-detail {
+  font-size: 12.5px;
+}
+
+.action-dock .alert-strip.mission .al-desc,
+.action-dock .alert-strip.mission .al-title {
+  font-size: 12.5px;
+}
+
+.dock-bar {
+  font-size: 12.5px;
+}
+
+/* ---- narrow / square viewports ---------------------------------------
+   4:3 (1.333) and 3:2 (1.5) leave much less horizontal room than 16:9 at the
+   same height, so the bands collapse before the board does. */
+
+@media (max-aspect-ratio: 3/2) {
+  :root {
+    --rail-w: clamp(150px, 13vw, 180px);
+    --side-w: clamp(176px, 14vw, 210px);
+    --shell-gap: 8px;
+  }
+}
+
+@media (max-aspect-ratio: 4/3) {
+  :root {
+    --rail-w: 150px;
+    --side-w: 180px;
+  }
+  .side-column {
+    max-height: calc(100dvh - var(--shell-top) - 190px);
+  }
+}
+
+/* Below 1100px the left rail folds to a compact strip so the board keeps
+   width; Phase 2 replaces this with the real tablet shell. */
+@media (max-width: 1100px) {
+  :root {
+    --rail-w: 150px;
+  }
+  .action-dock {
+    width: min(720px, max(320px, calc(100vw - var(--dock-reserve))));
+  }
+}
+
+/* Phones: stack the column under the top bar, full width, and let the dock
+   span the screen. Phase 2 turns this into a bottom drawer. */
+@media (max-width: 820px) {
+  :root {
+    --rail-w: 0px;
+    --side-w: 0px;
+    --shell-edge: 10px;
+  }
+  .side-column {
+    left: var(--shell-edge);
+    right: var(--shell-edge);
+    width: auto;
+    max-height: 38dvh;
+  }
+  .action-dock {
+    left: 50%;
+    width: calc(100vw - 20px);
+    max-width: none;
+  }
+  .player-rail {
+    display: none;
+  }
+}
+
+/* ---- touch-target floor ------------------------------------------------
+   Chrome controls (camera switch, icon buttons, minimap toggles, floor tabs,
+   feed header) were 15-40px tall. On a touch viewport every interactive
+   control gets the 44x44 minimum. */
+@media (max-width: 820px), (pointer: coarse) {
+  .cam-btn,
+  .icon-btn,
+  .mm-btn-all,
+  .mm-btn-toggle,
+  .floor-tab,
+  .af-head,
+  .pf-btn,
+  .dock-fan .act,
+  .pc-role,
+  .mm-floor-card {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Keep the visual weight: centre the glyph in the taller hit area. */
+  .icon-btn,
+  .mm-btn-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .af-head {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .floor-tab {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}

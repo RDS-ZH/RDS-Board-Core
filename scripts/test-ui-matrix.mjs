@@ -3,10 +3,11 @@
  * action-dock interactions, and checks console/page errors + label overlaps.
  */
 
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
-const BASE = BASE_URL;
+const dev = await ensureSoloServer();
+const BASE = dev.url;
 const GAMES = [
   { id: 'catan', scenarios: ['rich_action', 'trade_ready'] },
   { id: 'sanguosha', scenarios: [] },
@@ -18,7 +19,6 @@ const GAMES = [
   { id: 'dune_mahjong', scenarios: [] }
 ];
 
-const dev = await ensureDevServer();
 const browser = await launchChromium();
 
 const failures = [];

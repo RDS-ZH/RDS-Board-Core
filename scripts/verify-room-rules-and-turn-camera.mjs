@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Verifies three user-reported items:
@@ -10,7 +10,7 @@ import { ensureDevServer } from './lib/devserver.mjs';
  *    - Collapsed Room: entering immediately rolls Speed check
  * 3. Room cards have no pre-set orientation; reshuffle discard when deck runs out so exploration never stalls
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -26,7 +26,7 @@ const failures = [];
 // PART 1: GOD MODE TURN SWITCH CAMERA FOLLOW
 // ============================================================
 console.log('--- PART 1: GOD MODE TURN SWITCH CAMERA FOLLOW ---');
-await page.goto(`${BASE_URL}?game=betrayal&scenario=room_features`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=room_features`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2000);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(1000);

@@ -1,12 +1,12 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Action fan: the dock must shrink from the old label+hint grid (349px with ten
  * actions) to a constant-height fanned hand, hover must surface the description
  * in a fixed bar, and a click must expand a detail card instead of executing.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1699, height: 919 } });
 
@@ -24,7 +24,7 @@ page.on('console', msg => {
 
 const failures = [];
 
-await page.goto(`${BASE_URL}?game=betrayal&scenario=haunt_zombie`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=haunt_zombie`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2400);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(1000);

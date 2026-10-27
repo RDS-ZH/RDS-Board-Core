@@ -1,10 +1,12 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
+const __solo = await ensureSoloServer();
 
 /**
  * Captures the card detail sheet by driving the real presenter path: pick an
  * entity with a card face, which emits a notice carrying a `card` payload.
  */
-const BASE = BASE_URL;
+const BASE = __solo.url;
 
 const browser = await launchChromium();
 

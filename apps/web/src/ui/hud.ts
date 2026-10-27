@@ -722,9 +722,14 @@ export class BoardGameHUD {
       </header>
 
       <aside class="player-rail" id="player-rail"></aside>
-      <aside class="room-card" id="room-card" style="display:none"></aside>
-      <aside class="mansion-minimap" id="mansion-minimap" style="display:none"></aside>
-      <aside class="activity-feed" id="activity-feed"></aside>
+      <!-- Right-hand panels share one column so they stack instead of
+           overlapping; each used to be absolutely positioned with a
+           hand-computed top offset. -->
+      <div class="side-column" id="side-column">
+        <aside class="room-card" id="room-card" style="display:none"></aside>
+        <aside class="mansion-minimap" id="mansion-minimap" style="display:none"></aside>
+        <aside class="activity-feed" id="activity-feed"></aside>
+      </div>
       <div class="action-dock" id="action-dock"></div>
       <div class="announcement-banner" id="announce" style="display:none"></div>
       <div class="payload-layer" id="payload-layer" style="display:none"></div>

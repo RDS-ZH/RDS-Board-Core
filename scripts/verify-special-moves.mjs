@@ -1,12 +1,12 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Special traversal: stairs across floors, the balcony drop and the observatory
  * lift. These are edges the door grid cannot express, so they get their own
  * in-world badges; this script drives each one and asserts where the actor ends.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -18,7 +18,7 @@ page.on('console', msg => {
 
 const failures = [];
 
-await page.goto(`${BASE_URL}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=exploration`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2400);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(900);
@@ -243,7 +243,7 @@ console.log(`elevator: badge=${!!lift.badge} click=${JSON.stringify(lift.res ?? 
 // The room_features fixture stages the vault, chute and collapsed floor so the
 // badge and the hazard marker both have something real to attach to.
 const features = await (async () => {
-  await page.goto(`${BASE_URL}?game=betrayal&scenario=room_features`, {
+  await page.goto(`${dev.url}?game=betrayal&scenario=room_features`, {
     waitUntil: 'networkidle',
     timeout: 60000
   });

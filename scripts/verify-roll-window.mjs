@@ -1,5 +1,5 @@
-import { launchChromium, BASE_URL } from './lib/browser.mjs';
-import { ensureDevServer } from './lib/devserver.mjs';
+import { launchChromium } from './lib/browser.mjs';
+import { ensureSoloServer } from './lib/soloserver.mjs';
 
 /**
  * Two-phase check window (K4) in the real UI.
@@ -8,7 +8,7 @@ import { ensureDevServer } from './lib/devserver.mjs';
  * actually owns one, the check is split into declare → roll → react, and the
  * dock must show each step with a readable label instead of a raw action id.
  */
-const dev = await ensureDevServer();
+const dev = await ensureSoloServer();
 const browser = await launchChromium();
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 
@@ -28,7 +28,7 @@ page.on('console', msg => {
 
 const failures = [];
 
-await page.goto(`${BASE_URL}?game=betrayal&scenario=room_features`, { waitUntil: 'networkidle', timeout: 60000 });
+await page.goto(`${dev.url}?game=betrayal&scenario=room_features`, { waitUntil: 'networkidle', timeout: 60000 });
 await page.waitForTimeout(2400);
 if (await page.locator('#boot-enter').count()) await page.click('#boot-enter');
 await page.waitForTimeout(1000);
