@@ -563,6 +563,10 @@ class BoardGameSimulatorApp {
   private wireBootScreen(): void {
     const boot = document.getElementById('boot-screen');
     const enter = document.getElementById('boot-enter');
+    const commitEl = document.getElementById('boot-commit');
+    if (commitEl && typeof __COMMIT_HASH__ !== 'undefined') {
+      commitEl.textContent = `commit ${__COMMIT_HASH__}`;
+    }
     enter?.addEventListener('click', () => {
       boot?.classList.add('hidden');
       this.hud.showAnnouncement('欢迎 · 点击底部动作栏开始推演');
