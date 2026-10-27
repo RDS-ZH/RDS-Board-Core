@@ -73,6 +73,8 @@ export interface NetSessionOptions {
   scenario?: string;
   /** Host only; guests ignore this (the host owns the seed). Default 42. */
   seed?: number;
+  /** 阶段一：座位 → hub 身份（昵称/头像）。房主开局时写进内核 Player，随 snapshot 同步全员。 */
+  roster?: Partial<Record<PlayerId, { name: string; avatarUrl?: string }>>;
 }
 
 /** Minimal channel the guest transport needs (RTCDataChannel or loopback). */
@@ -150,6 +152,12 @@ export class NetSession implements GamePresenter {
       const seed = options.seed ?? 42;
       const inner = new UniversalSession(module, seed, options.scenario);
       inner.setViewer(options.playerId);
+      // 开局前把 hub 身份写进内核 Player（展示字段），随 snapshot 同步给房客。
+      if (options.roster) {
+        for (const [pid, ident] of Object.entries(options.roster)) {
+          if (ident?.name) inner.renamePlayer(pid as PlayerId, ident.name, ident.avatarUrl);
+        }
+      }
       this.session = inner;
       // Every local dispatch (any UI path) tails into the authoritative room,
       // so guests observe exactly what the host's own HUD observes.
@@ -204,6 +212,17 @@ export class NetSession implements GamePresenter {
     const room = new BridgedRoom(this.module, seed, this.options.scenario, action =>
       this.onGuestAction(action)
     );
+    // 开局身份同样写入权威房引擎：rename 不产生 action，不会出现在重放历史里，
+    // 必须直接改 room.engine 的 Player，否则房客全量 snapshot 仍是内核默认名。
+    if (this.options.roster) {
+      for (const [pid, ident] of Object.entries(this.options.roster)) {
+        if (!ident?.name) continue;
+        const player = room.engine.getRawState().players[pid as PlayerId];
+        if (!player) continue;
+        player.name = String(ident.name).slice(0, 24);
+        if (ident.avatarUrl) player.avatarUrl = ident.avatarUrl;
+      }
+    }
     this.room = room;
     const transport = new WebRtcHostTransport(room, selfId, () => {});
     this.hostTransport = transport;

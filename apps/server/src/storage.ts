@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.ts';
 
-export interface UserRecord { id: string; name: string; passHash: string; salt: string; createdAt: number; }
+export interface UserRecord {
+  id: string; name: string; passHash: string; salt: string; createdAt: number;
+  /** 阶段一：用户资料。displayName=对外昵称（缺省用登录名）；avatarExt/avatarRev=头像文件扩展与版本号（缓存击穿用）。 */
+  displayName?: string; avatarExt?: 'png' | 'jpg' | 'webp'; avatarRev?: number;
+}
 export interface RoomRecord {
   id: string; name: string; gameId: string; hostId: string; status: 'open' | 'playing' | 'closed';
   maxPlayers: number; players: string[]; createdAt: number;
@@ -34,6 +38,12 @@ export const users = {
   byName: (name: string) => db.users.find(u => u.name === name),
   byId: (id: string) => db.users.find(u => u.id === id),
   add(u: UserRecord) { db.users.push(u); save(); },
+  update(id: string, patch: Partial<UserRecord>) {
+    const u = db.users.find(x => x.id === id);
+    if (u) Object.assign(u, patch);
+    save();
+    return u;
+  },
 };
 
 export const rooms = {

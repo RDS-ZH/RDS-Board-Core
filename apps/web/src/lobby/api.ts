@@ -16,7 +16,21 @@ export const createRoom = (name: string, gameId: string, opts: CreateRoomOpts = 
   api<HubRoomInfo>('/api/rooms', { method: 'POST', body: JSON.stringify({ name, gameId, ...opts }) });
 export const joinRoom = (id: string, code?: string) =>
   api<HubRoomInfo>('/api/rooms/' + id + '/join', { method: 'POST', body: JSON.stringify(code ? { code } : {}) });
-export const me = () => api<{ sub: string; name: string }>('/api/auth/me');
+export interface UserProfile { id: string; name: string; displayName: string; avatarUrl?: string; }
+export const me = () => api<UserProfile>('/api/me');
+export const updateDisplayName = (displayName: string) =>
+  api<UserProfile>('/api/me', { method: 'PUT', body: JSON.stringify({ displayName }) });
+/** 头像二进制直传（≤300KB，前端已压缩）；不用 api() 以避开 JSON Content-Type。 */
+export async function uploadAvatar(blob: Blob): Promise<{ avatarUrl: string }> {
+  const res = await fetch('/api/me/avatar', {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + localStorage.getItem('token'), 'Content-Type': blob.type || 'image/webp' },
+    body: blob,
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body as { avatarUrl: string };
+}
 export const getRoom = (id: string) => api<HubRoomInfo>('/api/rooms/' + id);
 export const leaveRoom = (id: string) => api<HubRoomInfo | { ok: true }>('/api/rooms/' + id + '/leave', { method: 'POST' });
 export const setRoomStatus = (id: string, status: 'open' | 'playing' | 'closed') =>

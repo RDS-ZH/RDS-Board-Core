@@ -1,6 +1,6 @@
 /** WebSocket 信令：房间组 + SDP/ICE 盲转发 + 大厅实时频道。不接触游戏数据。 */
 import type { WebSocket } from 'ws';
-import { verifyJwt } from './auth.ts';
+import { verifyJwt, profileOf } from './auth.ts';
 import type { HubRoomInfo, SignalMessage } from '@rds/room-protocol';
 
 interface Client { userId: string; name: string; ws: WebSocket; roomId?: string; alive: boolean; lobby: boolean; }
@@ -63,7 +63,8 @@ export class SignalHub {
         // 自己 join-room 进组；游戏对局的 ws 连接不受影响——它不处理 lobby-chat）。
         if (!msg.roomId || typeof msg.text !== 'string' || !msg.text.trim()) return;
         const trimmed = msg.text.trim().slice(0, 200);
-        const payload: SignalMessage = { t: 'lobby-chat', roomId: msg.roomId, from: client.userId, name: client.name, text: trimmed, at: Date.now() };
+        const chatName = profileOf(client.userId)?.displayName ?? client.name;
+        const payload: SignalMessage = { t: 'lobby-chat', roomId: msg.roomId, from: client.userId, name: chatName, text: trimmed, at: Date.now() };
         for (const c of this.clients) {
           if (c.roomId === msg.roomId) this.send(c, payload);
         }

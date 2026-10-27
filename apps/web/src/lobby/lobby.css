@@ -149,6 +149,17 @@
 .lob-chat-empty { text-align: center; padding: 40px 0; }
 .lob-chat .lob-row input { flex: 1; min-width: 0; }
 
+
+/* ---------- 阶段一：个人资料 / 头像 ---------- */
+.lob-avatar { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; display: block; }
+.lob-userchip-btn { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; color: inherit; font: inherit; }
+.lob-userchip-btn .lob-avatar { width: 26px; height: 26px; }
+.lob-userchip-btn:hover { border-color: var(--gold); }
+.lob-seat-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.lob-profile-row { display: flex; align-items: center; gap: 16px; }
+.lob-profile-avatar { width: 64px; height: 64px; font-size: 22px; flex: none; }
+.lob-profile-avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 900px) {
   .lob-home, .lob-room { grid-template-columns: 1fr; }

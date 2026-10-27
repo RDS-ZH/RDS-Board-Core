@@ -1257,7 +1257,7 @@ export class BoardGameHUD {
         return `
           <article class="pc ${player.isFocus ? 'active' : ''} ${player.alive ? '' : 'dead'}" data-player-id="${player.id}" style="--pc-color:${player.color}">
             <div class="pc-head">
-              <div class="pc-avatar">${player.avatar}</div>
+              <div class="pc-avatar">${player.avatarUrl ? `<img src="${player.avatarUrl}" alt="" loading="lazy" />` : player.avatar}</div>
               <div class="pc-id">
                 <div class="pc-name">${player.name}</div>
                 <div class="pc-tags">

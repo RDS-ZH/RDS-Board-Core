@@ -1,5 +1,5 @@
 import type { HubGameInfo, HubRoomInfo } from '@rds/room-protocol';
-import { getGames, getRooms, createRoom, joinRoom, leaveRoom, setRoomStatus, getRoom, me, setReady, kickPlayer, transferHost } from './api.ts';
+import { getGames, getRooms, createRoom, joinRoom, leaveRoom, setRoomStatus, getRoom, me, setReady, kickPlayer, transferHost, updateDisplayName, uploadAvatar, UserProfile } from './api.ts';
 import { showToast } from './toast.ts';
 
 /**
@@ -15,7 +15,35 @@ export interface LobbyHandle { destroy(): void; }
 
 export interface EnterGameParams { query: string; }
 
-let user: { sub: string; name: string } | null = null;
+let user: { sub: string; name: string; displayName?: string; avatarUrl?: string } | null = null;
+
+/** 个人资料弹窗里待上传的头像（已压缩）。 */
+let pendingAvatar: { blob: Blob; dataUrl: string } | null = null;
+
+/** 客户端压缩：最长边 256px、WebP（质量 0.85），单张 ~10-30KB，服务端只做兜底校验。 */
+async function compressImage(file: File, maxEdge = 256): Promise<{ blob: Blob; dataUrl: string }> {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) throw new Error('仅支持 png / jpg / webp');
+  const bitmap = await createImageBitmap(file);
+  try {
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL('image/webp', 0.85);
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    if (blob.size > 300 * 1024) throw new Error('压缩后仍超过 300KB，请换一张');
+    return { blob, dataUrl };
+  } finally { bitmap.close(); }
+}
+
+const displayNameOf = (u?: { name: string; displayName?: string } | null) => u?.displayName || u?.name || '?';
+const avatarChipHtml = (p?: { name: string; displayName?: string; avatarUrl?: string } | null, cls = 'lob-avatar') =>
+  p?.avatarUrl
+    ? `<img class="${cls}" src="${esc(p.avatarUrl)}" alt="" loading="lazy" />`
+    : `<span class="${cls}">${esc(displayNameOf(p).slice(0, 1).toUpperCase())}</span>`;
 let games: HubGameInfo[] = [];
 let currentRoom: HubRoomInfo | null = null;
 let roomsCache: HubRoomInfo[] = [];
@@ -162,7 +190,7 @@ function stopTimer(which: 'room' | 'list'): void {
 
 function render(): void {
   if (!rootEl) return;
-  rootEl.innerHTML = !user ? authHtml() : currentRoom ? roomHtml() : lobbyHtml();
+  rootEl.innerHTML = !user ? authHtml() : (currentRoom ? roomHtml() : lobbyHtml()) + profileModalHtml();
   lastRoomSig = currentRoom ? roomSig(currentRoom) : '';
   bind();
 }
@@ -170,7 +198,7 @@ function render(): void {
 /** 房间页渲染签名：签名字段变化才值得重建 DOM */
 function roomSig(r: HubRoomInfo): string {
   return [r.id, r.status, r.name, r.gameId, r.hostId, r.maxPlayers, r.isPrivate ? 1 : 0, r.code ?? '', r.scenarioId ?? '',
-    r.players.map(p => p.id + ':' + p.name).join(','),
+    r.players.map(p => p.id + ':' + ((p as any).displayName || p.name) + ':' + ((p as any).avatarUrl ?? '')).join(','),
     (r.readyPlayers ?? []).join(',')].join('|');
 }
 
@@ -206,7 +234,7 @@ function lobbyHtml() {
     <div class="lob-brand"><span class="lob-brand-dot"></span>RDS Board<span class="lob-muted lob-brand-sub">联机大厅</span></div>
     <div class="lob-row">
       <button id="solo" class="lob-secondary">本地单机</button>
-      <span class="lob-userchip">${esc(user!.name)}</span>
+      <button id="profile-open" class="lob-userchip lob-userchip-btn" title="个人资料">${avatarChipHtml(user)}<span>${esc(displayNameOf(user))}</span></button>
       <button id="logout" class="lob-secondary">退出</button>
     </div>
   </header>
@@ -289,6 +317,34 @@ async function refreshRooms() {
   } catch (e: any) { el.innerHTML = '<span class="lob-error">' + esc(e.message) + '</span>'; }
 }
 
+/** 阶段一：个人资料弹窗（render 时对所有已登录视图追加，含房间页头部入口）。 */
+function profileModalHtml() {
+  return `
+  <div class="lob-modal-backdrop" id="profile-modal" hidden>
+    <div class="lob-card lob-modal">
+      <h3>个人资料</h3>
+      <div class="lob-stack">
+        <div class="lob-profile-row">
+          <span id="pf-avatar-wrap" class="lob-seat-avatar lob-profile-avatar">${avatarChipHtml(user)}</span>
+          <div class="lob-stack" style="gap:6px">
+            <button id="pf-upload" class="lob-secondary">上传头像</button>
+            <span class="lob-muted" style="font-size:12px">自动压缩为 256px / WebP</span>
+            <input type="file" id="pf-file" accept="image/png,image/jpeg,image/webp" hidden />
+          </div>
+        </div>
+        <label class="lob-field-label">昵称（对其他玩家展示）</label>
+        <input id="pf-name" maxlength="24" placeholder="${esc(displayNameOf(user))}" />
+        <p class="lob-muted" style="font-size:12px">登录名：${esc(user!.name)}（不可更改）</p>
+        <div class="lob-row" style="justify-content:flex-end">
+          <button id="pf-cancel" class="lob-secondary">取消</button>
+          <button id="pf-save" class="lob-primary-btn">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+`;
+}
+
 // ---------------- 创建房间模态 ----------------
 
 function createModalHtml() {
@@ -357,7 +413,7 @@ function roomHtml() {
       <span class="lob-badge ${r.status}">${r.status === 'open' ? '等待中' : '游戏中'}</span>
       ${r.isPrivate && isHost && r.code ? '<button id="copy-invite" class="lob-code-chip" title="点击复制">房间码 ' + esc(r.code) + '</button>' : ''}
     </div>
-    <div class="lob-row"><span class="lob-userchip">${esc(user!.name)}</span></div>
+    <div class="lob-row"><button id="profile-open" class="lob-userchip lob-userchip-btn" title="个人资料">${avatarChipHtml(user)}<span>${esc(displayNameOf(user))}</span></button></div>
   </header>
   <div class="lob-main lob-room">
     <section class="lob-card lob-seats-card">
@@ -398,7 +454,7 @@ function roomHtml() {
   </div>`;
 }
 
-function seatCard(r: HubRoomInfo, p: { id: string; name: string }, i: number, isHost: boolean) {
+function seatCard(r: HubRoomInfo, p: { id: string; name: string; displayName?: string; avatarUrl?: string }, i: number, isHost: boolean) {
   const ready = (r.readyPlayers ?? []).includes(p.id);
   const isRoomHost = p.id === r.hostId;
   const me = p.id === user!.sub;
@@ -407,8 +463,8 @@ function seatCard(r: HubRoomInfo, p: { id: string; name: string }, i: number, is
     : '';
   return `
   <div class="lob-seat${ready ? ' ready' : ''}">
-    <span class="lob-seat-avatar">${esc(p.name.slice(0, 1).toUpperCase())}</span>
-    <span class="lob-seat-name">${esc(p.name)}${isRoomHost ? ' <span title="房主">👑</span>' : ''}${me ? '<span class="lob-muted">（你）</span>' : ''}</span>
+    <span class="lob-seat-avatar">${p.avatarUrl ? '<img src="' + esc(p.avatarUrl) + '" alt="" loading="lazy" />' : esc(displayNameOf(p).slice(0, 1).toUpperCase())}</span>
+    <span class="lob-seat-name">${esc(displayNameOf(p))}${isRoomHost ? ' <span title="房主">👑</span>' : ''}${me ? '<span class="lob-muted">（你）</span>' : ''}</span>
     <span class="lob-seat-sub">座位 p${i + 1}${r.status === 'open' ? (ready ? ' · <span class="lob-ready-tag">已就绪</span>' : ' · 未就绪') : ''}</span>
     ${hostCtl}
   </div>`;
@@ -449,6 +505,50 @@ function bind() {
     $('register')?.addEventListener('click', () => doAuth('register'));
     return;
   }
+
+  // ---- 阶段一：个人资料弹窗 ----
+  $('profile-open')?.addEventListener('click', () => {
+    const nameInput = $('pf-name') as HTMLInputElement;
+    nameInput.value = displayNameOf(user);
+    $('pf-avatar-wrap').innerHTML = avatarChipHtml(user);
+    pendingAvatar = null;
+    ($('profile-modal') as HTMLElement).hidden = false;
+    nameInput.focus();
+  });
+  $('pf-cancel')?.addEventListener('click', () => { ($('profile-modal') as HTMLElement).hidden = true; });
+  $('profile-modal')?.addEventListener('click', ev => { if (ev.target === $('profile-modal')) ($('profile-modal') as HTMLElement).hidden = true; });
+  $('pf-upload')?.addEventListener('click', () => ($('pf-file') as HTMLInputElement).click());
+  $('pf-file')?.addEventListener('change', async () => {
+    const input = $('pf-file') as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      pendingAvatar = await compressImage(file);
+      $('pf-avatar-wrap').innerHTML = '<img class="lob-avatar" src="' + pendingAvatar.dataUrl + '" alt="" />';
+      showToast('头像已就绪，点保存生效', 'success');
+    } catch (e: any) { showToast(e.message || '图片处理失败', 'error'); }
+    input.value = '';
+  });
+  $('pf-save')?.addEventListener('click', async () => {
+    const name = (($('pf-name') as HTMLInputElement).value || displayNameOf(user)).trim();
+    try {
+      if (pendingAvatar) {
+        const { avatarUrl } = await uploadAvatar(pendingAvatar.blob);
+        if (user) user.avatarUrl = avatarUrl;
+      }
+      if (name !== displayNameOf(user)) {
+        const p = await updateDisplayName(name);
+        if (user) user.displayName = p.displayName;
+      }
+      pendingAvatar = null;
+      ($('profile-modal') as HTMLElement).hidden = true;
+      // 房间页 seat 卡与大厅列表里的展示名即时刷新
+      if (currentRoom) { try { currentRoom = await getRoom(currentRoom.id); } catch { /* 忽略 */ } }
+      roomsCacheSig = '';
+      render();
+      showToast('资料已更新', 'success');
+    } catch (e: any) { showToast(e.message, 'error'); }
+  });
 
   $('logout')?.addEventListener('click', () => { localStorage.removeItem('token'); user = null; currentRoom = null; closeWs(); render(); });
   $('solo')?.addEventListener('click', () => onEnterGame?.({ query: '' }));
@@ -614,6 +714,14 @@ function gameQuery(r: HubRoomInfo, role: 'host' | 'guest'): string {
   });
   if (role === 'guest') q.set('hostId', r.hostId);
   if (r.scenarioId) q.set('scenario', r.scenarioId);
+  // 阶段一：座位 → 昵称/头像，房主开局时写进内核 Player 同步全员。
+  const roster: Record<string, { name: string; avatarUrl?: string }> = {};
+  r.players.forEach((p, i) => {
+    const name = (p as any).displayName || p.name;
+    const avatarUrl = (p as any).avatarUrl;
+    roster['p' + (i + 1)] = avatarUrl ? { name, avatarUrl } : { name };
+  });
+  q.set('roster', JSON.stringify(roster));
   return q.toString();
 }
 
@@ -621,7 +729,10 @@ async function boot() {
   games = await getGames();
   const token = localStorage.getItem('token');
   if (token) {
-    try { user = await me(); } catch { localStorage.removeItem('token'); }
+    try {
+      const p: UserProfile = await me();
+      user = { sub: p.id, name: p.name, displayName: p.displayName, avatarUrl: p.avatarUrl };
+    } catch { localStorage.removeItem('token'); }
   }
   if (user) { wsWanted = true; openWs(); }
   render();

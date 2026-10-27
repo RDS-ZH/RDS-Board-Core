@@ -53,7 +53,8 @@ export interface HubGameInfo {
 }
 export interface HubRoomInfo {
   id: string; name: string; gameId: string; hostId: string; hostName: string;
-  status: 'open' | 'playing' | 'closed'; maxPlayers: number; players: { id: string; name: string }[]; createdAt: number;
+  status: 'open' | 'playing' | 'closed'; maxPlayers: number;
+  players: { id: string; name: string; displayName?: string; avatarUrl?: string }[]; createdAt: number;
   /** Phase B：准备制。已按「就绪」的玩家 id 集合。 */
   readyPlayers?: string[];
   /** 私密房：列表可见但加入需房间码（code 仅回传给房主）。 */

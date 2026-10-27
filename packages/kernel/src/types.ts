@@ -33,6 +33,8 @@ export interface Player {
   name: string;
   color: string;
   avatar: string;
+  /** 联机身份：头像图片 URL（hub /avatars/…），仅展示用，不影响规则。 */
+  avatarUrl?: string;
   score: number;
   alive: boolean;
   status?: ActorStatus;

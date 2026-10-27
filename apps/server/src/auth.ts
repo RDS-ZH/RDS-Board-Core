@@ -54,3 +54,28 @@ export function userFromAuthHeader(header?: string) {
   if (!header?.startsWith('Bearer ')) return null;
   return verifyJwt(header.slice(7));
 }
+
+// ---- 阶段一：用户资料（昵称/头像） ----
+export interface UserProfile {
+  id: string; name: string; displayName: string; avatarUrl?: string;
+}
+
+export function profileOf(id: string): UserProfile | null {
+  const u = users.byId(id);
+  if (!u) return null;
+  return {
+    id: u.id,
+    name: u.name,
+    displayName: u.displayName || u.name,
+    avatarUrl: u.avatarExt ? '/avatars/' + u.id + '.' + u.avatarExt + '?v=' + (u.avatarRev ?? 1) : undefined,
+  };
+}
+
+export function updateDisplayName(id: string, displayName: string): UserProfile | { error: string } {
+  const name = displayName.trim().slice(0, 24);
+  if (!name) return { error: '昵称不能为空' };
+  if (/[\u0000-\u001f]/.test(name)) return { error: '昵称含非法字符' };
+  const u = users.update(id, { displayName: name });
+  if (!u) return { error: '用户不存在' };
+  return profileOf(id)!;
+}

@@ -1,4 +1,5 @@
 import { rooms, users } from './storage.ts';
+import { profileOf } from './auth.ts';
 import { randomId } from './config.ts';
 import { gameById } from './games.ts';
 import type { HubRoomInfo } from '@rds/room-protocol';
@@ -31,7 +32,10 @@ function toInfo(r: RoomRec, opts: { includeCode?: boolean } = {}): HubRoomInfo {
     id: r.id, name: r.name, gameId: r.gameId,
     hostId: r.hostId, hostName: host?.name ?? '?', status: r.status,
     maxPlayers: r.maxPlayers,
-    players: r.players.map(pid => ({ id: pid, name: users.byId(pid)?.name ?? '?' })),
+    players: r.players.map(pid => {
+      const p = profileOf(pid);
+      return p ? { id: pid, name: p.name, displayName: p.displayName, avatarUrl: p.avatarUrl } : { id: pid, name: '?' };
+    }),
     createdAt: r.createdAt,
     readyPlayers: [...(r.readyPlayers ?? [])],
     isPrivate: r.isPrivate ?? false,

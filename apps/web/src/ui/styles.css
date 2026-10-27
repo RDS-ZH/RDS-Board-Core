@@ -678,7 +678,9 @@ body {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--line-2);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  overflow: hidden;
 }
+.pc-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .pc.active .pc-avatar {
   border-color: rgba(217, 180, 91, 0.5);

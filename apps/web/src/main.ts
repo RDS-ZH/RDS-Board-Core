@@ -620,6 +620,12 @@ function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | un
     console.warn('[net-session] guest role requires &host=<hostHubUserId>; falling back to local session');
     return undefined;
   }
+  // 阶段一：座位 → hub 身份（JSON），房主开局时写进内核 Player 展示字段。
+  let roster: NetSessionOptions['roster'];
+  try {
+    const raw = params.get('roster');
+    if (raw) roster = JSON.parse(raw);
+  } catch { /* 忽略坏 roster，退回内核默认名 */ }
   return {
     hub,
     roomId: room,
@@ -627,7 +633,8 @@ function parseNetSessionOptions(params: URLSearchParams): NetSessionOptions | un
     role,
     playerId: player,
     hostId,
-    scenario: params.get('scenario') ?? undefined
+    scenario: params.get('scenario') ?? undefined,
+    roster
   };
 }
 

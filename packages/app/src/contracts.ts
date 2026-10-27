@@ -96,6 +96,8 @@ export interface UiPlayer {
   name: string;
   color: string;
   avatar: string;
+  /** 联机身份头像（hub /avatars/…），缺省回退 emoji avatar。 */
+  avatarUrl?: string;
   score: number;
   scoreLabel: string;
   alive: boolean;

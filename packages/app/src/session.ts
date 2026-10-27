@@ -567,6 +567,19 @@ export class UniversalSession implements GamePresenter {
     this.engine.setViewer(viewer);
   }
 
+  /**
+   * 阶段一：联机身份映射。房主开局前一次性把 hub 昵称/头像写进内核 Player
+   * （仅展示字段，不触碰任何规则），snapshot 会把它同步给所有房客。
+   */
+  public renamePlayer(id: PlayerId, name: string, avatarUrl?: string): void {
+    const player = this.engine.getRawState().players[id];
+    if (!player || !name) return;
+    player.name = String(name).slice(0, 24);
+    if (avatarUrl) player.avatarUrl = avatarUrl;
+    this.rebuild();
+    this.publish();
+  }
+
   private placementStorageKey(defId: string): string {
     return `dsh:placement:${this.module.meta.id}:${this.engine.getSeed()}:${this.scenario ?? ''}:${defId}`;
   }
@@ -1153,6 +1166,7 @@ export function buildPlayersView(state: ProjectedGameState, focus: string[]): Ui
         name: player?.name ?? pid,
         color: player?.color ?? '#8b93a1',
         avatar: player?.avatar ?? '👤',
+        avatarUrl: player?.avatarUrl,
         score: player?.score ?? 0,
         scoreLabel: state.gameId === 'sanguosha' ? 'HP' : 'VP',
         alive: player?.alive ?? true,

@@ -6,8 +6,11 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { WebSocketServer } from 'ws';
 import http from 'node:http';
-import { PORT } from './config.ts';
-import { register, login, userFromAuthHeader } from './auth.ts';
+import fs from 'node:fs';
+import path from 'node:path';
+import { PORT, DATA_DIR } from './config.ts';
+import { users } from './storage.ts';
+import { register, login, userFromAuthHeader, profileOf, updateDisplayName } from './auth.ts';
 import { listRooms, createRoom, joinRoom, leaveRoom, setRoomStatus, getRoomInfo, setReady, kickPlayer, transferHost, setRoomChangedHook } from './rooms.ts';
 import { GAMES } from './games.ts';
 import { SignalHub } from './signal.ts';
@@ -28,6 +31,56 @@ app.post('/api/auth/login', async c => {
 app.get('/api/auth/me', c => {
   const u = userFromAuthHeader(c.req.header('authorization'));
   return u ? c.json(u) : c.json({ error: 'unauthorized' }, 401);
+});
+
+// ---- 阶段一：用户资料（昵称/头像） ----
+app.get('/api/me', c => {
+  const u = userFromAuthHeader(c.req.header('authorization'));
+  if (!u) return c.json({ error: 'unauthorized' }, 401);
+  const p = profileOf(u.sub);
+  return p ? c.json(p) : c.json({ error: 'user gone' }, 404);
+});
+app.put('/api/me', async c => {
+  const u = userFromAuthHeader(c.req.header('authorization'));
+  if (!u) return c.json({ error: 'unauthorized' }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const r = updateDisplayName(u.sub, String(body.displayName ?? ''));
+  return 'error' in r ? c.json({ error: r.error }, 400) : c.json(r);
+});
+const AVATAR_TYPES: Record<string, 'png' | 'jpg' | 'webp'> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp',
+};
+app.put('/api/me/avatar', async c => {
+  const u = userFromAuthHeader(c.req.header('authorization'));
+  if (!u) return c.json({ error: 'unauthorized' }, 401);
+  const ext = AVATAR_TYPES[c.req.header('content-type') ?? ''];
+  if (!ext) return c.json({ error: '仅支持 png / jpeg / webp' }, 400);
+  const buf = Buffer.from(await c.req.arrayBuffer());
+  if (buf.length === 0) return c.json({ error: '空文件' }, 400);
+  if (buf.length > 300 * 1024) return c.json({ error: '头像需 ≤300KB（前端已压缩）' }, 400);
+  if (!(buf[0] === 0x89 && buf[1] === 0x50) && !(buf[0] === 0xff && buf[1] === 0xd8) && !(buf[0] === 0x52 && buf[1] === 0x49)) {
+    return c.json({ error: '文件头不像图片' }, 400);
+  }
+  const rec = users.byId(u.sub);
+  const rev = (rec?.avatarRev ?? 0) + 1;
+  const dir = path.join(DATA_DIR, 'avatars');
+  fs.mkdirSync(dir, { recursive: true });
+  // 清掉旧扩展名的残留文件（换格式时）
+  for (const e of ['png', 'jpg', 'webp']) { try { fs.unlinkSync(path.join(dir, u.sub + '.' + e)); } catch {} }
+  fs.writeFileSync(path.join(dir, u.sub + '.' + ext), buf);
+  users.update(u.sub, { avatarExt: ext, avatarRev: rev });
+  return c.json({ avatarUrl: '/avatars/' + u.sub + '.' + ext + '?v=' + rev });
+});
+const AVATAR_MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
+app.get('/avatars/:file', c => {
+  const m = /^u_[A-Za-z0-9_]+\.(png|jpg|webp)$/.exec(c.req.param('file'));
+  if (!m) return c.json({ error: 'bad file' }, 400);
+  const file = path.join(DATA_DIR, 'avatars', m[0]);
+  let buf: Buffer;
+  try { buf = fs.readFileSync(file); } catch { return c.json({ error: 'not found' }, 404); }
+  c.header('Content-Type', AVATAR_MIME[m[1]]);
+  c.header('Cache-Control', 'public, max-age=60');
+  return c.body(new Uint8Array(buf));
 });
 
 // ---- 游戏 / 房间 ----
