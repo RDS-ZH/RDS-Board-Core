@@ -124,21 +124,7 @@ export class BoardGameHUD {
     if (!snapshot || !action) return;
     // Placement is handled by the inline rotate/confirm controls, not a modal.
     if (snapshot.placement) return;
-
-    if (action.fields?.length || action.selection) {
-      this.openPayloadForm(action);
-      return;
-    }
-
-    if (action.highlightIds) this.ports.highlightBoard(action.highlightIds);
-    else this.ports.highlightBoard(null);
-
-    if (action.placementEntityId) {
-      const result = this.presenter.armPlacement(action.id);
-      if (!result.ok) this.pushToast('⚠️', result.error ?? '无法进入放置模式');
-      return;
-    }
-    this.presenter.perform(action.id);
+    this.runAction(action);
   }
 
   public closePayload(): void {
@@ -1359,20 +1345,24 @@ export class BoardGameHUD {
       `
       : '';
 
+    const total = snapshot.actions.length;
     const buttons = snapshot.actions
-      .map(
-        action => `
-        <button class="act ${action.tone === 'primary' ? 'primary' : action.tone === 'danger' ? 'danger' : ''}"
-                data-action-id="${action.id}">
+      .map((action, index) => {
+        const mid = (total - 1) / 2;
+        const offset = index - mid;
+        const tone = action.tone === 'primary' ? 'primary' : action.tone === 'danger' ? 'danger' : '';
+        return `
+        <button class="act ${tone}"
+                data-action-id="${action.id}"
+                data-fan-label="${action.label}"
+                data-fan-hint="${action.hint}"
+                style="--i:${index};--off:${offset.toFixed(2)};--abs:${Math.abs(offset).toFixed(2)}"
+                title="${action.label}">
           <span class="act-ico">${action.icon}</span>
-          <span class="act-txt">
-            <span class="act-label">${action.label}</span>
-            <span class="act-hint">${action.hint}</span>
-          </span>
-          <span class="act-key">${snapshot.actions.indexOf(action) + 1}</span>
+          <span class="act-key">${index + 1}</span>
         </button>
-      `
-      )
+      `;
+      })
       .join('');
 
     const isAll = this.selectedFloor === 'ALL';
@@ -1483,7 +1473,11 @@ export class BoardGameHUD {
             placement
               ? placementPanel
               : snapshot.actions.length > 0
-              ? buttons
+              ? `<div class="fan-hint" data-fan-hint>
+                   <span class="fh-label">悬停查看动作</span>
+                   <span class="fh-detail">点击任意牌面展开详情 · 数字键直接执行</span>
+                 </div>
+                 <div class="dock-fan" data-fan>${buttons}</div>`
               : snapshot.gameOver
               ? `<div class="empty-hint"><span class="e-ico">🏁</span><span>对局已结束${
                   snapshot.winnerLabel ? ` — 胜者：${snapshot.winnerLabel}` : ''
@@ -1502,28 +1496,111 @@ export class BoardGameHUD {
       if (!result.ok) this.pushToast('⚠️', result.error ?? '放置被拒绝');
     });
 
+    // Hovering a card surfaces its description in the fixed bar above the fan,
+    // so the cards themselves only need an icon.
+    const hintBar = dock.querySelector('[data-fan-hint]') as HTMLElement | null;
+    const restHint = hintBar ? hintBar.innerHTML : '';
+    dock.querySelectorAll<HTMLElement>('.dock-fan .act').forEach(button => {
+      const show = () => {
+        if (!hintBar) return;
+        hintBar.innerHTML =
+          `<span class="fh-label">${button.dataset.fanLabel ?? ''}</span>` +
+          `<span class="fh-detail">${button.dataset.fanHint ?? ''}</span>`;
+        hintBar.classList.add('active');
+      };
+      const hide = () => {
+        if (!hintBar) return;
+        hintBar.innerHTML = restHint;
+        hintBar.classList.remove('active');
+      };
+      button.addEventListener('mouseenter', show);
+      button.addEventListener('focus', show);
+      button.addEventListener('mouseleave', hide);
+      button.addEventListener('blur', hide);
+    });
+
     dock.querySelectorAll<HTMLElement>('[data-action-id]').forEach(button => {
       button.addEventListener('click', () => {
         const id = button.dataset.actionId;
         if (!id) return;
         const action = snapshot.actions.find(candidate => candidate.id === id);
         if (!action) return;
-
-        if (action.fields?.length || action.selection) {
-          this.openPayloadForm(action);
-          return;
-        }
-
-        if (action.highlightIds) this.ports.highlightBoard(action.highlightIds);
-        else this.ports.highlightBoard(null);
-
-        if (action.placementEntityId) {
-          const result = this.presenter.armPlacement(action.id);
-          if (!result.ok) this.pushToast('⚠️', result.error ?? '无法进入放置模式');
-          return;
-        }
-        this.presenter.perform(id);
+        // Clicking a card expands its detail; the number key stays the fast path.
+        this.openActionDetail(action);
       });
     });
+  }
+
+  /**
+   * Detail card for one action: full label + hint, with the execute button.
+   * Reuses the payload layer so the two modals never stack.
+   */
+  private openActionDetail(action: UiAction): void {
+    const layer = this.container.querySelector('#payload-layer') as HTMLElement | null;
+    if (!layer) return;
+
+    const needsInput = !!(action.fields?.length || action.selection);
+    const toneClass = action.tone === 'primary' ? 'primary' : action.tone === 'danger' ? 'danger' : '';
+
+    layer.innerHTML = `
+      <div class="payload-backdrop"></div>
+      <div class="payload-card action-detail ${toneClass}">
+        <header class="pf-head">
+          <span class="pf-ico">${action.icon}</span>
+          <div>
+            <div class="pf-title">${action.label}</div>
+            <div class="pf-hint">${action.hint}</div>
+          </div>
+        </header>
+        <div class="pf-body">
+          <div class="ad-row"><span class="ad-k">动作</span><span class="ad-v">${action.actionType ?? action.id}</span></div>
+          ${
+            action.highlightIds?.length
+              ? `<div class="ad-row"><span class="ad-k">可选目标</span><span class="ad-v">${action.highlightIds.length} 处</span></div>`
+              : ''
+          }
+          ${
+            needsInput
+              ? `<div class="ad-note">该动作需要补充参数，执行时会打开选择面板。</div>`
+              : `<div class="ad-note">该动作无需额外参数，点击执行立即生效。</div>`
+          }
+        </div>
+        <footer class="pf-foot">
+          <button type="button" class="pf-btn" id="ad-close">关闭</button>
+          <button type="button" class="pf-btn primary" id="ad-run">执行</button>
+        </footer>
+      </div>
+    `;
+    layer.style.display = 'flex';
+
+    const close = () => {
+      layer.style.display = 'none';
+      layer.innerHTML = '';
+    };
+
+    layer.querySelector('.payload-backdrop')?.addEventListener('click', close);
+    layer.querySelector('#ad-close')?.addEventListener('click', close);
+    layer.querySelector('#ad-run')?.addEventListener('click', () => {
+      close();
+      this.runAction(action);
+    });
+  }
+
+  /** Execute an action exactly as the dock/keyboard paths do. */
+  private runAction(action: UiAction): void {
+    if (action.fields?.length || action.selection) {
+      this.openPayloadForm(action);
+      return;
+    }
+
+    if (action.highlightIds) this.ports.highlightBoard(action.highlightIds);
+    else this.ports.highlightBoard(null);
+
+    if (action.placementEntityId) {
+      const result = this.presenter.armPlacement(action.id);
+      if (!result.ok) this.pushToast('⚠️', result.error ?? '无法进入放置模式');
+      return;
+    }
+    this.presenter.perform(action.id);
   }
 }
