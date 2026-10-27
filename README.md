@@ -62,6 +62,7 @@ pnpm shots         # 按需生成全部验证截图到 shots/（自动起停 dev
 
 - **[docs/BACKLOG.md](docs/BACKLOG.md)** — 可选开发：性能基线结论、楼层隔离与小地图、效果生命周期、检定窗口、i18n、网络，以及"已明确不做"清单。§10 附**复核手法**：动手前先确认该待办是否仍然成立。
 - **[docs/ARCHITECTURE-ISSUES.md](docs/ARCHITECTURE-ISSUES.md)** — 架构层：已修问题（AI-01~17）、重复特性合并建议、仍未完成的 AI-21/23/24/25/27。
+- **[docs/UI-ARCHITECTURE.md](docs/UI-ARCHITECTURE.md)** — 表现层升级方案：现状实测（41 条绝对定位、167 处硬编码字号、移动端行动坞宽度归零）、业界方案调研（设计令牌 / 容器查询 / 流体排版 / Lit）、分层目标架构与 5 个阶段的可独立合并迁移路线。
 
 ---
 
