@@ -2255,6 +2255,73 @@ test('fixture betrayal: a finished haunt reports the reason so the UI can end th
     String(state.winnerReason).includes('所有英雄'),
     `the reason names the condition (got ${state.winnerReason})`
   );
+
+  // The reason must never contradict the roster: it may only fire when the
+  // hero set is genuinely empty (alive + not the traitor + not banished).
+  const livingHeroes = Object.values(state.players).filter(
+    player => player.alive && player.role !== 'TRAITOR' && !player.customProps.banished
+  );
+  assertEqual(livingHeroes.length, 0, 'no explorer is still standing when the haunt is lost');
+});
+
+test('fixture betrayal: the all-heroes-out verdict can never fire over a living hero', () => {
+  // A hero at 1 sanity must survive a turn-end sanity check that would only
+  // wound — the haunt is lost only when the track actually reaches zero.
+  const engine = new UniversalGameEngine(GAME_REGISTRY.betrayal, 42, { scenario: 'haunt_zombie' });
+  const raw = engine.getRawState();
+
+  const hero = Object.values(raw.players).find(player => player.role !== 'TRAITOR')!;
+  assert(!!hero, 'a hero exists');
+  // Stand the hero in a pentagram-tagged room and pin sanity one step above death.
+  const pentagram = Object.values(raw.mapGraph.nodes).find(node => {
+    const tags = node.props?.tags;
+    return Array.isArray(tags) && tags.includes('pentagram');
+  });
+  assert(!!pentagram, 'a pentagram room exists');
+  hero.customProps.currentRoomId = pentagram.id;
+  hero.customProps.floor = String(pentagram.props?.floor ?? 'BASEMENT');
+
+  // Force the sanity check to fail (value 0 → far below the threshold 4) but
+  // keep the trait one step above death first.
+  const sanityIdx = raw.players[hero.id].customProps.traitIndex;
+  raw.players[hero.id].customProps.traitIndex = { ...sanityIdx, sanity: 1 };
+  raw.players[hero.id].customProps.forcedRoll = { value: 0 };
+
+  raw.activePlayerId = hero.id;
+  raw.activeActorId = hero.id;
+  const advance = engine
+    .getLegalActions(hero.id)
+    .find(action => action.type === 'END_TURN');
+  assert(!!advance, 'the hero can end their turn');
+  assert(engine.dispatch(advance!).ok, 'turn ended');
+
+  const state = engine.getRawState();
+  assertEqual(
+    state.players[hero.id].alive,
+    false,
+    'a zeroed sanity track is lethal at turn end'
+  );
+
+  // Now every hero is out: the verdict may fire, and the roster agrees.
+  const others = Object.values(state.players).filter(
+    player => player.role !== 'TRAITOR' && player.id !== hero.id
+  );
+  for (const other of others) {
+    other.alive = false;
+    other.customProps.banished = true;
+  }
+  const active = state.activeActorId ?? state.activePlayerId;
+  const advance2 = engine
+    .getLegalActions(active)
+    .find(action => action.type === 'END_TURN' || action.type === 'END_NPC_TURN');
+  if (advance2) engine.dispatch(advance2!);
+  const final = engine.getRawState();
+  if (final.gameOver && String(final.winnerReason ?? '').includes('所有英雄')) {
+    const stillStanding = Object.values(final.players).filter(
+      player => player.alive && player.role !== 'TRAITOR' && !player.customProps.banished
+    );
+    assertEqual(stillStanding.length, 0, 'verdict only fires over an empty hero set');
+  }
 });
 
 test('fixture betrayal: ongoing curses live on the kernel effect list', () => {

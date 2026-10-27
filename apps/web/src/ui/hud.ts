@@ -1262,6 +1262,7 @@ export class BoardGameHUD {
                 <div class="pc-name">${player.name}</div>
                 <div class="pc-tags">
                   ${player.roleLabel ? `<span class="pc-role ${player.roleClass ?? ''}">${player.roleLabel}</span>` : ''}
+                  ${player.alive ? '' : '<span class="pc-role dead-chip" title="角色已退场，不再参与行动">☠ 已阵亡</span>'}
                   ${player.isFocus ? `<span class="pc-turn"><span class="dot"></span>决策中</span>` : ''}
                 </div>
               </div>
