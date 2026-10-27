@@ -616,6 +616,11 @@ export interface GameState {
   actionLog: Action[];
   winner: ActorId | ActorId[] | null;
   gameOver: boolean;
+  /**
+   * Human-readable reason the outcome fired (e.g. "所有英雄都已死亡或被带走").
+   * Additive optional field: logs written before it existed replay unchanged.
+   */
+  winnerReason?: string;
 }
 
 /** Projected state o_{i,t} = O(s_t, i). */

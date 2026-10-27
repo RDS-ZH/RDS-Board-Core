@@ -693,7 +693,9 @@ export class UniversalGameEngine {
     next = this.expireEffects(next);
 
     const outcome = this.module.outcome(next);
-    if (outcome.gameOver) next = { ...next, gameOver: true, winner: outcome.winner };
+    if (outcome.gameOver) {
+      next = { ...next, gameOver: true, winner: outcome.winner, winnerReason: outcome.reason };
+    }
 
     if (this.strict) {
       const violations = checkInvariants(next, this.rules);
@@ -726,7 +728,7 @@ export class UniversalGameEngine {
 
     const outcome = this.module.outcome(next);
     if (outcome.gameOver) {
-      next = { ...next, gameOver: true, winner: outcome.winner };
+      next = { ...next, gameOver: true, winner: outcome.winner, winnerReason: outcome.reason };
       events.push(
         this.event(ctx, 'ANNOUNCEMENT', outcome.reason ?? `Game over — winner: ${String(outcome.winner)}`, 1600)
       );
@@ -804,7 +806,7 @@ export class UniversalGameEngine {
 
     const outcome = this.module.outcome(next);
     if (outcome.gameOver) {
-      next = { ...next, gameOver: true, winner: outcome.winner };
+      next = { ...next, gameOver: true, winner: outcome.winner, winnerReason: outcome.reason };
     }
 
     if (this.strict) {

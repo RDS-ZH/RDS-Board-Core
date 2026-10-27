@@ -253,6 +253,9 @@ export class CognitiveObserver {
       })),
       winner: state.winner,
       gameOver: state.gameOver,
+      // The outcome reason is public once the game ends; the UI needs it to
+      // explain why the table stopped instead of showing a bare "no actions".
+      ...(state.gameOver && state.winnerReason ? { winnerReason: state.winnerReason } : {}),
       viewerId,
       legalActions: filteredLegalActions,
       factionTopology,

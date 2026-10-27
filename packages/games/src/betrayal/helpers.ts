@@ -1088,6 +1088,11 @@ export function monsterEntities(state: GameState): Entity[] {
   return Object.values(state.entities).filter(entity => entity.components.custom?.monster);
 }
 
+/** The room a monster entity currently occupies (single source of truth). */
+export function monsterRoomId(state: GameState, entityId: string): string {
+  return String(state.entities[entityId]?.components.custom?.roomId ?? '');
+}
+
 export function monstersInRoom(state: GameState, roomId: string): Entity[] {
   return monsterEntities(state).filter(entity => entity.components.custom?.roomId === roomId && !entity.components.custom?.dead);
 }

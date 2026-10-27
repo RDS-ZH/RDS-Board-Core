@@ -59,6 +59,7 @@ import {
   linkSpecialRooms,
   markUsed,
   monsterEntities,
+  monsterRoomId,
   monsterStats,
   monstersInRoom,
   moveMonster,
@@ -533,10 +534,21 @@ export class BetrayalRules {
     if (!npc || npc.status !== 'ACTIVE' || !npc.entityId) return;
     if ((state.activeActorId ?? state.activePlayerId) !== npcId) return;
     if (Number(npc.customProps.movesLeft ?? 0) <= 0) return;
-    if (!BETRAYAL_SPATIAL.neighbors(state, String(npc.customProps.roomId ?? ''), npc.id).includes(targetRoomId)) return;
+
+    // The monster entity is the single source of truth for the occupied room.
+    // Reading `npc.customProps.roomId` here used to return '' (that field was
+    // never initialised), so every NPC move silently no-oped while the kernel
+    // still reported success — the traitor clicked "怪物移动" and nothing moved.
+    const fromRoomId = monsterRoomId(state, npc.entityId);
+    if (!fromRoomId) return;
+    if (!BETRAYAL_SPATIAL.neighbors(state, fromRoomId, npc.id).includes(targetRoomId)) return;
 
     moveMonster(state, npc.entityId, targetRoomId);
     npc.customProps.movesLeft = Number(npc.customProps.movesLeft) - 1;
+    // Mirror the entity room onto the NPC record so the renderer's actor
+    // lookups (nav arrows, camera follow) resolve for monsters exactly as they
+    // do for players.
+    npc.customProps.roomId = targetRoomId;
     const entity = state.entities[npc.entityId];
     const custom = entity?.components.custom ?? {};
     if (custom.monster === 'PHANTOM') addFrost(state, targetRoomId);
@@ -637,6 +649,27 @@ export class BetrayalRules {
           }
         ];
       case 'medical_kit':
+        // "恢复 X 点肉体": 肉体 covers both physical tracks, so the healer picks
+        // which one to restore — same contract as 治疗药膏.
+        return [
+          {
+            key: 'target',
+            label: '目标',
+            kind: 'enum',
+            options: roommates.map(id => ({ value: id, label: state.players[id].name })),
+            default: playerId
+          },
+          {
+            key: 'trait',
+            label: '恢复的肉体属性',
+            kind: 'enum',
+            options: [
+              { value: 'might', label: '力量' },
+              { value: 'speed', label: '速度' }
+            ],
+            default: 'might'
+          }
+        ];
       case 'bell':
         return [
           {
@@ -1561,14 +1594,15 @@ export class BetrayalRules {
       }
       case 'medical_kit': {
         const target = String(action.payload?.target ?? pid);
+        const trait = (action.payload?.trait as TraitKey) ?? 'might';
         if (target !== pid && activeRoom(state, target) !== roomId) return;
         if (!state.players[target]?.alive) return;
         const check = rollTraitCheck(state, pid, 'knowledge', { reason: 'medical kit' });
         const heal = check.total >= 6 ? 3 : check.total >= 4 ? 2 : check.total >= 2 ? 1 : 0;
         if (heal > 0) {
-          for (let i = 0; i < heal; i++) this.healToGreen(state, target, 'might');
+          for (let i = 0; i < heal; i++) this.healToGreen(state, target, trait);
         }
-        trace(ctx, 'ANNOUNCEMENT', `医疗包：知识检定 ${check.total}，恢复 ${heal} 点肉体`, 500);
+        trace(ctx, 'ANNOUNCEMENT', `医疗包：知识检定 ${check.total}，恢复 ${heal} 点肉体（${TRAIT_META[trait].zh}）`, 500);
         markUsed(state, pid, defId);
         break;
       }
@@ -2118,7 +2152,7 @@ export class BetrayalRules {
             controllerId: revealerId,
             entityId: monster.id,
             visibility: { type: 'PUBLIC' },
-            customProps: { monsterKind: template.kind, movesLeft: 0, attacksLeft: 0 }
+            customProps: { monsterKind: template.kind, roomId, movesLeft: 0, attacksLeft: 0 }
           }
         };
         npcIds.push(npcId);
